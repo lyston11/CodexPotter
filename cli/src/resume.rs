@@ -129,6 +129,8 @@ pub async fn run_resume(
     tokio::spawn(async move { while op_rx.recv().await.is_some() {} });
 
     ui.clear().context("clear TUI before resume replay")?;
+    let project_started_at = Instant::now();
+    ui.set_project_started_at(project_started_at);
 
     let mut user_cancelled_replay = false;
     for (idx, plan) in replay_rounds.into_iter().enumerate() {
@@ -263,7 +265,7 @@ pub async fn run_resume(
         user_prompt_file: progress_file_rel.clone(),
         git_commit_start,
         potter_rollout_path,
-        project_started_at: Instant::now(),
+        project_started_at,
     };
 
     match unfinished_round {

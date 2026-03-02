@@ -2,6 +2,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::Op;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -17,6 +18,7 @@ use crate::tui::Tui;
 pub struct CodexPotterTui {
     tui: Tui,
     turns_rendered: bool,
+    project_started_at: Option<Instant>,
     queued_user_prompts: VecDeque<String>,
     composer_draft: Option<crate::bottom_pane::ChatComposerDraft>,
     check_for_update_on_startup: bool,
@@ -39,6 +41,7 @@ impl CodexPotterTui {
         Ok(Self {
             tui: Tui::new(terminal),
             turns_rendered: false,
+            project_started_at: None,
             queued_user_prompts: VecDeque::new(),
             composer_draft: None,
             check_for_update_on_startup: true,
@@ -123,6 +126,14 @@ impl CodexPotterTui {
         .await
     }
 
+    /// Set the start time for the current CodexPotter project/session.
+    ///
+    /// This is used by the turn renderer to display a total elapsed timer next to the round
+    /// prefix (e.g. `Round 3/10 (4m 13s) · ...`).
+    pub fn set_project_started_at(&mut self, started_at: Instant) {
+        self.project_started_at = Some(started_at);
+    }
+
     /// Prompt the user to select an action from a list.
     ///
     /// Returns:
@@ -183,6 +194,11 @@ impl CodexPotterTui {
         codex_event_rx: UnboundedReceiver<Event>,
         fatal_exit_rx: UnboundedReceiver<String>,
     ) -> anyhow::Result<AppExitInfo> {
+        let Some(project_started_at) = self.project_started_at else {
+            anyhow::bail!(
+                "internal error: CodexPotterTui::set_project_started_at must be called before render_turn"
+            );
+        };
         let startup_warnings = std::mem::take(&mut self.startup_warnings);
         let options = crate::app_server_render::RenderOnlyTurnOptions {
             render_user_prompt: false,
@@ -195,6 +211,10 @@ impl CodexPotterTui {
             codex_event_rx,
             fatal_exit_rx,
         };
+        let context = crate::app_server_render::RenderOnlyTurnContext {
+            project_started_at,
+            prompt_footer,
+        };
         let state = crate::app_server_render::RenderOnlyTurnUiState {
             queued_user_messages: &mut queued,
             composer_draft: &mut composer_draft,
@@ -203,10 +223,10 @@ impl CodexPotterTui {
             &mut self.tui,
             prompt,
             options,
+            context,
             backend,
             startup_warnings,
             state,
-            prompt_footer,
         )
         .await;
         self.queued_user_prompts = queued;

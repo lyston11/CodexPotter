@@ -39,6 +39,7 @@ pub use queued_user_messages::QueuedUserMessages;
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -103,6 +104,7 @@ pub struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     status_header: String,
     status_header_prefix: Option<String>,
+    project_started_at: Option<Instant>,
     status_details: Option<String>,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
@@ -139,6 +141,7 @@ impl BottomPane {
             status: None,
             status_header: String::from("Working"),
             status_header_prefix: None,
+            project_started_at: None,
             status_details: None,
             context_window_percent: None,
             context_window_used_tokens: None,
@@ -236,6 +239,20 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Set the start time for the current CodexPotter project/session.
+    ///
+    /// When configured, the live status indicator renders a dim elapsed timer after the round
+    /// prefix (e.g. `Round 3/10 (4m 13s) · ...`).
+    pub fn set_project_started_at(&mut self, started_at: Option<Instant>) {
+        self.project_started_at = started_at;
+
+        if let Some(status) = self.status.as_mut() {
+            status.set_header_prefix_elapsed_start(self.project_started_at);
+        }
+
+        self.request_redraw();
+    }
+
     pub fn set_queued_user_messages(&mut self, queued: Vec<String>) {
         self.queued_user_messages.messages = queued;
     }
@@ -258,6 +275,7 @@ impl BottomPane {
         let mut status =
             StatusIndicatorWidget::new(self.frame_requester.clone(), self.animations_enabled);
         status.update_header_prefix(self.status_header_prefix.clone());
+        status.set_header_prefix_elapsed_start(self.project_started_at);
         status.update_header(self.status_header.clone());
         status.update_details(self.status_details.clone());
         status.set_context_window_visible(true);

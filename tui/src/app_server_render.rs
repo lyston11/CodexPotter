@@ -592,6 +592,12 @@ pub struct RenderOnlyTurnUiState<'a> {
     pub composer_draft: &'a mut Option<crate::bottom_pane::ChatComposerDraft>,
 }
 
+/// Context that must persist across turns within a CodexPotter project/session.
+pub struct RenderOnlyTurnContext {
+    pub project_started_at: Instant,
+    pub prompt_footer: PromptFooterContext,
+}
+
 fn text_user_input_op(text: String) -> Op {
     Op::UserInput {
         items: vec![UserInput::Text {
@@ -612,11 +618,15 @@ pub async fn run_render_only_with_tui_options_and_queue(
     tui: &mut Tui,
     prompt: String,
     options: RenderOnlyTurnOptions,
+    context: RenderOnlyTurnContext,
     backend: RenderOnlyBackendChannels,
     startup_warnings: Vec<String>,
     state: RenderOnlyTurnUiState<'_>,
-    prompt_footer: PromptFooterContext,
 ) -> anyhow::Result<AppExitInfo> {
+    let RenderOnlyTurnContext {
+        project_started_at,
+        prompt_footer,
+    } = context;
     let RenderOnlyBackendChannels {
         codex_op_tx,
         mut codex_event_rx,
@@ -647,6 +657,7 @@ pub async fn run_render_only_with_tui_options_and_queue(
 
     let mut bottom_pane = new_default_bottom_pane(tui, app_event_tx.clone(), true);
     bottom_pane.set_prompt_footer_context(prompt_footer);
+    bottom_pane.set_project_started_at(Some(project_started_at));
     if let Some(draft) = state.composer_draft.take() {
         bottom_pane.composer_mut().restore_draft(draft);
     }
@@ -3007,6 +3018,7 @@ mod tests {
             Some("main".to_string()),
         ));
         bottom_pane.set_task_running(true);
+        bottom_pane.set_project_started_at(Some(Instant::now()));
         bottom_pane.set_status_header_prefix(Some("Round 1/10".to_string()));
         if let Some(status) = bottom_pane.status_indicator_mut() {
             // Ensure the elapsed timer stays at 0s for a stable snapshot.
@@ -3090,6 +3102,7 @@ mod tests {
             Some("main".to_string()),
         ));
         bottom_pane.set_task_running(true);
+        bottom_pane.set_project_started_at(Some(Instant::now()));
         bottom_pane.set_status_header_prefix(Some("Round 1/10".to_string()));
         bottom_pane.update_status_header_with_details(
             "Reconnecting... 1/5".to_string(),

@@ -333,6 +333,7 @@ async fn run_potter_round_inner(
         fatal_exit_tx,
     ));
 
+    ui.set_project_started_at(context.project_started_at);
     let exit_info = ui
         .render_turn(
             prompt,

@@ -8,7 +8,7 @@ expression: terminal.backend().vt100().screen().contents()
   └ Stream disconnected before completion: error sending request for url
     (https://free.xxsxx.fun/v1/responses)
 
-• Round 1/10 · Reconnecting... 1/5 (0s) · 100% context left
+• Round 1/10 (0s) · Reconnecting... 1/5 (0s) · 100% context left
   └ Stream disconnected before completion: error sending request for url
     (https://free.xxsxx.fun/v1/responses)
 

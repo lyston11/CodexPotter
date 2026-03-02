@@ -42,6 +42,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 ### Shimmer
 
 - Round prefix is added to shimmer lines.
+- Round prefix includes a dim total elapsed timer since the current project/session started.
 - Remaining context window is moved into the shimmer area.
 - No `esc to interrupt` message, since we interrupt using `Ctrl-C`.
 

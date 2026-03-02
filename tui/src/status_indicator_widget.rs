@@ -5,7 +5,8 @@
 //!
 //! `codex-potter` uses this widget a bit differently:
 //!
-//! - The header may include an optional round prefix (e.g. `Round 2/10 · Working`).
+//! - The header may include an optional round prefix with a total timer (e.g.
+//!   `Round 2/10 (4m 13s) · Working`).
 //! - Remaining context is rendered in the status line while a task is running.
 //! - We do not show an "esc to interrupt" hint; interruption uses <kbd>Ctrl</kbd>+<kbd>C</kbd>.
 
@@ -41,6 +42,7 @@ pub struct StatusIndicatorWidget {
     /// Animated header text (defaults to "Working").
     header: String,
     header_prefix: Option<String>,
+    header_prefix_elapsed_offset: Option<Duration>,
     details: Option<String>,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
@@ -78,6 +80,7 @@ impl StatusIndicatorWidget {
         Self {
             header: String::from("Working"),
             header_prefix: None,
+            header_prefix_elapsed_offset: None,
             details: None,
             context_window_percent: None,
             context_window_used_tokens: None,
@@ -97,6 +100,15 @@ impl StatusIndicatorWidget {
 
     pub fn update_header_prefix(&mut self, prefix: Option<String>) {
         self.header_prefix = prefix.filter(|prefix| !prefix.is_empty());
+    }
+
+    /// Configure an additional elapsed timer shown after the header prefix (when present).
+    ///
+    /// This is primarily used by `codex-potter` to display the total elapsed time since the
+    /// current project/session started, while still keeping the existing per-turn timer.
+    pub fn set_header_prefix_elapsed_start(&mut self, started_at: Option<Instant>) {
+        self.header_prefix_elapsed_offset =
+            started_at.map(|started_at| self.last_resume_at.saturating_duration_since(started_at));
     }
 
     /// Update the details text shown below the header.
@@ -215,7 +227,7 @@ impl Renderable for StatusIndicatorWidget {
         let elapsed_duration = self.elapsed_duration_at(now);
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
 
-        let mut spans = Vec::with_capacity(5);
+        let mut spans = Vec::with_capacity(6);
         spans.push(spinner(Some(self.last_resume_at), self.animations_enabled));
         spans.push(" ".into());
         if let Some(prefix) = self.header_prefix.as_deref() {
@@ -223,6 +235,11 @@ impl Renderable for StatusIndicatorWidget {
                 prefix.to_string(),
                 Style::default().fg(secondary_color()).bold(),
             ));
+            if let Some(prefix_elapsed_offset) = self.header_prefix_elapsed_offset {
+                let prefix_elapsed = prefix_elapsed_offset.saturating_add(elapsed_duration);
+                let pretty_prefix_elapsed = fmt_elapsed_compact(prefix_elapsed.as_secs());
+                spans.push(format!(" ({pretty_prefix_elapsed})").dim());
+            }
             if !self.header.is_empty() {
                 spans.push(" · ".dim());
             }
