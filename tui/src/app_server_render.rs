@@ -559,13 +559,6 @@ pub struct RenderOnlyTurnOptions {
     /// When true, renders the user prompt into the transcript before sending it to the backend.
     pub render_user_prompt: bool,
 
-    /// Optional status header prefix shown while a task is running (e.g. `Round 2/10`).
-    ///
-    /// This is primarily used by `codex-potter` to keep the working banner consistent when
-    /// continuing an unfinished round (where `EventMsg::PotterRoundStarted` may be suppressed to
-    /// avoid inserting a duplicate transcript marker).
-    pub status_header_prefix: Option<String>,
-
     /// When true, inserts a blank line before the first emitted history cell in this single-turn
     /// session. This is useful when multiple turns are rendered into the same terminal transcript
     /// (multi-round runners) while suppressing the per-turn user prompt rendering.
@@ -576,7 +569,6 @@ impl Default for RenderOnlyTurnOptions {
     fn default() -> Self {
         Self {
             render_user_prompt: true,
-            status_header_prefix: None,
             pad_before_first_cell: false,
         }
     }
@@ -666,7 +658,6 @@ pub async fn run_render_only_with_tui_options_and_queue(
     let mut bottom_pane = new_default_bottom_pane(tui, app_event_tx.clone(), true);
     bottom_pane.set_prompt_footer_context(prompt_footer);
     bottom_pane.set_project_started_at(Some(project_started_at));
-    bottom_pane.set_status_header_prefix(options.status_header_prefix.clone());
     if let Some(draft) = state.composer_draft.take() {
         bottom_pane.composer_mut().restore_draft(draft);
     }

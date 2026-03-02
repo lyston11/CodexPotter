@@ -15,7 +15,6 @@ use crate::tui::Tui;
 pub struct RenderTurnParams {
     pub prompt: String,
     pub pad_before_first_cell: bool,
-    pub status_header_prefix: Option<String>,
     pub prompt_footer: PromptFooterContext,
     pub codex_op_tx: UnboundedSender<Op>,
     pub codex_event_rx: UnboundedReceiver<Event>,
@@ -200,7 +199,6 @@ impl CodexPotterTui {
         let RenderTurnParams {
             prompt,
             pad_before_first_cell,
-            status_header_prefix,
             prompt_footer,
             codex_op_tx,
             codex_event_rx,
@@ -214,7 +212,6 @@ impl CodexPotterTui {
         let startup_warnings = std::mem::take(&mut self.startup_warnings);
         let options = crate::app_server_render::RenderOnlyTurnOptions {
             render_user_prompt: false,
-            status_header_prefix,
             pad_before_first_cell: pad_before_first_cell || self.turns_rendered,
         };
         let mut queued = std::mem::take(&mut self.queued_user_prompts);
