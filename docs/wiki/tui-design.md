@@ -3,6 +3,11 @@
 This page documents the `codex-potter` TUI as it is used today: a **prompt screen** plus a
 **render-only** runner that displays streamed Codex events and lets the user queue follow-up tasks.
 
+Implementation note: while there are two user-facing "screens", they are driven by a single shared
+event loop (`RenderAppState` in `tui/src/app_server_render.rs`). The prompt screen is an "idle"
+session (no backend event stream), while the render-only runner is a "turn" session that consumes
+`EventMsg` values from the app-server.
+
 Scope:
 
 - bottom pane (`BottomPane` / `ChatComposer`) behavior
@@ -28,6 +33,8 @@ Render-only mode draws an inline viewport that is conceptually split into two re
 
 Implementation entry point:
 
+- `tui/src/app_server_render.rs`: `prompt_user_with_tui(...)`,
+  `run_render_only_with_tui_options_and_queue(...)`, and `RenderAppState::run(...)`
 - `tui/src/app_server_render.rs`: `render_render_only_viewport(...)`
 
 ## Bottom pane (`tui/src/bottom_pane/`)

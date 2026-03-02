@@ -14,7 +14,6 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
-use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
 use ratatui::text::Line;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -28,7 +27,6 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
-use crate::bottom_pane::ChatComposer;
 use crate::bottom_pane::ChatComposerDraft;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::PromptFooterContext;
@@ -124,7 +122,7 @@ pub async fn prompt_user_with_tui(
 
     let file_search_dir = prompt_footer.working_dir.clone();
     let file_search = FileSearchManager::new(file_search_dir.clone(), app_event_tx.clone());
-    let mut prompt_history = crate::prompt_history_store::PromptHistoryStore::new();
+    let prompt_history = crate::prompt_history_store::PromptHistoryStore::new();
 
     let mut bottom_pane = new_default_bottom_pane(tui, app_event_tx.clone(), true);
     bottom_pane.set_prompt_footer_context(prompt_footer);
@@ -182,281 +180,31 @@ pub async fn prompt_user_with_tui(
         }
     }
 
-    let mut tui_events = tui.event_stream();
-    tui.frame_requester().schedule_frame();
+    let (codex_op_tx, _codex_op_rx) = unbounded_channel::<Op>();
+    let (_unused_event_tx, mut unused_event_rx) = unbounded_channel::<Event>();
+    let (_unused_fatal_tx, mut unused_fatal_rx) = unbounded_channel::<String>();
 
-    loop {
-        tokio::select! {
-            maybe_event = tui_events.next() => {
-                let Some(event) = maybe_event else {
-                    return Ok(None);
-                };
-                match event {
-                    TuiEvent::Draw => {
-                        let width = tui.terminal.last_known_screen_size.width;
-                        if bottom_pane.composer_mut().flush_paste_burst_if_due() {
-                            // A paste just flushed; request an immediate redraw and skip this frame.
-                            tui.frame_requester().schedule_frame();
-                            continue;
-                        }
-                        if bottom_pane.composer().is_in_paste_burst() {
-                            // While capturing a burst, schedule a follow-up tick and skip this frame
-                            // to avoid redundant renders between ticks.
-                            tui.frame_requester().schedule_frame_in(
-                                ChatComposer::recommended_paste_flush_delay(),
-                            );
-                            continue;
-                        }
+    let mut app = RenderAppState::new_prompt_screen(
+        app_event_tx,
+        codex_op_tx,
+        bottom_pane,
+        prompt_history,
+        file_search,
+        should_pad_prompt_viewport,
+    );
+    let _ = app
+        .run(
+            tui,
+            &mut app_event_rx,
+            &mut unused_event_rx,
+            &mut unused_fatal_rx,
+        )
+        .await?;
 
-                        while let Ok(app_event) = app_event_rx.try_recv() {
-                            handle_prompt_app_event(
-                                tui,
-                                &mut bottom_pane,
-                                &file_search,
-                                &mut prompt_history,
-                                &mut should_pad_prompt_viewport,
-                                app_event,
-                            );
-                        }
-
-                        draw_prompt_bottom_pane(
-                            tui,
-                            &bottom_pane,
-                            width,
-                            should_pad_prompt_viewport,
-                        )?;
-                    }
-                    TuiEvent::Key(key_event) => {
-                        if key_event.kind == crossterm::event::KeyEventKind::Release {
-                            continue;
-                        }
-
-                        let is_press = key_event.kind == crossterm::event::KeyEventKind::Press;
-
-                        if key_event
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                            && matches!(key_event.code, crossterm::event::KeyCode::Char('c'))
-                        {
-                            if !is_press {
-                                continue;
-                            }
-                            if bottom_pane.composer().selection_popup_visible() {
-                                let (_result, needs_redraw) =
-                                    bottom_pane.composer_mut().handle_key_event(key_event);
-                                if needs_redraw {
-                                    tui.frame_requester().schedule_frame();
-                                }
-                                continue;
-                            }
-                            if bottom_pane.composer().is_empty() {
-                                // Clear the inline viewport so the shell prompt is clean on exit.
-                                tui.terminal.clear()?;
-                                return Ok(None);
-                            }
-                            bottom_pane.composer_mut().clear_for_ctrl_c();
-                            tui.frame_requester().schedule_frame();
-                            continue;
-                        }
-
-                        if external_editor_integration::is_ctrl_g(&key_event) {
-                            if !is_press {
-                                continue;
-                            }
-                            bottom_pane.set_prompt_footer_override(Some(PromptFooterOverride::ExternalEditorHint));
-                            let width = tui.terminal.last_known_screen_size.width;
-                            draw_prompt_bottom_pane(
-                                tui,
-                                &bottom_pane,
-                                width,
-                                should_pad_prompt_viewport,
-                            )?;
-                            match external_editor_integration::run_external_editor(tui, bottom_pane.composer())
-                                .await
-                            {
-                                Ok(Some(new_text)) => {
-                                    bottom_pane.composer_mut().apply_external_edit(new_text);
-                                    tui.frame_requester().schedule_frame();
-                                }
-                                Ok(None) => {
-                                    handle_prompt_app_event(
-                                        tui,
-                                        &mut bottom_pane,
-                                        &file_search,
-                                        &mut prompt_history,
-                                        &mut should_pad_prompt_viewport,
-                                        AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(
-                                            external_editor_integration::MISSING_EDITOR_ERROR.to_string(),
-                                        ))),
-                                    );
-                                }
-                                Err(err) => {
-                                    handle_prompt_app_event(
-                                        tui,
-                                        &mut bottom_pane,
-                                        &file_search,
-                                        &mut prompt_history,
-                                        &mut should_pad_prompt_viewport,
-                                        AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(format!(
-                                            "Failed to open editor: {err}",
-                                        )))),
-                                    );
-                                }
-                            }
-                            bottom_pane.set_prompt_footer_override(None);
-                            continue;
-                        }
-
-                        let (result, needs_redraw) =
-                            bottom_pane.composer_mut().handle_key_event(key_event);
-                        if needs_redraw {
-                            tui.frame_requester().schedule_frame();
-                        }
-                        if bottom_pane.composer().is_in_paste_burst() {
-                            tui.frame_requester().schedule_frame_in(ChatComposer::recommended_paste_flush_delay());
-                        }
-                        match result {
-                            InputResult::Submitted(text) | InputResult::Queued(text) => {
-                                let history_text =
-                                    bottom_pane.composer().encode_prompt_history_text(&text);
-                                prompt_history.record_submission(&history_text);
-                                return Ok(Some(text));
-                            }
-                            InputResult::Command(cmd) => match cmd {
-                                SlashCommand::Mention => {
-                                    bottom_pane.composer_mut().insert_str("@");
-                                    tui.frame_requester().schedule_frame();
-                                }
-                                SlashCommand::Exit => {
-                                    // Clear the inline viewport so the shell prompt is clean on exit.
-                                    tui.terminal.clear()?;
-                                    return Ok(None);
-                                }
-                                SlashCommand::Theme => {
-                                    let codex_home = crate::codex_config::find_codex_home().ok();
-                                    let current_name = crate::codex_config::resolve_codex_tui_theme(&file_search_dir)
-                                        .ok()
-                                        .flatten();
-                                    let terminal_width = tui.terminal.last_known_screen_size.width.max(1);
-                                    let params = crate::theme_picker::build_theme_picker_params(
-                                        current_name.as_deref(),
-                                        codex_home.as_deref(),
-                                        Some(terminal_width),
-                                    );
-                                    bottom_pane.composer_mut().show_selection_view(params);
-                                    tui.frame_requester().schedule_frame();
-                                }
-                            },
-                            InputResult::None => {}
-                        }
-                    }
-                    TuiEvent::Paste(pasted) => {
-                        // Many terminals convert newlines to \r when pasting (e.g., iTerm2),
-                        // but tui-textarea expects \n. Normalize CR to LF.
-                        let pasted = pasted.replace("\r", "\n");
-                        if bottom_pane.composer_mut().handle_paste(pasted) {
-                            tui.frame_requester().schedule_frame();
-                        }
-                    }
-                }
-            }
-            maybe_app_event = app_event_rx.recv() => {
-                let Some(app_event) = maybe_app_event else {
-                    return Ok(None);
-                };
-                handle_prompt_app_event(
-                    tui,
-                    &mut bottom_pane,
-                    &file_search,
-                    &mut prompt_history,
-                    &mut should_pad_prompt_viewport,
-                    app_event,
-                );
-            }
-        }
-    }
-}
-
-fn handle_prompt_app_event(
-    tui: &mut Tui,
-    bottom_pane: &mut BottomPane,
-    file_search: &FileSearchManager,
-    prompt_history: &mut crate::prompt_history_store::PromptHistoryStore,
-    should_pad_prompt_viewport: &mut bool,
-    app_event: AppEvent,
-) {
-    match app_event {
-        AppEvent::StartFileSearch(query) => file_search.on_user_query(query),
-        AppEvent::FileSearchResult { query, matches } => {
-            bottom_pane
-                .composer_mut()
-                .on_file_search_result(query, matches);
-            tui.frame_requester().schedule_frame();
-        }
-        AppEvent::SyntaxThemeSelected { name } => {
-            let cwd = bottom_pane.prompt_working_dir();
-            match crate::codex_config::find_codex_home() {
-                Ok(codex_home) => {
-                    match crate::codex_config::persist_codex_tui_theme(&codex_home, &name) {
-                        Ok(()) => {
-                            if let Some(theme) = crate::render::highlight::resolve_theme_by_name(
-                                &name,
-                                Some(&codex_home),
-                            ) {
-                                crate::render::highlight::set_syntax_theme(theme);
-                            }
-                        }
-                        Err(err) => {
-                            restore_runtime_theme_from_codex_config(cwd);
-                            let width = tui.terminal.last_known_screen_size.width;
-                            let lines = history_cell::new_error_event(format!(
-                                "Failed to save theme: {err}"
-                            ))
-                            .display_lines(width);
-                            if !lines.is_empty() {
-                                *should_pad_prompt_viewport = *should_pad_prompt_viewport
-                                    || should_pad_prompt_after_history_insert(&lines);
-                                tui.insert_history_lines(lines);
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    restore_runtime_theme_from_codex_config(cwd);
-                    let width = tui.terminal.last_known_screen_size.width;
-                    let lines =
-                        history_cell::new_error_event(format!("Failed to find CODEX_HOME: {err}"))
-                            .display_lines(width);
-                    if !lines.is_empty() {
-                        *should_pad_prompt_viewport = *should_pad_prompt_viewport
-                            || should_pad_prompt_after_history_insert(&lines);
-                        tui.insert_history_lines(lines);
-                    }
-                }
-            }
-            tui.frame_requester().schedule_frame();
-        }
-        AppEvent::InsertHistoryCell(cell) => {
-            let width = tui.terminal.last_known_screen_size.width;
-            let lines = cell.display_lines(width);
-            if lines.is_empty() {
-                return;
-            }
-            *should_pad_prompt_viewport =
-                *should_pad_prompt_viewport || should_pad_prompt_after_history_insert(&lines);
-            tui.insert_history_lines(lines);
-        }
-        AppEvent::CodexOp(Op::GetHistoryEntryRequest { offset, log_id }) => {
-            handle_prompt_history_entry_request(
-                tui.frame_requester(),
-                bottom_pane,
-                prompt_history,
-                log_id,
-                offset,
-            );
-        }
-        _ => {}
-    }
+    Ok(match app.prompt_action.take() {
+        Some(PromptScreenAction::Submitted(text)) => Some(text),
+        Some(PromptScreenAction::CancelledByUser) | None => None,
+    })
 }
 
 /// Handle an `Op::GetHistoryEntryRequest` by serving prompt history from the local store.
@@ -511,46 +259,6 @@ fn should_pad_prompt_after_history_insert(lines: &[Line<'_>]) -> bool {
         .spans
         .iter()
         .all(|span| span.content.as_ref().trim().is_empty())
-}
-
-fn draw_prompt_bottom_pane(
-    tui: &mut Tui,
-    bottom_pane: &BottomPane,
-    width: u16,
-    should_pad_prompt_viewport: bool,
-) -> anyhow::Result<()> {
-    let transient_lines = if should_pad_prompt_viewport {
-        vec![Line::from("")]
-    } else {
-        Vec::new()
-    };
-    let transient_height = u16::try_from(transient_lines.len()).unwrap_or(u16::MAX);
-    let viewport_height = bottom_pane
-        .desired_height(width)
-        .max(1)
-        .saturating_add(transient_height);
-    tui.draw(viewport_height, |frame| {
-        let area = frame.area();
-        ratatui::widgets::Clear.render(area, frame.buffer_mut());
-        render_render_only_viewport(area, frame.buffer_mut(), bottom_pane, transient_lines);
-
-        let pane_height = bottom_pane
-            .desired_height(area.width)
-            .max(1)
-            .min(area.height);
-        let pane_area = Rect::new(
-            area.x,
-            area.bottom().saturating_sub(pane_height),
-            area.width,
-            pane_height,
-        );
-        let cursor = bottom_pane
-            .cursor_pos(pane_area)
-            .unwrap_or((area.x, area.bottom().saturating_sub(1)));
-        frame.set_cursor_position(cursor);
-    })?;
-
-    Ok(())
 }
 
 /// Controls how a single render-only turn is rendered into the terminal transcript.
@@ -1221,7 +929,22 @@ impl ReasoningStatusTracker {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderAppSessionKind {
+    PromptScreen,
+    RenderOnlyTurn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PromptScreenAction {
+    Submitted(String),
+    CancelledByUser,
+}
+
 struct RenderAppState {
+    session_kind: RenderAppSessionKind,
+    prompt_action: Option<PromptScreenAction>,
+    should_pad_prompt_viewport: bool,
     processor: RenderOnlyProcessor,
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
@@ -1249,6 +972,9 @@ impl RenderAppState {
         queued_user_messages: VecDeque<String>,
     ) -> Self {
         Self {
+            session_kind: RenderAppSessionKind::RenderOnlyTurn,
+            prompt_action: None,
+            should_pad_prompt_viewport: false,
             processor,
             app_event_tx,
             codex_op_tx,
@@ -1266,7 +992,38 @@ impl RenderAppState {
         }
     }
 
+    fn new_prompt_screen(
+        app_event_tx: AppEventSender,
+        codex_op_tx: UnboundedSender<Op>,
+        bottom_pane: BottomPane,
+        prompt_history: crate::prompt_history_store::PromptHistoryStore,
+        file_search: FileSearchManager,
+        should_pad_prompt_viewport: bool,
+    ) -> Self {
+        let processor = RenderOnlyProcessor::new(app_event_tx.clone());
+        let mut app = Self::new(
+            processor,
+            app_event_tx,
+            codex_op_tx,
+            bottom_pane,
+            prompt_history,
+            file_search,
+            VecDeque::new(),
+        );
+        app.session_kind = RenderAppSessionKind::PromptScreen;
+        app.should_pad_prompt_viewport = should_pad_prompt_viewport;
+        app
+    }
+
     fn build_transient_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if matches!(self.session_kind, RenderAppSessionKind::PromptScreen) {
+            return if self.should_pad_prompt_viewport {
+                vec![Line::from("")]
+            } else {
+                Vec::new()
+            };
+        }
+
         let mut transient_lines: Vec<Line<'static>> = Vec::new();
 
         if let Some(cell) = self.processor.pending_success_ran_cell.as_ref() {
@@ -1310,7 +1067,10 @@ impl RenderAppState {
         fatal_exit_rx: &mut UnboundedReceiver<String>,
     ) -> anyhow::Result<AppExitInfo> {
         let mut tui_events = tui.event_stream();
-        self.bottom_pane.set_task_running(true);
+        self.bottom_pane.set_task_running(matches!(
+            self.session_kind,
+            RenderAppSessionKind::RenderOnlyTurn
+        ));
         tui.frame_requester().schedule_frame();
 
         loop {
@@ -1366,6 +1126,18 @@ impl RenderAppState {
                                 }
                                 let width = tui.terminal.last_known_screen_size.width.max(1);
                                 self.handle_key_event(key_event, tui.frame_requester(), width);
+                                if matches!(self.session_kind, RenderAppSessionKind::PromptScreen)
+                                    && self.prompt_action.is_some()
+                                {
+                                    if matches!(
+                                        self.prompt_action,
+                                        Some(PromptScreenAction::CancelledByUser)
+                                    ) {
+                                        // Clear the inline viewport so the shell prompt is clean on exit.
+                                        tui.terminal.clear()?;
+                                    }
+                                    break;
+                                }
                             }
                         TuiEvent::Paste(pasted) => {
                             // Many terminals convert newlines to \r when pasting (e.g., iTerm2),
@@ -1389,7 +1161,9 @@ impl RenderAppState {
                             self.handle_app_event(tui, AppEvent::CodexEvent(event))?;
                         }
                         None => {
-                            if !self.exit_after_next_draw {
+                            if matches!(self.session_kind, RenderAppSessionKind::RenderOnlyTurn)
+                                && !self.exit_after_next_draw
+                            {
                                 self.exit_reason = ExitReason::Fatal("Backend disconnected".to_string());
                                 self.exit_after_next_draw = true;
                                 tui.frame_requester().schedule_frame();
@@ -1495,19 +1269,26 @@ impl RenderAppState {
                 return;
             }
             if self.bottom_pane.composer().is_empty() {
-                // Preserve any live output (for example pending "Explored" / "Ran" cells) in the
-                // transcript before clearing the inline viewport on exit.
-                self.processor.flush_pending_exploring_cell();
-                self.processor.flush_pending_success_ran_cell();
+                match self.session_kind {
+                    RenderAppSessionKind::PromptScreen => {
+                        self.prompt_action = Some(PromptScreenAction::CancelledByUser);
+                    }
+                    RenderAppSessionKind::RenderOnlyTurn => {
+                        // Preserve any live output (for example pending "Explored" / "Ran" cells)
+                        // in the transcript before clearing the inline viewport on exit.
+                        self.processor.flush_pending_exploring_cell();
+                        self.processor.flush_pending_success_ran_cell();
 
-                self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+                        self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
 
-                // Treat Ctrl+C as an explicit user cancellation, even if the turn just finished,
-                // so callers can stop multi-round loops reliably.
-                if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
-                    self.exit_reason = ExitReason::UserRequested;
+                        // Treat Ctrl+C as an explicit user cancellation, even if the turn just
+                        // finished, so callers can stop multi-round loops reliably.
+                        if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
+                            self.exit_reason = ExitReason::UserRequested;
+                        }
+                        self.exit_after_next_draw = true;
+                    }
                 }
-                self.exit_after_next_draw = true;
             } else {
                 self.bottom_pane.composer_mut().clear_for_ctrl_c();
             }
@@ -1532,9 +1313,16 @@ impl RenderAppState {
                     .composer()
                     .encode_prompt_history_text(&text);
                 self.prompt_history.record_submission(&history_text);
-                self.queued_user_messages.push_back(text);
-                self.refresh_queued_user_messages();
-                frame_requester.schedule_frame();
+                match self.session_kind {
+                    RenderAppSessionKind::PromptScreen => {
+                        self.prompt_action = Some(PromptScreenAction::Submitted(text));
+                    }
+                    RenderAppSessionKind::RenderOnlyTurn => {
+                        self.queued_user_messages.push_back(text);
+                        self.refresh_queued_user_messages();
+                        frame_requester.schedule_frame();
+                    }
+                }
             }
             InputResult::Command(cmd) => match cmd {
                 SlashCommand::Mention => {
@@ -1542,20 +1330,28 @@ impl RenderAppState {
                     frame_requester.schedule_frame();
                 }
                 SlashCommand::Exit => {
-                    // Preserve any live output (for example pending "Explored" / "Ran" cells) in
-                    // the transcript before clearing the inline viewport on exit.
-                    self.processor.flush_pending_exploring_cell();
-                    self.processor.flush_pending_success_ran_cell();
+                    match self.session_kind {
+                        RenderAppSessionKind::PromptScreen => {
+                            self.prompt_action = Some(PromptScreenAction::CancelledByUser);
+                        }
+                        RenderAppSessionKind::RenderOnlyTurn => {
+                            // Preserve any live output (for example pending "Explored" / "Ran"
+                            // cells) in the transcript before clearing the inline viewport on
+                            // exit.
+                            self.processor.flush_pending_exploring_cell();
+                            self.processor.flush_pending_success_ran_cell();
 
-                    self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+                            self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
 
-                    // Treat /exit as an explicit user cancellation, even if the turn just finished,
-                    // so callers can stop multi-round loops reliably.
-                    if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
-                        self.exit_reason = ExitReason::UserRequested;
+                            // Treat /exit as an explicit user cancellation, even if the turn just
+                            // finished, so callers can stop multi-round loops reliably.
+                            if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
+                                self.exit_reason = ExitReason::UserRequested;
+                            }
+                            self.exit_after_next_draw = true;
+                            frame_requester.schedule_frame();
+                        }
                     }
-                    self.exit_after_next_draw = true;
-                    frame_requester.schedule_frame();
                 }
                 SlashCommand::Theme => {
                     if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
@@ -1641,11 +1437,19 @@ impl RenderAppState {
                     return Ok(());
                 }
 
-                if !cell.is_stream_continuation() {
-                    if self.has_emitted_history_lines {
-                        display.insert(0, Line::from(""));
-                    } else {
-                        self.has_emitted_history_lines = true;
+                match self.session_kind {
+                    RenderAppSessionKind::PromptScreen => {
+                        self.should_pad_prompt_viewport = self.should_pad_prompt_viewport
+                            || should_pad_prompt_after_history_insert(&display);
+                    }
+                    RenderAppSessionKind::RenderOnlyTurn => {
+                        if !cell.is_stream_continuation() {
+                            if self.has_emitted_history_lines {
+                                display.insert(0, Line::from(""));
+                            } else {
+                                self.has_emitted_history_lines = true;
+                            }
+                        }
                     }
                 }
 
@@ -1690,6 +1494,9 @@ impl RenderAppState {
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::StartCommitAnimation => {
+                if matches!(self.session_kind, RenderAppSessionKind::PromptScreen) {
+                    return Ok(());
+                }
                 if self
                     .commit_anim_running
                     .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -1706,12 +1513,21 @@ impl RenderAppState {
                 }
             }
             AppEvent::StopCommitAnimation => {
+                if matches!(self.session_kind, RenderAppSessionKind::PromptScreen) {
+                    return Ok(());
+                }
                 self.commit_anim_running.store(false, Ordering::Release);
             }
             AppEvent::CommitTick => {
+                if matches!(self.session_kind, RenderAppSessionKind::PromptScreen) {
+                    return Ok(());
+                }
                 self.processor.on_commit_tick();
             }
             AppEvent::CodexEvent(event) => {
+                if matches!(self.session_kind, RenderAppSessionKind::PromptScreen) {
+                    return Ok(());
+                }
                 self.handle_codex_event(tui.frame_requester(), event)?;
             }
             AppEvent::CodexOp(op) => match op {
@@ -1725,7 +1541,9 @@ impl RenderAppState {
                     );
                 }
                 _ => {
-                    let _ = self.codex_op_tx.send(op);
+                    if matches!(self.session_kind, RenderAppSessionKind::RenderOnlyTurn) {
+                        let _ = self.codex_op_tx.send(op);
+                    }
                 }
             },
             AppEvent::StartFileSearch(query) => {
@@ -1738,6 +1556,9 @@ impl RenderAppState {
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::FatalExitRequest(message) => {
+                if matches!(self.session_kind, RenderAppSessionKind::PromptScreen) {
+                    return Ok(());
+                }
                 self.exit_reason = ExitReason::Fatal(message);
                 self.bottom_pane.set_task_running(false);
                 self.exit_after_next_draw = true;
@@ -2913,6 +2734,192 @@ mod tests {
             }
         }
         assert!(saw_interrupt, "expected /exit to request Op::Interrupt");
+    }
+
+    #[test]
+    fn prompt_slash_exit_cancels_without_interrupt_or_history() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            op_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+        );
+
+        app.bottom_pane.set_task_running(false);
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/exit".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
+
+        let (_log_id, entry_count) = app.prompt_history.metadata();
+        assert_eq!(
+            entry_count, 0,
+            "expected prompt screen /exit not to be recorded in history"
+        );
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Op::Interrupt in prompt screen"
+        );
+    }
+
+    #[test]
+    fn prompt_ctrl_c_empty_cancels_without_interrupt() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            op_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+        );
+
+        app.bottom_pane.set_task_running(false);
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Op::Interrupt in prompt screen"
+        );
+    }
+
+    #[test]
+    fn prompt_enter_submits_prompt_and_records_history() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            op_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+        );
+
+        app.bottom_pane.set_task_running(false);
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "hello".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(
+            app.prompt_action,
+            Some(PromptScreenAction::Submitted("hello".to_string()))
+        );
+        assert!(
+            app.queued_user_messages.is_empty(),
+            "prompt screen should not queue prompts"
+        );
+
+        let (log_id, entry_count) = app.prompt_history.metadata();
+        assert_eq!(entry_count, 1);
+        assert_eq!(
+            app.prompt_history.lookup_text(log_id, 0),
+            Some("hello".to_string())
+        );
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Op::Interrupt in prompt screen"
+        );
     }
 
     #[test]
