@@ -54,6 +54,26 @@ codex-potter --yolo
 
 ⚠️ **Note:** Unlike Codex, every follow up prompt turns into a **new** task, **not sharing previous contexts**. Assign tasks to CodexPotter, instead of chat with it.
 
+### Prompting tips
+
+**✅ tasks with clear goals or scopes:**
+
+- "port upstream codex's /resume into this project, keep code aligned"
+
+**✅ persist results to review in later rounds:**
+
+- "create a design doc for ... **in DESIGN.md**"
+
+**❌ interactive tasks with human feedback loops:**
+
+CodexPotter is not suitable for such tasks:
+
+- Front-end development with human UI feedback
+
+- Question-answering
+
+- Brainstorming sessions
+
 &ensp;
 
 ## Roadmap
