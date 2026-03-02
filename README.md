@@ -20,6 +20,7 @@ For agents: This file is carefully maintained and polished for better readabilit
 
 - 🤖 **Codex-first** — Codex subscription is all you need; no extra LLM needed.
 - 🧭 **Auto-review / reconcile** — Review and polish multi rounds until fully aligned with your instruction.
+- 🎯 **Attention is all you need** — Keep you focused on _crafting_ tasks, instead of _cleaning up_ unfinished work.
 - 🚀 **Never worse than Codex** — Drive Codex, nothing more; no business prompts which may not suit you.
 - 🧩 **Seamless integration** — AGENTS.md, skills & MCPs just work™ ; opt in to improve plan / review.
 - 🧠 **File system as memory** — Store instructions in files to resist compaction and preserve all details.
