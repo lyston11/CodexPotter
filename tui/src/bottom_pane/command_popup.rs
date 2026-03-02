@@ -57,9 +57,7 @@ impl CommandPopup {
     /// Accounts for wrapped descriptions so that long tooltips don't overflow.
     pub fn calculate_required_height(&self, width: u16) -> u16 {
         let rows = self.rows_from_matches(self.filtered());
-        // Match the left inset applied in `render_ref`.
-        let content_width = width.saturating_sub(2).max(1);
-        measure_rows_height(&rows, &self.state, MAX_POPUP_ROWS, content_width)
+        measure_rows_height(&rows, &self.state, MAX_POPUP_ROWS, width)
     }
 
     fn filtered(&self) -> Vec<(SlashCommand, Option<Vec<usize>>)> {

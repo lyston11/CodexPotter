@@ -18,7 +18,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Mention => "mention a file",
             SlashCommand::Theme => "choose a syntax highlighting theme",
-            SlashCommand::Exit => "exit CodexPotter",
+            SlashCommand::Exit => "exit Codex",
         }
     }
 
