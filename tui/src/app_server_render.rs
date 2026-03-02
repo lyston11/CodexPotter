@@ -42,6 +42,7 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell_potter::PotterStreamRecoveryRetryCell;
 use crate::history_cell_potter::PotterStreamRecoveryUnrecoverableCell;
 use crate::render::renderable::Renderable;
+use crate::slash_command::SlashCommand;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
 use crate::streaming::commit_tick::run_commit_tick;
@@ -298,7 +299,19 @@ pub async fn prompt_user_with_tui(
                                 prompt_history.record_submission(&history_text);
                                 return Ok(Some(text));
                             }
-                            InputResult::Command(_) | InputResult::None => {}
+                            InputResult::Command(cmd) => match cmd {
+                                SlashCommand::Mention => {
+                                    bottom_pane.composer_mut().insert_str("@");
+                                    tui.frame_requester().schedule_frame();
+                                }
+                                SlashCommand::Exit => {
+                                    // Clear the inline viewport so the shell prompt is clean on exit.
+                                    tui.terminal.clear()?;
+                                    return Ok(None);
+                                }
+                                SlashCommand::Theme => {}
+                            },
+                            InputResult::None => {}
                         }
                     }
                     TuiEvent::Paste(pasted) => {
@@ -1343,7 +1356,30 @@ impl RenderAppState {
                 self.refresh_queued_user_messages();
                 frame_requester.schedule_frame();
             }
-            InputResult::Command(_) | InputResult::None => {}
+            InputResult::Command(cmd) => match cmd {
+                SlashCommand::Mention => {
+                    self.bottom_pane.composer_mut().insert_str("@");
+                    frame_requester.schedule_frame();
+                }
+                SlashCommand::Exit => {
+                    // Preserve any live output (for example pending "Explored" / "Ran" cells) in
+                    // the transcript before clearing the inline viewport on exit.
+                    self.processor.flush_pending_exploring_cell();
+                    self.processor.flush_pending_success_ran_cell();
+
+                    self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+
+                    // Treat /exit as an explicit user cancellation, even if the turn just finished,
+                    // so callers can stop multi-round loops reliably.
+                    if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
+                        self.exit_reason = ExitReason::UserRequested;
+                    }
+                    self.exit_after_next_draw = true;
+                    frame_requester.schedule_frame();
+                }
+                SlashCommand::Theme => {}
+            },
+            InputResult::None => {}
         }
     }
 
@@ -2515,6 +2551,118 @@ mod tests {
         app.handle_key_event(ctrl_w_repeat, crate::tui::FrameRequester::test_dummy());
 
         assert_eq!(app.bottom_pane.composer().current_text(), "hello ");
+    }
+
+    #[test]
+    fn render_only_slash_mention_inserts_at_and_starts_file_search() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = RenderOnlyProcessor::new(app_event_tx.clone());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            op_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/mention".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+        );
+
+        assert_eq!(app.bottom_pane.composer().current_text(), "@");
+
+        let mut saw_file_search = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::StartFileSearch(query) = ev {
+                assert_eq!(query, "");
+                saw_file_search = true;
+                break;
+            }
+        }
+        assert!(
+            saw_file_search,
+            "expected StartFileSearch after inserting '@'"
+        );
+    }
+
+    #[test]
+    fn render_only_slash_exit_requests_interrupt_and_exit() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = RenderOnlyProcessor::new(app_event_tx.clone());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            op_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/exit".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+        );
+
+        assert!(app.exit_after_next_draw, "expected /exit to request exit");
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(saw_interrupt, "expected /exit to request Op::Interrupt");
     }
 
     #[test]

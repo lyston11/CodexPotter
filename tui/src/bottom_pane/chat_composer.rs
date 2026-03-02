@@ -294,6 +294,15 @@ impl ChatComposer {
         self.textarea.is_empty()
     }
 
+    /// Insert `text` at the current cursor position and synchronize popup state.
+    ///
+    /// This is used by slash-command dispatch (for example, `/mention` inserts `@`) and should
+    /// behave like normal typing: it does not create paste placeholders.
+    pub fn insert_str(&mut self, text: &str) {
+        self.textarea.insert_str(text);
+        self.sync_popups();
+    }
+
     /// Integrate pasted text into the composer.
     ///
     /// Acts as the only place where paste text is integrated, both for:
