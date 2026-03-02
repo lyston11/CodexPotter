@@ -139,7 +139,31 @@ pub fn find_codex_home() -> io::Result<PathBuf> {
     if let Ok(val) = std::env::var("CODEX_HOME")
         && !val.is_empty()
     {
-        return PathBuf::from(val).canonicalize();
+        let path = PathBuf::from(&val);
+        let metadata = std::fs::metadata(&path).map_err(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("CODEX_HOME points to {val:?}, but that path does not exist"),
+            ),
+            _ => std::io::Error::new(
+                err.kind(),
+                format!("failed to read CODEX_HOME {val:?}: {err}"),
+            ),
+        })?;
+
+        if !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("CODEX_HOME points to {val:?}, but that path is not a directory"),
+            ));
+        }
+
+        return path.canonicalize().map_err(|err| {
+            std::io::Error::new(
+                err.kind(),
+                format!("failed to canonicalize CODEX_HOME {val:?}: {err}"),
+            )
+        });
     }
 
     let mut p = dirs::home_dir()
@@ -581,5 +605,50 @@ theme = "catppuccin-mocha"
             contents.contains("theme = \"github\""),
             "expected persisted config to contain theme selection, got: {contents}"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn find_codex_home_env_missing_path_is_fatal() {
+        let temp_home = tempfile::tempdir().expect("temp home");
+        let missing = temp_home.path().join("missing-codex-home");
+        let _env = EnvVarGuard::set("CODEX_HOME", &missing);
+
+        let err = find_codex_home().expect_err("missing CODEX_HOME");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            err.to_string().contains("CODEX_HOME"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn find_codex_home_env_file_path_is_fatal() {
+        let temp_home = tempfile::tempdir().expect("temp home");
+        let file_path = temp_home.path().join("codex-home.txt");
+        std::fs::write(&file_path, "not a directory").expect("write temp file");
+        let _env = EnvVarGuard::set("CODEX_HOME", &file_path);
+
+        let err = find_codex_home().expect_err("file CODEX_HOME");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("not a directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn find_codex_home_env_valid_directory_canonicalizes() {
+        let codex_home = tempfile::tempdir().expect("temp codex home");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        let resolved = find_codex_home().expect("valid CODEX_HOME");
+        let expected = codex_home
+            .path()
+            .canonicalize()
+            .expect("canonicalize temp home");
+        assert_eq!(resolved, expected);
     }
 }
