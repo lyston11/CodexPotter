@@ -96,7 +96,8 @@ Each line is a single JSON object (append-only). The schema is a tagged enum wit
     canonicalization fails.
 - `session_succeeded`
   - `rounds`: number of rounds recorded for the overall project (used for summary rendering).
-  - `duration_secs`: wall-clock elapsed time for the project.
+  - `duration_secs`: wall-clock elapsed time since the current live run started (new project or
+    resume action; does not include resume replay).
   - `user_prompt_file`: progress file path.
   - `git_commit_start` / `git_commit_end`: git commit SHAs captured for the summary.
 - `round_finished`
