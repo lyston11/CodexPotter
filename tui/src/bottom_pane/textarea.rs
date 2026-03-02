@@ -852,6 +852,47 @@ impl TextArea {
         self.elements.sort_by_key(|e| e.range.start);
     }
 
+    /// Mark an existing text range as an atomic element without changing the text.
+    ///
+    /// This is used to convert already-typed tokens (like `/theme`) into elements
+    /// so they render and edit atomically. Overlapping or duplicate ranges are ignored.
+    pub fn add_element_range(&mut self, range: Range<usize>) -> bool {
+        let start = self.clamp_pos_to_char_boundary(range.start.min(self.text.len()));
+        let end = self.clamp_pos_to_char_boundary(range.end.min(self.text.len()));
+        if start >= end {
+            return false;
+        }
+        if self
+            .elements
+            .iter()
+            .any(|e| e.range.start == start && e.range.end == end)
+        {
+            return false;
+        }
+        if self
+            .elements
+            .iter()
+            .any(|e| start < e.range.end && end > e.range.start)
+        {
+            return false;
+        }
+
+        self.add_element(start..end);
+        true
+    }
+
+    pub fn remove_element_range(&mut self, range: Range<usize>) -> bool {
+        let start = self.clamp_pos_to_char_boundary(range.start.min(self.text.len()));
+        let end = self.clamp_pos_to_char_boundary(range.end.min(self.text.len()));
+        if start >= end {
+            return false;
+        }
+        let len_before = self.elements.len();
+        self.elements
+            .retain(|elem| elem.range.start != start || elem.range.end != end);
+        len_before != self.elements.len()
+    }
+
     fn find_element_containing(&self, pos: usize) -> Option<usize> {
         self.elements
             .iter()

@@ -35,6 +35,7 @@ mod render;
 mod resume_picker_prompt;
 mod shimmer;
 mod skills_discovery;
+mod slash_command;
 mod startup_banner;
 mod status_indicator_widget;
 mod streaming;

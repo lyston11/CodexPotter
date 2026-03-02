@@ -13,7 +13,8 @@
 //!
 //! See `tui/AGENTS.md` for the canonical list. Highlights:
 //!
-//! - No `/` command picker popup and no `?` shortcuts overlay (`/` and `?` are inserted literally).
+//! - Supports a `/` command picker popup (subset: `/theme`, `/exit`, `/mention`).
+//! - No `?` shortcuts overlay (`?` is inserted literally).
 //! - `Esc` only dismisses popups; there is no Esc-driven rewind/backtrack UX.
 //! - No steer mode: <kbd>Enter</kbd> queues the message instead of submitting immediately.
 //! - The skills picker is driven by `$`-mentions.
@@ -111,6 +112,7 @@ use ratatui::widgets::WidgetRef;
 
 use super::chat_composer_history::ChatComposerHistory;
 use super::chat_composer_history::HistoryEntry;
+use super::command_popup::CommandPopup;
 use super::file_search_popup::FileSearchPopup;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
@@ -119,8 +121,10 @@ use super::footer::render_footer;
 use super::footer::reset_mode_after_activity;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
+use super::prompt_args::parse_slash_name;
 use super::skill_popup::MentionItem;
 use super::skill_popup::SkillPopup;
+use super::slash_commands;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::render::Insets;
 use crate::render::RectExt;
@@ -134,10 +138,12 @@ use crate::bottom_pane::textarea::TextArea;
 use crate::bottom_pane::textarea::TextAreaState;
 use crate::mention_codec::LinkedMention;
 use crate::skills_discovery::SkillMetadata;
+use crate::slash_command::SlashCommand;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -156,6 +162,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 pub enum InputResult {
     Submitted(String),
     Queued(String),
+    Command(SlashCommand),
     None,
 }
 
@@ -206,6 +213,7 @@ pub struct ChatComposer {
 /// Popup state – at most one can be visible at any time.
 enum ActivePopup {
     None,
+    Command(CommandPopup),
     File(FileSearchPopup),
     Skill(SkillPopup),
 }
@@ -260,6 +268,9 @@ impl ChatComposer {
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         let popup_constraint = match &self.active_popup {
+            ActivePopup::Command(popup) => {
+                Constraint::Max(popup.calculate_required_height(area.width))
+            }
             ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
             ActivePopup::Skill(popup) => Constraint::Max(popup.calculate_required_height()),
             ActivePopup::None => Constraint::Max(footer_total_height),
@@ -643,6 +654,7 @@ impl ChatComposer {
         }
 
         let result = match &mut self.active_popup {
+            ActivePopup::Command(_) => self.handle_key_event_with_slash_popup(key_event),
             ActivePopup::File(_) => self.handle_key_event_with_file_popup(key_event),
             ActivePopup::Skill(_) => self.handle_key_event_with_skill_popup(key_event),
             ActivePopup::None => self.handle_key_event_without_popup(key_event),
@@ -652,6 +664,85 @@ impl ChatComposer {
         self.sync_popups();
 
         result
+    }
+
+    fn handle_key_event_with_slash_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
+        self.footer_mode = reset_mode_after_activity(self.footer_mode);
+
+        let ActivePopup::Command(popup) = &mut self.active_popup else {
+            unreachable!();
+        };
+
+        match key_event {
+            KeyEvent {
+                code: KeyCode::Up, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                popup.move_up();
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('n'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                popup.move_down();
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                // Dismiss the slash popup; keep the current input untouched.
+                self.active_popup = ActivePopup::None;
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Tab, ..
+            } => {
+                // Ensure popup filtering/selection reflects the latest composer text before
+                // applying completion.
+                let first_line = self.textarea.text().lines().next().unwrap_or("");
+                popup.on_composer_text_change(first_line.to_string());
+                if let Some(cmd) = popup.selected_item() {
+                    let starts_with_cmd = first_line
+                        .trim_start()
+                        .starts_with(&format!("/{}", cmd.command()));
+                    if !starts_with_cmd {
+                        self.textarea
+                            .set_text_clearing_elements(&format!("/{} ", cmd.command()));
+                    }
+                    if !self.textarea.text().is_empty() {
+                        self.textarea.set_cursor(self.textarea.text().len());
+                    }
+                }
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if let Some(cmd) = popup.selected_item() {
+                    self.pending_pastes.clear();
+                    self.large_paste_counters.clear();
+                    self.textarea.set_text_clearing_elements("");
+                    self.active_popup = ActivePopup::None;
+                    return (InputResult::Command(cmd), true);
+                }
+
+                // Fallback to default newline handling if no command selected.
+                self.handle_key_event_without_popup(key_event)
+            }
+            input => self.handle_input_basic(input),
+        }
     }
 
     #[inline]
@@ -1093,6 +1184,7 @@ impl ChatComposer {
     /// Prepare text for submission/queuing. Returns None if submission should be suppressed.
     fn prepare_submission_text(&mut self) -> Option<String> {
         let mut text = self.textarea.text().to_string();
+        let input_starts_with_space = text.starts_with(' ');
         self.textarea.set_text_clearing_elements("");
 
         // Replace any placeholder pastes in the text before submission.
@@ -1110,6 +1202,20 @@ impl ChatComposer {
         if text.is_empty() {
             return None;
         }
+
+        if let Some((name, _rest, _rest_offset)) = parse_slash_name(&text) {
+            let treat_as_plain_text = input_starts_with_space || name.contains('/');
+            if !treat_as_plain_text && slash_commands::find_builtin_command(name).is_none() {
+                let message = format!(
+                    r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
+                );
+                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                    crate::history_cell::new_info_event(message, None),
+                )));
+                return None;
+            }
+        }
+
         self.history
             .record_local_submission(HistoryEntry::from_text(text.clone()));
         Some(text)
@@ -1215,7 +1321,12 @@ impl ChatComposer {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } => self.handle_submission(true),
+            } => {
+                if let Some(result) = self.try_dispatch_bare_slash_command() {
+                    return (result, true);
+                }
+                self.handle_submission(true)
+            }
             input => self.handle_input_basic(input),
         }
     }
@@ -1424,7 +1535,24 @@ impl ChatComposer {
             .map(|items| if items.is_empty() { 0 } else { 1 })
     }
 
+    fn try_dispatch_bare_slash_command(&mut self) -> Option<InputResult> {
+        let first_line = self.textarea.text().lines().next().unwrap_or("");
+        if let Some((name, rest, _rest_offset)) = parse_slash_name(first_line)
+            && rest.is_empty()
+            && let Some(cmd) = slash_commands::find_builtin_command(name)
+        {
+            self.pending_pastes.clear();
+            self.large_paste_counters.clear();
+            self.textarea.set_text_clearing_elements("");
+            self.active_popup = ActivePopup::None;
+            return Some(InputResult::Command(cmd));
+        }
+        None
+    }
+
     fn sync_popups(&mut self) {
+        self.sync_slash_command_elements();
+
         let file_token = Self::current_at_token(&self.textarea);
         let browsing_history = self
             .history
@@ -1432,12 +1560,36 @@ impl ChatComposer {
         // When browsing input history (shell-style Up/Down recall), skip all popup
         // synchronization so nothing steals focus from continued history navigation.
         if browsing_history {
+            if self.current_file_query.is_some() {
+                self.app_event_tx
+                    .send(AppEvent::StartFileSearch(String::new()));
+                self.current_file_query = None;
+            }
             self.active_popup = ActivePopup::None;
             return;
         }
 
         let mention_token = self.current_mention_token();
+        let allow_command_popup = file_token.is_none() && mention_token.is_none();
+        self.sync_command_popup(allow_command_popup);
+
+        if matches!(self.active_popup, ActivePopup::Command(_)) {
+            if self.current_file_query.is_some() {
+                self.app_event_tx
+                    .send(AppEvent::StartFileSearch(String::new()));
+                self.current_file_query = None;
+            }
+            self.dismissed_file_popup_token = None;
+            self.dismissed_skill_popup_token = None;
+            return;
+        }
+
         if let Some(token) = mention_token {
+            if self.current_file_query.is_some() {
+                self.app_event_tx
+                    .send(AppEvent::StartFileSearch(String::new()));
+                self.current_file_query = None;
+            }
             self.sync_skill_popup(token);
             return;
         }
@@ -1448,12 +1600,162 @@ impl ChatComposer {
             return;
         }
 
+        if self.current_file_query.is_some() {
+            self.app_event_tx
+                .send(AppEvent::StartFileSearch(String::new()));
+            self.current_file_query = None;
+        }
         self.dismissed_file_popup_token = None;
         if matches!(
             self.active_popup,
             ActivePopup::File(_) | ActivePopup::Skill(_)
         ) {
             self.active_popup = ActivePopup::None;
+        }
+    }
+
+    /// Keep slash command elements aligned with the current first line.
+    fn sync_slash_command_elements(&mut self) {
+        let text = self.textarea.text();
+        let first_line_end = text.find('\n').unwrap_or(text.len());
+        let first_line = &text[..first_line_end];
+        let desired_range = self.slash_command_element_range(first_line);
+
+        // Slash commands are only valid at byte 0 of the first line. Any slash-shaped element not
+        // matching the current desired prefix is stale.
+        let mut has_desired = false;
+        let mut stale_ranges = Vec::new();
+        for elem in self.textarea.text_elements() {
+            let Some(payload) = elem.placeholder.as_deref() else {
+                continue;
+            };
+            if payload.strip_prefix('/').is_none() {
+                continue;
+            }
+            let range = elem.byte_range.start..elem.byte_range.end;
+            if desired_range.as_ref() == Some(&range) {
+                has_desired = true;
+            } else {
+                stale_ranges.push(range);
+            }
+        }
+
+        for range in stale_ranges {
+            self.textarea.remove_element_range(range);
+        }
+
+        if let Some(range) = desired_range
+            && !has_desired
+        {
+            self.textarea.add_element_range(range);
+        }
+    }
+
+    fn slash_command_element_range(&self, first_line: &str) -> Option<Range<usize>> {
+        let (name, _rest, _rest_offset) = parse_slash_name(first_line)?;
+        if name.contains('/') {
+            return None;
+        }
+        let element_end = 1 + name.len();
+        let has_space_after = first_line
+            .get(element_end..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(char::is_whitespace);
+        if !has_space_after {
+            return None;
+        }
+        if self.is_known_slash_name(name) {
+            Some(0..element_end)
+        } else {
+            None
+        }
+    }
+
+    fn is_known_slash_name(&self, name: &str) -> bool {
+        slash_commands::find_builtin_command(name).is_some()
+    }
+
+    /// If the cursor is currently within a slash command on the first line, extract the command
+    /// name and the rest of the line after it. Returns None if the cursor is outside a slash
+    /// command.
+    fn slash_command_under_cursor(first_line: &str, cursor: usize) -> Option<(&str, &str)> {
+        if !first_line.starts_with('/') {
+            return None;
+        }
+
+        let name_start = 1usize;
+        let name_end = first_line[name_start..]
+            .find(char::is_whitespace)
+            .map(|idx| name_start + idx)
+            .unwrap_or_else(|| first_line.len());
+
+        if cursor > name_end {
+            return None;
+        }
+
+        let name = &first_line[name_start..name_end];
+        let rest_start = first_line[name_end..]
+            .find(|c: char| !c.is_whitespace())
+            .map(|idx| name_end + idx)
+            .unwrap_or(name_end);
+        let rest = &first_line[rest_start..];
+
+        Some((name, rest))
+    }
+
+    /// Heuristic for whether the typed slash command looks like a valid prefix for any known
+    /// command. Empty names only count when there is no extra content after the '/'.
+    fn looks_like_slash_prefix(&self, name: &str, rest_after_name: &str) -> bool {
+        if name.is_empty() {
+            return rest_after_name.is_empty();
+        }
+
+        slash_commands::has_builtin_prefix(name)
+    }
+
+    /// Synchronize the slash command popup with the current text in the textarea.
+    fn sync_command_popup(&mut self, allow: bool) {
+        if !allow {
+            if matches!(self.active_popup, ActivePopup::Command(_)) {
+                self.active_popup = ActivePopup::None;
+            }
+            return;
+        }
+
+        let text = self.textarea.text();
+        let first_line_end = text.find('\n').unwrap_or(text.len());
+        let first_line = &text[..first_line_end];
+        let cursor = self.textarea.cursor();
+        let caret_on_first_line = cursor <= first_line_end;
+
+        let is_editing_slash_command_name = caret_on_first_line
+            && Self::slash_command_under_cursor(first_line, cursor)
+                .is_some_and(|(name, rest)| self.looks_like_slash_prefix(name, rest));
+
+        // If the cursor is currently positioned within an `@token`, prefer file search so users
+        // can insert file paths into their text.
+        if Self::current_at_token(&self.textarea).is_some() {
+            if matches!(self.active_popup, ActivePopup::Command(_)) {
+                self.active_popup = ActivePopup::None;
+            }
+            return;
+        }
+
+        match &mut self.active_popup {
+            ActivePopup::Command(popup) => {
+                if is_editing_slash_command_name {
+                    popup.on_composer_text_change(first_line.to_string());
+                } else {
+                    self.active_popup = ActivePopup::None;
+                }
+            }
+            _ => {
+                if is_editing_slash_command_name {
+                    let mut popup = CommandPopup::new();
+                    popup.on_composer_text_change(first_line.to_string());
+                    self.active_popup = ActivePopup::Command(popup);
+                }
+            }
         }
     }
 
@@ -1512,10 +1814,8 @@ impl ChatComposer {
             return;
         }
 
-        if !query.is_empty() {
-            self.app_event_tx
-                .send(AppEvent::StartFileSearch(query.clone()));
-        }
+        self.app_event_tx
+            .send(AppEvent::StartFileSearch(query.clone()));
 
         match &mut self.active_popup {
             ActivePopup::File(popup) => {
@@ -1536,7 +1836,7 @@ impl ChatComposer {
             }
         }
 
-        self.current_file_query = Some(query);
+        self.current_file_query = (!query.is_empty()).then_some(query);
         self.dismissed_file_popup_token = None;
     }
 
@@ -1576,6 +1876,7 @@ impl Renderable for ChatComposer {
             + 2
             + match &self.active_popup {
                 ActivePopup::None => footer_total_height,
+                ActivePopup::Command(popup) => popup.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
                 ActivePopup::Skill(c) => c.calculate_required_height(),
             }
@@ -1584,6 +1885,9 @@ impl Renderable for ChatComposer {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let [composer_rect, textarea_rect, popup_rect] = self.layout_areas(area);
         match &self.active_popup {
+            ActivePopup::Command(popup) => {
+                popup.render_ref(popup_rect, buf);
+            }
             ActivePopup::File(popup) => {
                 popup.render_ref(popup_rect, buf);
             }
@@ -2412,7 +2716,7 @@ End of payload.";
     }
 
     #[test]
-    fn slash_prefixed_text_submits_verbatim() {
+    fn unrecognized_slash_command_suppresses_submission() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -2428,10 +2732,83 @@ End of payload.";
         );
 
         composer.textarea.set_text_clearing_elements("/help");
+        composer.textarea.set_cursor("/help".len());
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(InputResult::Queued("/help".to_string()), result);
+        assert_eq!(InputResult::None, result);
+        assert_eq!(composer.textarea.text(), "/help");
+    }
+
+    #[test]
+    fn slash_popup_tab_completes_and_creates_atomic_element() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            true,
+        );
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+
+        assert!(matches!(composer.active_popup, ActivePopup::Command(_)));
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.textarea.text(), "/mention ");
+
+        let elements = composer.textarea.text_elements();
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].placeholder.as_deref(), Some("/mention"));
+    }
+
+    #[test]
+    fn slash_mention_dispatches_command() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            true,
+        );
+
+        for ch in ['/', 'm', 'e', 'n', 't', 'i', 'o', 'n'] {
+            let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::Command(SlashCommand::Mention));
+        assert!(composer.textarea.is_empty(), "composer should be cleared");
+    }
+
+    #[test]
+    fn command_popup_snapshot() {
+        snapshot_composer_state("command_popup", false, |composer| {
+            use crossterm::event::KeyCode;
+            use crossterm::event::KeyEvent;
+            use crossterm::event::KeyModifiers;
+
+            composer.set_disable_paste_burst(true);
+            let _ =
+                composer.handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        });
     }
 
     /// Behavior: a large explicit paste inserts a placeholder into the textarea, stores the full

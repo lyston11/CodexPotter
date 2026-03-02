@@ -10,15 +10,19 @@
 
 mod chat_composer;
 mod chat_composer_history;
+mod command_popup;
 mod file_search_popup;
 mod footer;
+mod fuzzy_match;
 mod list_selection_view;
 mod paste_burst;
 pub mod popup_consts;
+mod prompt_args;
 mod queued_user_messages;
 mod scroll_state;
 mod selection_popup_common;
 mod skill_popup;
+mod slash_commands;
 mod textarea;
 mod word_boundary;
 

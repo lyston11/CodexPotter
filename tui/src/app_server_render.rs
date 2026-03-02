@@ -298,7 +298,7 @@ pub async fn prompt_user_with_tui(
                                 prompt_history.record_submission(&history_text);
                                 return Ok(Some(text));
                             }
-                            _ => {}
+                            InputResult::Command(_) | InputResult::None => {}
                         }
                     }
                     TuiEvent::Paste(pasted) => {
@@ -1343,7 +1343,7 @@ impl RenderAppState {
                 self.refresh_queued_user_messages();
                 frame_requester.schedule_frame();
             }
-            InputResult::None => {}
+            InputResult::Command(_) | InputResult::None => {}
         }
     }
 
