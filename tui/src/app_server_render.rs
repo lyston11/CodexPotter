@@ -47,6 +47,7 @@ use crate::slash_command::SlashCommand;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
 use crate::streaming::commit_tick::run_commit_tick;
+use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
@@ -655,13 +656,16 @@ pub async fn run_render_only_with_tui_options_and_queue(
 struct RenderOnlyProcessor {
     app_event_tx: AppEventSender,
     stream: StreamController,
+    plan_stream: Option<PlanStreamController>,
     adaptive_chunking: AdaptiveChunkingPolicy,
     token_usage: TokenUsage,
     context_usage: TokenUsage,
     model_context_window: Option<i64>,
     thread_id: Option<codex_protocol::ThreadId>,
     cwd: PathBuf,
+    last_rendered_width: Option<u16>,
     saw_agent_delta: bool,
+    saw_plan_delta: bool,
     needs_final_message_separator: bool,
     had_work_activity: bool,
     last_separator_elapsed_secs: Option<u64>,
@@ -687,13 +691,16 @@ impl RenderOnlyProcessor {
         Self {
             app_event_tx,
             stream: StreamController::new(None),
+            plan_stream: None,
             adaptive_chunking: AdaptiveChunkingPolicy::default(),
             token_usage: TokenUsage::default(),
             context_usage: TokenUsage::default(),
             model_context_window: None,
             thread_id: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            last_rendered_width: None,
             saw_agent_delta: false,
+            saw_plan_delta: false,
             needs_final_message_separator: false,
             had_work_activity: false,
             last_separator_elapsed_secs: None,
@@ -710,9 +717,11 @@ impl RenderOnlyProcessor {
         if let Some(cell) = self.stream.finalize() {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
+        self.flush_plan_stream();
         self.adaptive_chunking.reset();
         self.app_event_tx.send(AppEvent::StopCommitAnimation);
         self.saw_agent_delta = false;
+        self.saw_plan_delta = false;
         self.needs_final_message_separator = true;
     }
 
@@ -730,6 +739,7 @@ impl RenderOnlyProcessor {
         let outcome = run_commit_tick(
             &mut self.adaptive_chunking,
             Some(&mut self.stream),
+            self.plan_stream.as_mut(),
             scope,
             Instant::now(),
         );
@@ -843,6 +853,10 @@ impl RenderOnlyProcessor {
                 ..
             }) => {
                 self.model_context_window = model_context_window;
+                self.adaptive_chunking.reset();
+                self.plan_stream = None;
+                self.saw_agent_delta = false;
+                self.saw_plan_delta = false;
             }
             EventMsg::AgentMessageDelta(ev) => {
                 self.flush_pending_exploring_cell();
@@ -852,6 +866,27 @@ impl RenderOnlyProcessor {
                 }
                 self.saw_agent_delta = true;
                 if self.stream.push(&ev.delta) {
+                    self.app_event_tx.send(AppEvent::StartCommitAnimation);
+                    self.run_commit_tick_with_scope(CommitTickScope::CatchUpOnly);
+                }
+            }
+            EventMsg::PlanDelta(ev) => {
+                self.flush_pending_exploring_cell();
+                self.flush_pending_success_ran_cell();
+                if !self.saw_agent_delta && !self.saw_plan_delta {
+                    self.maybe_emit_final_message_separator();
+                }
+                self.saw_plan_delta = true;
+
+                if self.plan_stream.is_none() {
+                    let width = self
+                        .last_rendered_width
+                        .map(|width| usize::from(width.saturating_sub(4)));
+                    self.plan_stream = Some(PlanStreamController::new(width));
+                }
+                if let Some(controller) = self.plan_stream.as_mut()
+                    && controller.push(&ev.delta)
+                {
                     self.app_event_tx.send(AppEvent::StartCommitAnimation);
                     self.run_commit_tick_with_scope(CommitTickScope::CatchUpOnly);
                 }
@@ -872,6 +907,7 @@ impl RenderOnlyProcessor {
                 if let Some(cell) = self.stream.finalize() {
                     self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
                 }
+                self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 if let Some(done) = self.pending_potter_session_succeeded.take() {
                     self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
@@ -891,6 +927,7 @@ impl RenderOnlyProcessor {
                 if let Some(cell) = self.stream.finalize() {
                     self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
                 }
+                self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
             }
             EventMsg::Warning(ev) => {
@@ -946,6 +983,7 @@ impl RenderOnlyProcessor {
                 if let Some(cell) = self.stream.finalize() {
                     self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
                 }
+                self.flush_plan_stream();
 
                 let aggregated_output = if !ev.aggregated_output.is_empty() {
                     ev.aggregated_output
@@ -1039,8 +1077,10 @@ impl RenderOnlyProcessor {
                 if let Some(cell) = self.stream.finalize() {
                     self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
                 }
+                self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 self.saw_agent_delta = false;
+                self.saw_plan_delta = false;
                 self.needs_final_message_separator = true;
                 self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                     history_cell::new_error_event(ev.message),
@@ -1057,6 +1097,7 @@ impl RenderOnlyProcessor {
         if let Some(cell) = self.stream.finalize() {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
+        self.flush_plan_stream();
         self.flush_pending_exploring_cell();
         self.flush_pending_success_ran_cell();
         self.needs_final_message_separator = true;
@@ -1081,6 +1122,15 @@ impl RenderOnlyProcessor {
         self.needs_final_message_separator = true;
         self.app_event_tx
             .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+    }
+
+    fn flush_plan_stream(&mut self) {
+        let Some(mut controller) = self.plan_stream.take() else {
+            return;
+        };
+        if let Some(cell) = controller.finalize() {
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+        }
     }
 
     fn can_coalesce_success_ran_cell(cell: &ExecCell) -> bool {
@@ -1510,6 +1560,7 @@ impl RenderAppState {
 
     fn draw(&mut self, tui: &mut Tui) -> anyhow::Result<()> {
         let width = tui.terminal.last_known_screen_size.width;
+        self.processor.last_rendered_width = Some(width);
         let pane_height = self.bottom_pane.desired_height(width).max(1);
         let transient_lines = self.build_transient_lines(width);
         let transient_height = u16::try_from(transient_lines.len()).unwrap_or(u16::MAX);
@@ -1903,6 +1954,7 @@ mod tests {
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::PatchApplyEndEvent;
+    use codex_protocol::protocol::PlanDeltaEvent;
     use codex_protocol::protocol::SessionConfiguredEvent;
     use codex_protocol::protocol::StreamErrorEvent;
     use codex_protocol::protocol::TokenCountEvent;
@@ -3225,6 +3277,54 @@ mod tests {
 
         let cells = drain_history_cell_strings(&mut rx, width);
         pretty_assertions::assert_eq!(cells, vec![vec!["• hello".to_string()]]);
+    }
+
+    #[test]
+    fn render_only_streaming_plan_delta_renders_proposed_plan_block() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_render_only_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "plan-1".into(),
+            msg: EventMsg::PlanDelta(PlanDeltaEvent {
+                delta: "- first\n".to_string(),
+            }),
+        });
+        proc.on_commit_tick();
+
+        let cells = drain_history_cell_strings(&mut rx, width);
+        pretty_assertions::assert_eq!(
+            cells,
+            vec![vec![
+                "• Proposed Plan".to_string(),
+                " ".to_string(),
+                "   ".to_string(),
+                "  - first".to_string(),
+            ]]
+        );
+
+        proc.handle_codex_event(Event {
+            id: "plan-2".into(),
+            msg: EventMsg::PlanDelta(PlanDeltaEvent {
+                delta: "- second\n".to_string(),
+            }),
+        });
+        proc.on_commit_tick();
+
+        let cells = drain_history_cell_strings(&mut rx, width);
+        pretty_assertions::assert_eq!(cells, vec![vec!["  - second".to_string()]]);
+
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx, width);
+        pretty_assertions::assert_eq!(cells, vec![vec!["   ".to_string()]]);
     }
 
     #[tokio::test]

@@ -1,9 +1,14 @@
 //! Orchestrates commit-tick drains across streaming controllers.
 //!
 //! This module bridges queue-based chunking policy (`chunking`) with the concrete stream
-//! controller (`controller`). Callers provide the current controller and tick scope; the module
+//! controllers (`controller`). Callers provide the current controllers and tick scope; the module
 //! computes queue pressure, selects a drain plan, applies it, and returns emitted history cells.
+//!
+//! The module preserves ordering by draining only from controller queue heads. It does not schedule
+//! ticks and it does not mutate UI state directly; callers remain responsible for animation events
+//! and history insertion side effects.
 
+use std::time::Duration;
 use std::time::Instant;
 
 use crate::history_cell::HistoryCell;
@@ -13,6 +18,7 @@ use super::chunking::ChunkingDecision;
 use super::chunking::ChunkingMode;
 use super::chunking::DrainPlan;
 use super::chunking::QueueSnapshot;
+use super::controller::PlanStreamController;
 use super::controller::StreamController;
 
 /// Describes whether a commit tick may run in all modes or only in catch-up mode.
@@ -52,28 +58,42 @@ impl Default for CommitTickOutput {
 pub fn run_commit_tick(
     policy: &mut AdaptiveChunkingPolicy,
     stream_controller: Option<&mut StreamController>,
+    plan_stream_controller: Option<&mut PlanStreamController>,
     scope: CommitTickScope,
     now: Instant,
 ) -> CommitTickOutput {
-    let snapshot = stream_queue_snapshot(stream_controller.as_deref(), now);
+    let snapshot = stream_queue_snapshot(
+        stream_controller.as_deref(),
+        plan_stream_controller.as_deref(),
+        now,
+    );
     let decision = resolve_chunking_plan(policy, snapshot, now);
     if scope == CommitTickScope::CatchUpOnly && decision.mode != ChunkingMode::CatchUp {
         return CommitTickOutput::default();
     }
 
-    apply_commit_tick_plan(decision.drain_plan, stream_controller)
+    apply_commit_tick_plan(
+        decision.drain_plan,
+        stream_controller,
+        plan_stream_controller,
+    )
 }
 
 fn stream_queue_snapshot(
     stream_controller: Option<&StreamController>,
+    plan_stream_controller: Option<&PlanStreamController>,
     now: Instant,
 ) -> QueueSnapshot {
     let mut queued_lines = 0usize;
-    let mut oldest_age = None;
+    let mut oldest_age: Option<Duration> = None;
 
     if let Some(controller) = stream_controller {
         queued_lines += controller.queued_lines();
-        oldest_age = controller.oldest_queued_age(now);
+        oldest_age = max_duration(oldest_age, controller.oldest_queued_age(now));
+    }
+    if let Some(controller) = plan_stream_controller {
+        queued_lines += controller.queued_lines();
+        oldest_age = max_duration(oldest_age, controller.oldest_queued_age(now));
     }
 
     QueueSnapshot {
@@ -105,12 +125,21 @@ fn resolve_chunking_plan(
 fn apply_commit_tick_plan(
     drain_plan: DrainPlan,
     stream_controller: Option<&mut StreamController>,
+    plan_stream_controller: Option<&mut PlanStreamController>,
 ) -> CommitTickOutput {
     let mut output = CommitTickOutput::default();
 
     if let Some(controller) = stream_controller {
         output.has_controller = true;
         let (cell, is_idle) = drain_stream_controller(controller, drain_plan);
+        if let Some(cell) = cell {
+            output.cells.push(cell);
+        }
+        output.all_idle &= is_idle;
+    }
+    if let Some(controller) = plan_stream_controller {
+        output.has_controller = true;
+        let (cell, is_idle) = drain_plan_stream_controller(controller, drain_plan);
         if let Some(cell) = cell {
             output.cells.push(cell);
         }
@@ -127,5 +156,24 @@ fn drain_stream_controller(
     match drain_plan {
         DrainPlan::Single => controller.on_commit_tick(),
         DrainPlan::Batch(max_lines) => controller.on_commit_tick_batch(max_lines),
+    }
+}
+
+fn drain_plan_stream_controller(
+    controller: &mut PlanStreamController,
+    drain_plan: DrainPlan,
+) -> (Option<Box<dyn HistoryCell>>, bool) {
+    match drain_plan {
+        DrainPlan::Single => controller.on_commit_tick(),
+        DrainPlan::Batch(max_lines) => controller.on_commit_tick_batch(max_lines),
+    }
+}
+
+fn max_duration(lhs: Option<Duration>, rhs: Option<Duration>) -> Option<Duration> {
+    match (lhs, rhs) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
     }
 }

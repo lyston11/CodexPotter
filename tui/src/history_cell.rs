@@ -407,10 +407,36 @@ pub fn new_error_event(message: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
+pub fn new_proposed_plan_stream(
+    lines: Vec<Line<'static>>,
+    is_stream_continuation: bool,
+) -> ProposedPlanStreamCell {
+    ProposedPlanStreamCell {
+        lines,
+        is_stream_continuation,
+    }
+}
+
 /// Render a user‑friendly plan update styled like a checkbox todo list.
 pub fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
     let UpdatePlanArgs { explanation, plan } = update;
     PlanUpdateCell { explanation, plan }
+}
+
+#[derive(Debug)]
+pub struct ProposedPlanStreamCell {
+    lines: Vec<Line<'static>>,
+    is_stream_continuation: bool,
+}
+
+impl HistoryCell for ProposedPlanStreamCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        self.lines.clone()
+    }
+
+    fn is_stream_continuation(&self) -> bool {
+        self.is_stream_continuation
+    }
 }
 
 #[derive(Debug)]

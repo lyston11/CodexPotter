@@ -98,6 +98,9 @@ pub enum EventMsg {
     /// Agent text output delta message
     AgentMessageDelta(AgentMessageDeltaEvent),
 
+    /// Streaming proposed plan text from a `<proposed_plan>` block.
+    PlanDelta(PlanDeltaEvent),
+
     /// Reasoning event from agent.
     AgentReasoning(AgentReasoningEvent),
 
@@ -558,6 +561,11 @@ pub struct AgentMessageEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentMessageDeltaEvent {
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PlanDeltaEvent {
     pub delta: String,
 }
 

@@ -20,7 +20,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 
 ### Text Box
 
-- No `/` command picker popup.
+- Slash command picker exists but only supports `/theme`, `/exit`, `/mention`.
 - No `?` shortcuts overlay (treat `?` as a literal character).
 - `Tab` inserts a literal tab character (`\t`) into the composer.
 - Supports `$` skills picker.
@@ -51,10 +51,7 @@ Behavior related
 
 - A customized banner on startup
 - Additionally shows gitignore startup hint
-- No syntax theme picker/override (and no custom `.tmTheme` loading): syntax highlighting always uses the adaptive default (Catppuccin Latte/Mocha based on terminal background).
-- Diff rendering is not syntax-theme-aware (does not read TextMate diff scopes from the active syntax theme).
 - Multi-agent collab is transcript-only: no agent thread picker UI (no per-agent transcript view).
-- No streaming "Proposed Plan" block (no plan stream controller); plan updates render only via `EventMsg::PlanUpdate`.
 - Resume picker UI exists for `codex-potter resume` (no path); it uses a `User Request` column (CodexPotter projects) instead of upstream `Conversation`.
 - Auto retry on errors (successful recoveries are transient-only; unrecoverable errors are surfaced).
 - Customized update notification / self-update (and on-disk state under `~/.codexpotter/`).
@@ -63,7 +60,7 @@ Behavior related
 Engineering related:
 
 - Unneeded logics and codes in codex TUI are intentionally removed to keep code tidy and focus (codex-potter's TUI is a _subset_ of codex's TUI):
-  - /command picker, `?` shortcuts overlay, /model selection
+  - `?` shortcuts overlay, /model selection, most slash commands
   - Rewind (esc)
   - Approval flows
   - Other interactive features not needed
