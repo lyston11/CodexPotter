@@ -319,6 +319,7 @@ async fn run_potter_round_inner(
             codex_home: context.codex_compat_home.clone(),
             thread_cwd: context.thread_cwd.clone(),
             resume_thread_id,
+            event_mode: crate::app_server_backend::AppServerEventMode::Interactive,
         },
         op_rx,
         backend_event_tx,

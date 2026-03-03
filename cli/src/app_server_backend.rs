@@ -70,6 +70,7 @@ struct StreamRecoveryContext {
     has_sent_turn_start: bool,
     has_finished_round: bool,
     last_turn_start_was_recovery_continue: bool,
+    event_mode: AppServerEventMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +99,18 @@ impl AppServerLaunchConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppServerEventMode {
+    /// Optimized for interactive rendering: suppresses UI-irrelevant events (for example rollback
+    /// lifecycle notifications and empty turn completions during stream recovery).
+    #[default]
+    Interactive,
+    /// Optimized for `exec --json`: forwards the raw event stream so the JSONL translator can
+    /// enforce closure invariants (`turn.*` / `potter.round.*`) without depending on interactive
+    /// suppression rules.
+    ExecJson,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerBackendConfig {
     pub codex_bin: String,
@@ -106,6 +119,7 @@ pub struct AppServerBackendConfig {
     pub codex_home: Option<PathBuf>,
     pub thread_cwd: Option<PathBuf>,
     pub resume_thread_id: Option<ThreadId>,
+    pub event_mode: AppServerEventMode,
 }
 
 pub async fn run_app_server_backend(
@@ -147,6 +161,7 @@ async fn run_app_server_backend_inner(
         codex_home,
         thread_cwd,
         resume_thread_id,
+        event_mode,
     } = config;
     let (mut child, stdin, stdout, stderr) =
         spawn_app_server(&codex_bin, launch, codex_home.as_deref()).await?;
@@ -199,6 +214,7 @@ async fn run_app_server_backend_inner(
         has_sent_turn_start: false,
         has_finished_round: false,
         last_turn_start_was_recovery_continue: false,
+        event_mode,
     };
 
     let result = async {
@@ -695,28 +711,36 @@ fn handle_codex_event(
     // accumulate redundant automatic `Continue` turns in the thread history. The app-server
     // forwards raw `codex/event/*` notifications for every core event, including rollback
     // lifecycle events that are UI-irrelevant (or even confusing) for CodexPotter users.
-    if matches!(event.msg, EventMsg::ThreadRolledBack(_)) {
+    if matches!(&event.msg, EventMsg::ThreadRolledBack(_))
+        && recovery.event_mode == AppServerEventMode::Interactive
+    {
         return;
     }
 
     let event_id = event.id.clone();
     let mut should_forward = true;
     let mut round_outcome: Option<PotterRoundOutcome> = None;
+    let mut pre_forward_events: Vec<EventMsg> = Vec::new();
+    let mut post_forward_events: Vec<EventMsg> = Vec::new();
 
     let was_in_retry_streak = recovery.stream_recovery.is_in_retry_streak();
     let should_suppress_turn_complete = match &event.msg {
         EventMsg::TurnComplete(ev) => recovery.stream_recovery.should_suppress_turn_complete(ev),
         _ => false,
     };
+    let turn_complete_counts_for_round_completion =
+        matches!(&event.msg, EventMsg::TurnComplete(_)) && !should_suppress_turn_complete;
+    let mut error_is_recoverable = false;
 
     recovery.stream_recovery.observe_event(&event.msg);
 
     if was_in_retry_streak && !recovery.stream_recovery.is_in_retry_streak() {
         recovery.pending_continue_retry = None;
-        let _ = event_tx.send(Event {
-            id: event.id.clone(),
-            msg: EventMsg::PotterStreamRecoveryRecovered,
-        });
+        let msg = EventMsg::PotterStreamRecoveryRecovered;
+        match recovery.event_mode {
+            AppServerEventMode::Interactive => pre_forward_events.push(msg),
+            AppServerEventMode::ExecJson => post_forward_events.push(msg),
+        }
     }
 
     if let EventMsg::Error(err) = &event.msg
@@ -727,34 +751,40 @@ fn handle_codex_event(
         {
             // A retryable error was already observed for the current turn. Wait for TurnComplete
             // and then issue the planned automatic `Continue`.
-            should_forward = false;
+            error_is_recoverable = true;
+            if recovery.event_mode == AppServerEventMode::Interactive {
+                should_forward = false;
+            }
         } else if recovery.pending_continue_retry.is_none()
             && let Some(decision) = recovery.stream_recovery.plan_retry(err)
         {
             match decision {
                 ContinueRetryDecision::Retry(plan) => {
-                    let _ = event_tx.send(Event {
-                        id: event.id.clone(),
-                        msg: EventMsg::PotterStreamRecoveryUpdate {
-                            attempt: plan.attempt,
-                            max_attempts: plan.max_attempts,
-                            error_message: err.message.clone(),
-                        },
-                    });
+                    error_is_recoverable = true;
+                    let msg = EventMsg::PotterStreamRecoveryUpdate {
+                        attempt: plan.attempt,
+                        max_attempts: plan.max_attempts,
+                        error_message: err.message.clone(),
+                    };
+                    match recovery.event_mode {
+                        AppServerEventMode::Interactive => pre_forward_events.push(msg),
+                        AppServerEventMode::ExecJson => post_forward_events.push(msg),
+                    }
                     recovery.pending_continue_retry = Some(plan);
                 }
                 ContinueRetryDecision::GiveUp {
                     attempts,
                     max_attempts,
                 } => {
-                    let _ = event_tx.send(Event {
-                        id: event.id.clone(),
-                        msg: EventMsg::PotterStreamRecoveryGaveUp {
-                            error_message: err.message.clone(),
-                            attempts,
-                            max_attempts,
-                        },
-                    });
+                    let msg = EventMsg::PotterStreamRecoveryGaveUp {
+                        error_message: err.message.clone(),
+                        attempts,
+                        max_attempts,
+                    };
+                    match recovery.event_mode {
+                        AppServerEventMode::Interactive => pre_forward_events.push(msg),
+                        AppServerEventMode::ExecJson => post_forward_events.push(msg),
+                    }
                     round_outcome = Some(PotterRoundOutcome::TaskFailed {
                         message: format!(
                             "{} (stream recovery gave up after {attempts}/{max_attempts} retries)",
@@ -764,15 +794,17 @@ fn handle_codex_event(
                 }
             }
 
-            should_forward = false;
+            if recovery.event_mode == AppServerEventMode::Interactive {
+                should_forward = false;
+            }
         }
     }
 
-    if matches!(event.msg, EventMsg::TurnAborted(_)) {
+    if matches!(&event.msg, EventMsg::TurnAborted(_)) {
         recovery.pending_continue_retry = None;
     }
 
-    if matches!(event.msg, EventMsg::TurnComplete(_))
+    if matches!(&event.msg, EventMsg::TurnComplete(_))
         && let Some(plan) = recovery.pending_continue_retry.take()
     {
         let tx = recovery.recovery_action_tx.clone();
@@ -789,13 +821,13 @@ fn handle_codex_event(
         }
     }
 
-    if should_suppress_turn_complete {
+    if should_suppress_turn_complete && recovery.event_mode == AppServerEventMode::Interactive {
         should_forward = false;
     }
 
     if round_outcome.is_none() {
         round_outcome = match &event.msg {
-            EventMsg::TurnComplete(_) if !should_suppress_turn_complete => {
+            EventMsg::TurnComplete(_) if turn_complete_counts_for_round_completion => {
                 Some(PotterRoundOutcome::Completed)
             }
             EventMsg::TurnAborted(ev)
@@ -806,15 +838,29 @@ fn handle_codex_event(
             {
                 Some(PotterRoundOutcome::UserRequested)
             }
-            EventMsg::Error(err) if should_forward => Some(PotterRoundOutcome::Fatal {
+            EventMsg::Error(err) if should_forward && !error_is_recoverable => {
+                Some(PotterRoundOutcome::Fatal {
                 message: err.message.clone(),
-            }),
+                })
+            }
             _ => None,
         };
     }
 
+    for msg in pre_forward_events {
+        let _ = event_tx.send(Event {
+            id: event_id.clone(),
+            msg,
+        });
+    }
     if should_forward {
         let _ = event_tx.send(event);
+    }
+    for msg in post_forward_events {
+        let _ = event_tx.send(Event {
+            id: event_id.clone(),
+            msg,
+        });
     }
 
     if !recovery.has_finished_round
@@ -1068,6 +1114,7 @@ mod stream_recovery_tests {
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
         };
 
         handle_codex_event(
@@ -1160,6 +1207,7 @@ mod stream_recovery_tests {
             has_sent_turn_start: false,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
         };
 
         handle_codex_event(
@@ -1195,6 +1243,7 @@ mod stream_recovery_tests {
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
         };
 
         let err = retryable_error_event();
@@ -1255,6 +1304,7 @@ mod stream_recovery_tests {
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
         };
 
         handle_codex_event(
@@ -1297,6 +1347,7 @@ mod stream_recovery_tests {
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
         };
 
         handle_codex_event(
@@ -1317,6 +1368,127 @@ mod stream_recovery_tests {
             "expected no recovery action from ThreadRolledBack"
         );
         assert!(!recovery.has_finished_round, "round should continue");
+    }
+
+    #[test]
+    fn exec_json_forwards_thread_rolled_back_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx: action_tx,
+            pending_continue_retry: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::ExecJson,
+        };
+
+        handle_codex_event(
+            Event {
+                id: "rolled-back".into(),
+                msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+            },
+            &mut recovery,
+            &event_tx,
+        );
+
+        let forwarded = event_rx.try_recv().expect("expected forwarded rollback event");
+        assert!(matches!(forwarded.msg, EventMsg::ThreadRolledBack(_)));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no additional events"
+        );
+        assert!(
+            action_rx.try_recv().is_err(),
+            "expected no recovery action from ThreadRolledBack"
+        );
+        assert!(!recovery.has_finished_round, "round should continue");
+    }
+
+    #[test]
+    fn exec_json_forwards_recovery_error_and_empty_turn_complete_without_finishing_round() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx: action_tx,
+            pending_continue_retry: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::ExecJson,
+        };
+
+        handle_codex_event(
+            Event {
+                id: "err".into(),
+                msg: EventMsg::Error(retryable_error_event()),
+            },
+            &mut recovery,
+            &event_tx,
+        );
+
+        let forwarded_error = event_rx.try_recv().expect("expected forwarded Error");
+        assert!(matches!(forwarded_error.msg, EventMsg::Error(_)));
+
+        let update = event_rx
+            .try_recv()
+            .expect("expected PotterStreamRecoveryUpdate");
+        assert!(matches!(
+            update.msg,
+            EventMsg::PotterStreamRecoveryUpdate { .. }
+        ));
+
+        handle_codex_event(
+            Event {
+                id: "turn-complete".into(),
+                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-1".to_string(),
+                    last_agent_message: None,
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        );
+
+        let forwarded_turn_complete = event_rx.try_recv().expect("expected forwarded TurnComplete");
+        assert!(matches!(
+            forwarded_turn_complete.msg,
+            EventMsg::TurnComplete(_)
+        ));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected empty TurnComplete not to finish the round"
+        );
+        assert!(
+            matches!(
+                action_rx.try_recv().expect("expected RetryContinue action"),
+                RecoveryAction::RetryContinue { attempt: 1 }
+            ),
+            "expected retry attempt 1"
+        );
+        assert!(!recovery.has_finished_round, "round should still be running");
+
+        handle_codex_event(
+            Event {
+                id: "activity".into(),
+                msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                    delta: "hello".to_string(),
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        );
+
+        let activity = event_rx.try_recv().expect("expected forwarded activity");
+        assert!(matches!(activity.msg, EventMsg::AgentMessageDelta(_)));
+
+        let recovered = event_rx.try_recv().expect("expected recovered marker");
+        assert!(matches!(
+            recovered.msg,
+            EventMsg::PotterStreamRecoveryRecovered
+        ));
     }
 }
 
@@ -1404,6 +1576,7 @@ done
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
@@ -1580,6 +1753,7 @@ done
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
@@ -1731,6 +1905,7 @@ done
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
@@ -1879,6 +2054,7 @@ touch "$MARKER"
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
@@ -1979,6 +2155,7 @@ touch "$MARKER"
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
@@ -2064,6 +2241,7 @@ touch "$MARKER"
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
@@ -2158,6 +2336,7 @@ touch "$MARKER"
                     codex_home: Some(codex_home),
                     thread_cwd: None,
                     resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
                 },
                 &mut op_rx,
                 &event_tx,
