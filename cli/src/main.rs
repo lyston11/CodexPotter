@@ -18,7 +18,6 @@ mod resume_picker_index;
 mod round_runner;
 mod startup;
 
-use std::io::Write as _;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -118,18 +117,6 @@ fn parse_cli() -> Cli {
     Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
 }
 
-fn write_exec_json_preflight_error(message: &str) {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    let event = crate::exec_jsonl::ExecJsonlEvent::Error(crate::exec_jsonl::ThreadErrorEvent {
-        message: message.to_string(),
-    });
-
-    if serde_json::to_writer(&mut out, &event).is_ok() && out.write_all(b"\n").is_ok() {
-        let _ = out.flush();
-    }
-}
-
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
@@ -145,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
             Err(err) => {
                 let message = format!("resolve current directory: {err}");
                 eprintln!("error: {message}");
-                write_exec_json_preflight_error(&message);
+                let _ = crate::exec::write_exec_json_preflight_error(&message);
                 std::process::exit(1);
             }
         };
@@ -154,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(resolved) => resolved.command_for_spawn,
             Err(err) => {
                 eprint!("{}", err.render_ansi());
-                write_exec_json_preflight_error(&err.to_string());
+                let _ = crate::exec::write_exec_json_preflight_error(&err.to_string());
                 std::process::exit(1);
             }
         };

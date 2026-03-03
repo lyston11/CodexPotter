@@ -21,14 +21,14 @@ pub async fn run_exec_json(
         None => match read_prompt_from_stdin() {
             Ok(prompt) => prompt,
             Err(err) => {
-                let _ = write_preflight_error(&format!("{err:#}"));
+                let _ = write_exec_json_preflight_error(&format!("{err:#}"));
                 return 1;
             }
         },
     };
 
     if prompt.trim().is_empty() {
-        let _ = write_preflight_error("prompt is empty");
+        let _ = write_exec_json_preflight_error("prompt is empty");
         return 1;
     }
 
@@ -36,7 +36,7 @@ pub async fn run_exec_json(
     let init = match crate::project::init_project(workdir, &prompt, now) {
         Ok(init) => init,
         Err(err) => {
-            let _ = write_preflight_error(&format!("{err:#}"));
+            let _ = write_exec_json_preflight_error(&format!("{err:#}"));
             return 1;
         }
     };
@@ -46,7 +46,9 @@ pub async fn run_exec_json(
     let project_dir_rel = match init.progress_file_rel.parent() {
         Some(dir) => dir.to_path_buf(),
         None => {
-            let _ = write_preflight_error("failed to derive project_dir from progress file path");
+            let _ = write_exec_json_preflight_error(
+                "failed to derive project_dir from progress file path",
+            );
             return 1;
         }
     };
@@ -56,7 +58,7 @@ pub async fn run_exec_json(
     let git_branch = match crate::project::progress_file_git_branch(&progress_file_abs) {
         Ok(branch) => branch,
         Err(err) => {
-            let _ = write_preflight_error(&format!("{err:#}"));
+            let _ = write_exec_json_preflight_error(&format!("{err:#}"));
             return 1;
         }
     };
@@ -208,7 +210,8 @@ fn read_prompt_from_stdin() -> anyhow::Result<String> {
     Ok(buf)
 }
 
-fn write_preflight_error(message: &str) -> anyhow::Result<()> {
+/// Emit a single `error` JSONL event to stdout for `exec --json` preflight failures.
+pub fn write_exec_json_preflight_error(message: &str) -> anyhow::Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     write_jsonl_event(
