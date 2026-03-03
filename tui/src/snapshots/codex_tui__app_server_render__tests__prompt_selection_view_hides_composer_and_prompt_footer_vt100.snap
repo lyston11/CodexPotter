@@ -1,0 +1,13 @@
+---
+source: tui/src/app_server_render.rs
+expression: terminal.backend().vt100().screen().contents()
+---
+
+  Select Syntax Theme
+  Move up/down to live preview themes
+
+  Type to filter themes...
+› base16 (current)
+  catppuccin-latte
+
+  Press enter to confirm or esc to go back

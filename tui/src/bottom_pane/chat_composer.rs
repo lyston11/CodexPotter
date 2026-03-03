@@ -264,6 +264,14 @@ impl ChatComposer {
     }
 
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
+        if matches!(&self.active_popup, ActivePopup::Selection(_)) {
+            return [
+                Rect::new(area.x, area.y, area.width, 0),
+                Rect::new(area.x, area.y, 0, 0),
+                area,
+            ];
+        }
+
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
@@ -1905,12 +1913,20 @@ impl Renderable for ChatComposer {
             return None;
         }
 
+        if matches!(&self.active_popup, ActivePopup::Selection(_)) {
+            return None;
+        }
+
         let [_, textarea_rect, _] = self.layout_areas(area);
         let state = *self.textarea_state.borrow();
         self.textarea.cursor_pos_with_state(textarea_rect, state)
     }
 
     fn desired_height(&self, width: u16) -> u16 {
+        if let ActivePopup::Selection(view) = &self.active_popup {
+            return view.desired_height(width);
+        }
+
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
@@ -1926,11 +1942,16 @@ impl Renderable for ChatComposer {
                 ActivePopup::Command(popup) => popup.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
                 ActivePopup::Skill(c) => c.calculate_required_height(),
-                ActivePopup::Selection(view) => view.desired_height(width),
+                ActivePopup::Selection(_) => unreachable!("handled above"),
             }
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        if let ActivePopup::Selection(view) = &self.active_popup {
+            view.render(area, buf);
+            return;
+        }
+
         let [composer_rect, textarea_rect, popup_rect] = self.layout_areas(area);
         match &self.active_popup {
             ActivePopup::Command(popup) => {
@@ -1942,9 +1963,7 @@ impl Renderable for ChatComposer {
             ActivePopup::Skill(popup) => {
                 popup.render_ref(popup_rect, buf);
             }
-            ActivePopup::Selection(view) => {
-                view.render(popup_rect, buf);
-            }
+            ActivePopup::Selection(_) => unreachable!("handled above"),
             ActivePopup::None => {
                 let footer_props = self.footer_props();
                 let custom_height = self.custom_footer_height();

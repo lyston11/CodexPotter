@@ -4442,6 +4442,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_selection_view_hides_composer_and_prompt_footer_vt100() {
+        let width: u16 = 80;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx,
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
+            PathBuf::from("project"),
+            Some("main".to_string()),
+        ));
+
+        bottom_pane
+            .composer_mut()
+            .show_selection_view(crate::bottom_pane::SelectionViewParams {
+                title: Some("Select Syntax Theme".to_string()),
+                subtitle: Some("Move up/down to live preview themes".to_string()),
+                footer_hint: Some(crate::bottom_pane::popup_consts::standard_popup_hint_line()),
+                items: vec![
+                    crate::bottom_pane::SelectionItem {
+                        name: "base16".to_string(),
+                        is_current: true,
+                        dismiss_on_select: true,
+                        ..Default::default()
+                    },
+                    crate::bottom_pane::SelectionItem {
+                        name: "catppuccin-latte".to_string(),
+                        dismiss_on_select: true,
+                        ..Default::default()
+                    },
+                ],
+                is_searchable: true,
+                search_placeholder: Some("Type to filter themes...".to_string()),
+                ..Default::default()
+            });
+
+        let height = bottom_pane.desired_height(width).max(1);
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("create terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ratatui::widgets::Clear.render(area, frame.buffer_mut());
+                render_runner_viewport(area, frame.buffer_mut(), &bottom_pane, Vec::new());
+            })
+            .expect("draw");
+
+        assert_snapshot!(
+            "prompt_selection_view_hides_composer_and_prompt_footer_vt100",
+            terminal.backend().vt100().screen().contents()
+        );
+    }
+
     fn render_prompt_footer_line(override_mode: Option<PromptFooterOverride>) -> String {
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = ratatui::buffer::Buffer::empty(area);

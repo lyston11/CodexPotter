@@ -316,11 +316,12 @@ impl Renderable for BottomPane {
 
         const PROMPT_FOOTER_HEIGHT: u16 = 1;
         let width = area.width;
-        let prompt_footer_height = if area.height > PROMPT_FOOTER_HEIGHT {
-            PROMPT_FOOTER_HEIGHT
-        } else {
-            0
-        };
+        let prompt_footer_height =
+            if !self.composer.selection_popup_visible() && area.height > PROMPT_FOOTER_HEIGHT {
+                PROMPT_FOOTER_HEIGHT
+            } else {
+                0
+            };
 
         let composer_height = self
             .composer
@@ -399,17 +400,22 @@ impl Renderable for BottomPane {
             .unwrap_or(0)
             + self.queued_user_messages.desired_height(width)
             + self.composer.desired_height(width)
-            + 1
+            + if self.composer.selection_popup_visible() {
+                0
+            } else {
+                1
+            }
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         const PROMPT_FOOTER_HEIGHT: u16 = 1;
         let width = area.width;
-        let prompt_footer_height = if area.height > PROMPT_FOOTER_HEIGHT {
-            PROMPT_FOOTER_HEIGHT
-        } else {
-            0
-        };
+        let prompt_footer_height =
+            if !self.composer.selection_popup_visible() && area.height > PROMPT_FOOTER_HEIGHT {
+                PROMPT_FOOTER_HEIGHT
+            } else {
+                0
+            };
         let composer_height = self
             .composer
             .desired_height(width)
