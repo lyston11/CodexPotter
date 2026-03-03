@@ -357,6 +357,16 @@ struct RunningCollabToolCall {
     item_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct CollabToolCallCompletion {
+    tool: CollabTool,
+    sender_thread_id: String,
+    receiver_thread_ids: Vec<String>,
+    prompt: Option<String>,
+    agents_states: HashMap<String, CollabAgentState>,
+    status: CollabToolCallStatus,
+}
+
 #[derive(Debug, Default)]
 pub struct ExecJsonlEventProcessor {
     workdir: Option<PathBuf>,
@@ -830,17 +840,22 @@ impl ExecJsonlEventProcessor {
     fn complete_collab_tool_call(
         &mut self,
         call_id: &str,
-        tool: CollabTool,
-        sender_thread_id: String,
-        receiver_thread_ids: Vec<String>,
-        prompt: Option<String>,
-        agents_states: HashMap<String, CollabAgentState>,
-        status: CollabToolCallStatus,
+        completion: CollabToolCallCompletion,
     ) -> Vec<ExecJsonlEvent> {
-        let (tool, item_id) = match self.running_collab_tool_calls.remove(call_id) {
-            Some(running) => (running.tool, running.item_id),
-            None => (tool, self.next_item_id()),
-        };
+        let CollabToolCallCompletion {
+            tool,
+            sender_thread_id,
+            receiver_thread_ids,
+            prompt,
+            agents_states,
+            status,
+        } = completion;
+
+        let (tool, item_id) = self
+            .running_collab_tool_calls
+            .remove(call_id)
+            .map(|running| (running.tool, running.item_id))
+            .unwrap_or_else(|| (tool, self.next_item_id()));
 
         vec![ExecJsonlEvent::ItemCompleted(ItemCompletedEvent {
             item: ThreadItem {
@@ -891,12 +906,14 @@ impl ExecJsonlEventProcessor {
 
         self.complete_collab_tool_call(
             &ev.call_id,
-            CollabTool::SpawnAgent,
-            ev.sender_thread_id.to_string(),
-            receiver_thread_ids,
-            Some(ev.prompt.clone()),
-            agents_states,
-            status,
+            CollabToolCallCompletion {
+                tool: CollabTool::SpawnAgent,
+                sender_thread_id: ev.sender_thread_id.to_string(),
+                receiver_thread_ids,
+                prompt: Some(ev.prompt.clone()),
+                agents_states,
+                status,
+            },
         )
     }
 
@@ -931,12 +948,14 @@ impl ExecJsonlEventProcessor {
 
         self.complete_collab_tool_call(
             &ev.call_id,
-            CollabTool::SendInput,
-            ev.sender_thread_id.to_string(),
-            vec![ev.receiver_thread_id.to_string()],
-            Some(ev.prompt.clone()),
-            agents_states,
-            status,
+            CollabToolCallCompletion {
+                tool: CollabTool::SendInput,
+                sender_thread_id: ev.sender_thread_id.to_string(),
+                receiver_thread_ids: vec![ev.receiver_thread_id.to_string()],
+                prompt: Some(ev.prompt.clone()),
+                agents_states,
+                status,
+            },
         )
     }
 
@@ -971,15 +990,18 @@ impl ExecJsonlEventProcessor {
 
         self.complete_collab_tool_call(
             &ev.call_id,
-            CollabTool::Wait,
-            ev.sender_thread_id.to_string(),
-            ev.statuses
-                .keys()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>(),
-            None,
-            agents_states,
-            status,
+            CollabToolCallCompletion {
+                tool: CollabTool::Wait,
+                sender_thread_id: ev.sender_thread_id.to_string(),
+                receiver_thread_ids: ev
+                    .statuses
+                    .keys()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+                prompt: None,
+                agents_states,
+                status,
+            },
         )
     }
 
@@ -1014,12 +1036,14 @@ impl ExecJsonlEventProcessor {
 
         self.complete_collab_tool_call(
             &ev.call_id,
-            CollabTool::CloseAgent,
-            ev.sender_thread_id.to_string(),
-            vec![ev.receiver_thread_id.to_string()],
-            None,
-            agents_states,
-            status,
+            CollabToolCallCompletion {
+                tool: CollabTool::CloseAgent,
+                sender_thread_id: ev.sender_thread_id.to_string(),
+                receiver_thread_ids: vec![ev.receiver_thread_id.to_string()],
+                prompt: None,
+                agents_states,
+                status,
+            },
         )
     }
 }
