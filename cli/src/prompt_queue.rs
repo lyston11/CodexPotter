@@ -12,10 +12,15 @@ pub struct PromptQueue {
 }
 
 impl PromptQueue {
+    #[cfg(test)]
     pub fn new(initial_prompt: String) -> Self {
         Self {
             next_prompt: Some(initial_prompt),
         }
+    }
+
+    pub fn empty() -> Self {
+        Self { next_prompt: None }
     }
 
     pub fn pop_next_prompt<F>(&mut self, pop_queued_prompt: F) -> Option<String>

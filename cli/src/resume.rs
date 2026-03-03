@@ -307,7 +307,7 @@ where
     }
 
     if user_cancelled_replay {
-        return Ok(ResumeExit::Completed);
+        return Ok(ResumeExit::UserRequested);
     }
 
     if let Some(unfinished) = unfinished_round.as_mut() {
@@ -338,7 +338,7 @@ where
 
         match exit_info.exit_reason {
             ExitReason::Completed | ExitReason::TaskFailed(_) => {}
-            ExitReason::UserRequested => return Ok(ResumeExit::Completed),
+            ExitReason::UserRequested => return Ok(ResumeExit::UserRequested),
             ExitReason::Fatal(_) => return Ok(ResumeExit::FatalExitRequested),
         }
     }
@@ -369,7 +369,7 @@ where
 
     let selection = ui.prompt_action_picker(vec![action]).await?;
     let Some(index) = selection else {
-        return Ok(ResumeExit::Completed);
+        return Ok(ResumeExit::UserRequested);
     };
     if index != 0 {
         return Ok(ResumeExit::Completed);
@@ -450,7 +450,7 @@ where
                 .await?;
 
             match &round_result.exit_reason {
-                ExitReason::UserRequested => return Ok(ResumeExit::Completed),
+                ExitReason::UserRequested => return Ok(ResumeExit::UserRequested),
                 ExitReason::TaskFailed(_) => return Ok(ResumeExit::Completed),
                 ExitReason::Fatal(_) => return Ok(ResumeExit::FatalExitRequested),
                 ExitReason::Completed => {}
@@ -459,6 +459,7 @@ where
                 return Ok(ResumeExit::Completed);
             }
 
+            let mut user_requested_exit = false;
             for offset in 0..remaining_after_continue {
                 let current_round = unfinished
                     .round_current
@@ -480,7 +481,10 @@ where
                     .await?;
 
                 match &round_result.exit_reason {
-                    ExitReason::UserRequested => break,
+                    ExitReason::UserRequested => {
+                        user_requested_exit = true;
+                        break;
+                    }
                     ExitReason::TaskFailed(_) => break,
                     ExitReason::Fatal(_) => return Ok(ResumeExit::FatalExitRequested),
                     ExitReason::Completed => {}
@@ -489,9 +493,13 @@ where
                     break;
                 }
             }
+            if user_requested_exit {
+                return Ok(ResumeExit::UserRequested);
+            }
         }
         None => {
             let iterate_rounds_u32 = u32::try_from(iterate_rounds_usize).unwrap_or(u32::MAX);
+            let mut user_requested_exit = false;
             for offset in 0..iterate_rounds_usize {
                 let current_round = u32::try_from(offset.saturating_add(1)).unwrap_or(u32::MAX);
                 let project_succeeded_rounds = baseline_rounds_u32.saturating_add(current_round);
@@ -510,7 +518,10 @@ where
                     .await?;
 
                 match &round_result.exit_reason {
-                    ExitReason::UserRequested => break,
+                    ExitReason::UserRequested => {
+                        user_requested_exit = true;
+                        break;
+                    }
                     ExitReason::TaskFailed(_) => break,
                     ExitReason::Fatal(_) => return Ok(ResumeExit::FatalExitRequested),
                     ExitReason::Completed => {}
@@ -518,6 +529,9 @@ where
                 if round_result.stop_due_to_finite_incantatem {
                     break;
                 }
+            }
+            if user_requested_exit {
+                return Ok(ResumeExit::UserRequested);
             }
         }
     }
@@ -529,6 +543,7 @@ where
 /// Outcome of running `codex-potter resume`.
 pub enum ResumeExit {
     Completed,
+    UserRequested,
     FatalExitRequested,
 }
 

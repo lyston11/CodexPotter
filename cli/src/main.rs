@@ -12,6 +12,7 @@ mod potter_rollout;
 mod potter_rollout_resume_index;
 mod potter_stream_recovery;
 mod project;
+mod project_runner;
 mod prompt_queue;
 mod resume;
 mod resume_picker_index;
@@ -21,16 +22,13 @@ mod startup;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use anyhow::Context;
-use chrono::Local;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use codex_tui::ExitReason;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
@@ -214,6 +212,9 @@ async fn main() -> anyhow::Result<()> {
         maybe_prompt_global_gitignore(&mut ui, &workdir, plan).await;
     }
 
+    let mut project_queue_allow_prompt_user = true;
+    let mut project_queue_workdir = workdir.clone();
+
     if let Some(CliCommand::Resume { project_path }) = cli.command.as_ref() {
         let project_path = match project_path {
             Some(project_path) => Some(project_path.clone()),
@@ -240,129 +241,49 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
             .context("resume project")?;
-            if resume_exit == crate::resume::ResumeExit::FatalExitRequested {
-                // `std::process::exit` skips destructors, so explicitly drop the UI to restore terminal
-                // state before exiting.
-                drop(ui);
-                std::process::exit(1);
-            }
-            return Ok(());
-        }
-    }
-
-    let Some(user_prompt) = ui
-        .prompt_user(codex_tui::PromptFooterContext::new(
-            workdir.clone(),
-            crate::project::resolve_git_branch(&workdir),
-        ))
-        .await?
-    else {
-        return Ok(());
-    };
-
-    // Clear prompt UI remnants before doing any work / streaming output.
-    ui.clear()?;
-
-    let mut pending_user_prompts = prompt_queue::PromptQueue::new(user_prompt);
-
-    'project: loop {
-        let next_prompt = pending_user_prompts.pop_next_prompt(|| ui.pop_queued_user_prompt());
-        let Some(next_prompt) = prompt_queue::next_prompt_or_prompt_user(next_prompt, || {
-            ui.prompt_user(codex_tui::PromptFooterContext::new(
-                workdir.clone(),
-                crate::project::resolve_git_branch(&workdir),
-            ))
-        })
-        .await?
-        else {
-            break 'project;
-        };
-
-        let user_prompt = match next_prompt {
-            prompt_queue::NextPrompt::FromQueue(prompt) => prompt,
-            prompt_queue::NextPrompt::FromUser(prompt) => {
-                // Clear prompt UI remnants before doing any work / streaming output.
-                ui.clear()?;
-                prompt
-            }
-        };
-
-        let init = crate::project::init_project(&workdir, &user_prompt, Local::now())
-            .context("initialize .codexpotter project")?;
-        let project_started_at = Instant::now();
-        let project_dir = init
-            .progress_file_rel
-            .parent()
-            .context("derive CodexPotter project dir from progress file path")?
-            .to_path_buf();
-        let project_dir_abs = workdir.join(&project_dir);
-        let potter_rollout_path = crate::potter_rollout::potter_rollout_path(&project_dir_abs);
-        let user_prompt_file = init.progress_file_rel.clone();
-        let developer_prompt = crate::project::render_developer_prompt(&init.progress_file_rel);
-
-        let round_context = crate::round_runner::PotterRoundContext {
-            codex_bin: codex_bin.clone(),
-            developer_prompt: developer_prompt.clone(),
-            backend_launch,
-            backend_event_mode: crate::app_server_backend::AppServerEventMode::Interactive,
-            codex_compat_home: codex_compat_home.clone(),
-            thread_cwd: Some(workdir.clone()),
-            turn_prompt: turn_prompt.clone(),
-            workdir: workdir.clone(),
-            progress_file_rel: init.progress_file_rel.clone(),
-            user_prompt_file: user_prompt_file.clone(),
-            git_commit_start: init.git_commit_start.clone(),
-            potter_rollout_path: potter_rollout_path.clone(),
-            project_started_at,
-        };
-
-        for round_index in 0..cli.rounds.get() {
-            let total_rounds = u32::try_from(cli.rounds.get()).unwrap_or(u32::MAX);
-            let current_round = u32::try_from(round_index.saturating_add(1)).unwrap_or(u32::MAX);
-            let project_started = if round_index == 0 {
-                Some(crate::round_runner::PotterProjectStartedInfo {
-                    user_message: Some(user_prompt.clone()),
-                    working_dir: workdir.clone(),
-                    project_dir: project_dir.clone(),
-                    user_prompt_file: user_prompt_file.clone(),
-                })
-            } else {
-                None
-            };
-
-            let round_result = crate::round_runner::run_potter_round(
-                &mut ui,
-                &round_context,
-                crate::round_runner::PotterRoundOptions {
-                    pad_before_first_cell: round_index != 0,
-                    project_started,
-                    round_current: current_round,
-                    round_total: total_rounds,
-                    project_succeeded_rounds: current_round,
-                },
-            )
-            .await?;
-
-            match &round_result.exit_reason {
-                ExitReason::UserRequested => {
-                    resume_note_project_path = Some(
-                        derive_resume_project_path_from_project_dir(&project_dir)
-                            .unwrap_or_else(|| project_dir.to_string_lossy().to_string()),
-                    );
-                    break 'project;
-                }
-                ExitReason::TaskFailed(_) => break,
-                ExitReason::Fatal(_) => {
+            match resume_exit {
+                crate::resume::ResumeExit::Completed => {}
+                crate::resume::ResumeExit::UserRequested => return Ok(()),
+                crate::resume::ResumeExit::FatalExitRequested => {
                     // `std::process::exit` skips destructors, so explicitly drop the UI to restore
                     // terminal state before exiting.
                     drop(ui);
                     std::process::exit(1);
                 }
-                ExitReason::Completed => {}
             }
-            if round_result.stop_due_to_finite_incantatem {
-                break;
-            }
+            project_queue_allow_prompt_user = false;
+            project_queue_workdir =
+                std::env::current_dir().context("resolve current directory after resume")?;
+        }
+    }
+
+    let project_queue_exit = crate::project_runner::run_project_queue(
+        &mut ui,
+        project_queue_workdir.clone(),
+        crate::project_runner::ProjectQueueOptions {
+            allow_prompt_user: project_queue_allow_prompt_user,
+            codex_bin: codex_bin.clone(),
+            backend_launch,
+            codex_compat_home: codex_compat_home.clone(),
+            rounds: cli.rounds,
+            turn_prompt: turn_prompt.clone(),
+        },
+    )
+    .await?;
+
+    match project_queue_exit {
+        crate::project_runner::ProjectQueueExit::Completed => {}
+        crate::project_runner::ProjectQueueExit::UserRequestedExit { project_dir } => {
+            resume_note_project_path = Some(
+                derive_resume_project_path_from_project_dir(&project_dir)
+                    .unwrap_or_else(|| project_dir.to_string_lossy().to_string()),
+            );
+        }
+        crate::project_runner::ProjectQueueExit::FatalExitRequested => {
+            // `std::process::exit` skips destructors, so explicitly drop the UI to restore terminal
+            // state before exiting.
+            drop(ui);
+            std::process::exit(1);
         }
     }
 
