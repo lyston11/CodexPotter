@@ -1881,7 +1881,7 @@ mod tests {
         }
     }
 
-    fn make_render_only_processor(
+    fn make_round_renderer_processor(
         prompt: &str,
     ) -> (AppServerEventProcessor, UnboundedReceiver<AppEvent>) {
         let (tx_raw, rx) = unbounded_channel::<AppEvent>();
@@ -1891,7 +1891,7 @@ mod tests {
         (proc, rx)
     }
 
-    fn make_render_only_processor_without_prompt()
+    fn make_round_renderer_processor_without_prompt()
     -> (AppServerEventProcessor, UnboundedReceiver<AppEvent>) {
         let (tx_raw, rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
@@ -2416,7 +2416,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_context_window_percent_uses_baseline_and_last_token_usage() {
+    fn round_renderer_context_window_percent_uses_baseline_and_last_token_usage() {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
@@ -2473,7 +2473,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_context_window_fallback_shows_used_tokens() {
+    fn round_renderer_context_window_fallback_shows_used_tokens() {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
@@ -2511,7 +2511,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_composer_processes_repeat_cursor_movement() {
+    fn round_renderer_composer_processes_repeat_cursor_movement() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyEventKind;
@@ -2561,7 +2561,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_composer_processes_repeat_ctrl_w() {
+    fn round_renderer_composer_processes_repeat_ctrl_w() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyEventKind;
@@ -2609,7 +2609,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_slash_mention_inserts_at_and_starts_file_search() {
+    fn round_renderer_slash_mention_inserts_at_and_starts_file_search() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -2669,7 +2669,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_slash_exit_requests_interrupt_and_exit() {
+    fn round_renderer_slash_exit_requests_interrupt_and_exit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -2905,7 +2905,7 @@ mod tests {
     }
 
     #[test]
-    fn render_only_idle_prompt_is_separated_from_transcript_vt100() {
+    fn round_renderer_idle_prompt_is_separated_from_transcript_vt100() {
         let width: u16 = 80;
 
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
@@ -2977,13 +2977,13 @@ mod tests {
             .expect("draw");
 
         assert_snapshot!(
-            "render_only_idle_prompt_is_separated_from_transcript_vt100",
+            "round_renderer_idle_prompt_is_separated_from_transcript_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_round_banner_does_not_add_extra_padding_before_status_vt100() {
+    fn round_renderer_round_banner_does_not_add_extra_padding_before_status_vt100() {
         let width: u16 = 80;
 
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
@@ -3060,13 +3060,13 @@ mod tests {
             .expect("draw");
 
         assert_snapshot!(
-            "render_only_round_banner_padding_before_status_vt100",
+            "round_renderer_round_banner_padding_before_status_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_round_banner_reconnecting_status_renders_details_vt100() {
+    fn round_renderer_round_banner_reconnecting_status_renders_details_vt100() {
         let width: u16 = 80;
 
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
@@ -3156,7 +3156,7 @@ mod tests {
             .expect("draw");
 
         assert_snapshot!(
-            "render_only_round_banner_reconnecting_status_vt100",
+            "round_renderer_round_banner_reconnecting_status_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
@@ -3224,7 +3224,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_only_renders_context_compacted_event() {
+    async fn round_renderer_renders_context_compacted_event() {
         let width: u16 = 80;
         let height: u16 = 12;
         let backend = VT100Backend::new(width, height);
@@ -3232,7 +3232,7 @@ mod tests {
             crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
-        let (mut proc, mut rx) = make_render_only_processor("Explain this: `1 + 1`.");
+        let (mut proc, mut rx) = make_round_renderer_processor("Explain this: `1 + 1`.");
 
         let configured = SessionConfiguredEvent {
             session_id: ThreadId::new(),
@@ -3273,16 +3273,16 @@ mod tests {
         );
 
         assert_snapshot!(
-            "render_only_context_compacted_vt100",
+            "round_renderer_context_compacted_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_does_not_duplicate_agent_message_on_turn_complete_last_agent_message() {
+    fn round_renderer_does_not_duplicate_agent_message_on_turn_complete_last_agent_message() {
         let width: u16 = 80;
 
-        let (mut proc, mut rx) = make_render_only_processor_without_prompt();
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
         proc.handle_codex_event(Event {
             id: "agent-message".into(),
@@ -3304,10 +3304,10 @@ mod tests {
     }
 
     #[test]
-    fn render_only_streaming_plan_delta_renders_proposed_plan_block() {
+    fn round_renderer_streaming_plan_delta_renders_proposed_plan_block() {
         let width: u16 = 80;
 
-        let (mut proc, mut rx) = make_render_only_processor_without_prompt();
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
         proc.handle_codex_event(Event {
             id: "plan-1".into(),
@@ -3352,7 +3352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_only_vt100_snapshots() {
+    async fn round_renderer_vt100_snapshots() {
         let width: u16 = 80;
         let height: u16 = 28;
         let backend = VT100Backend::new(width, height);
@@ -3360,7 +3360,7 @@ mod tests {
             crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
-        let (mut proc, mut rx) = make_render_only_processor("Explain this: `1 + 1`.");
+        let (mut proc, mut rx) = make_round_renderer_processor("Explain this: `1 + 1`.");
 
         let configured = SessionConfiguredEvent {
             session_id: ThreadId::new(),
@@ -3418,7 +3418,7 @@ mod tests {
         );
 
         assert_snapshot!(
-            "render_only_streaming_partial_vt100",
+            "round_renderer_streaming_partial_vt100",
             terminal.backend().vt100().screen().contents()
         );
 
@@ -3509,13 +3509,13 @@ mod tests {
         );
 
         assert_snapshot!(
-            "render_only_end_to_end_vt100",
+            "round_renderer_end_to_end_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[tokio::test]
-    async fn render_only_inserts_worked_for_separator_before_agent_message_vt100() {
+    async fn round_renderer_inserts_worked_for_separator_before_agent_message_vt100() {
         let width: u16 = 80;
         let height: u16 = 16;
         let backend = VT100Backend::new(width, height);
@@ -3523,7 +3523,7 @@ mod tests {
             crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
-        let (mut proc, mut rx) = make_render_only_processor("test prompt");
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
 
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
@@ -3587,13 +3587,13 @@ mod tests {
         );
 
         assert_snapshot!(
-            "render_only_worked_for_separator_vt100",
+            "round_renderer_worked_for_separator_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[tokio::test]
-    async fn render_only_flushes_agent_stream_before_ran_vt100() {
+    async fn round_renderer_flushes_agent_stream_before_ran_vt100() {
         let width: u16 = 80;
         let height: u16 = 16;
         let backend = VT100Backend::new(width, height);
@@ -3601,7 +3601,7 @@ mod tests {
             crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
-        let (mut proc, mut rx) = make_render_only_processor("test prompt");
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
             &mut rx,
@@ -3677,13 +3677,13 @@ mod tests {
         );
 
         assert_snapshot!(
-            "render_only_flushes_agent_stream_before_ran_vt100",
+            "round_renderer_flushes_agent_stream_before_ran_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[tokio::test]
-    async fn render_only_renders_potter_project_succeeded_block_vt100() {
+    async fn round_renderer_renders_potter_project_succeeded_block_vt100() {
         let width: u16 = 80;
         let height: u16 = 24;
         let backend = VT100Backend::new(width, height);
@@ -3691,7 +3691,7 @@ mod tests {
             crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
-        let (mut proc, mut rx) = make_render_only_processor("test prompt");
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
             &mut rx,
@@ -3766,13 +3766,13 @@ mod tests {
         );
 
         assert_snapshot!(
-            "render_only_potter_project_succeeded_block_vt100",
+            "round_renderer_potter_project_succeeded_block_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_live_explored_renders_in_viewport_and_merges_calls_vt100() {
+    fn round_renderer_live_explored_renders_in_viewport_and_merges_calls_vt100() {
         let width: u16 = 80;
 
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
@@ -3917,13 +3917,13 @@ mod tests {
             .expect("draw");
 
         assert_snapshot!(
-            "render_only_live_explored_in_viewport_vt100",
+            "round_renderer_live_explored_in_viewport_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_live_explored_coalesces_reads_across_mixed_calls_vt100() {
+    fn round_renderer_live_explored_coalesces_reads_across_mixed_calls_vt100() {
         let width: u16 = 80;
 
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
@@ -4051,13 +4051,13 @@ mod tests {
             .expect("draw");
 
         assert_snapshot!(
-            "render_only_live_explored_coalesces_mixed_call_reads_vt100",
+            "round_renderer_live_explored_coalesces_mixed_call_reads_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_ctrl_c_preserves_pending_explored_output_vt100() {
+    fn round_renderer_ctrl_c_preserves_pending_explored_output_vt100() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyEventKind;
@@ -4193,13 +4193,13 @@ mod tests {
             .expect("clear viewport");
 
         assert_snapshot!(
-            "render_only_ctrl_c_preserves_pending_explored_output_vt100",
+            "round_renderer_ctrl_c_preserves_pending_explored_output_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
 
     #[test]
-    fn render_only_coalesces_success_ran_cells_snapshot() {
+    fn round_renderer_coalesces_success_ran_cells_snapshot() {
         let width: u16 = 80;
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
@@ -4245,14 +4245,14 @@ mod tests {
         };
         let lines = cell.display_lines(width);
         assert_snapshot!(
-            "render_only_coalesced_success_ran_cells",
+            "round_renderer_coalesced_success_ran_cells",
             lines_to_plain_strings(&lines).join("\n")
         );
     }
 
     #[tokio::test]
-    async fn render_only_coalesces_explored_cells() {
-        let (mut proc, mut rx) = make_render_only_processor("test prompt");
+    async fn round_renderer_coalesces_explored_cells() {
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
         let _ = drain_history_cell_strings(&mut rx, 80);
 
         let base = ExecCommandEndEvent {
@@ -4344,12 +4344,12 @@ mod tests {
             panic!("expected explored cell, separator, then agent message");
         };
         let rendered = explored.join("\n") + "\n";
-        assert_snapshot!("render_only_coalesces_explored_cells", rendered);
+        assert_snapshot!("round_renderer_coalesces_explored_cells", rendered);
     }
 
     #[tokio::test]
-    async fn render_only_flushes_explored_cells_on_turn_complete() {
-        let (mut proc, mut rx) = make_render_only_processor("test prompt");
+    async fn round_renderer_flushes_explored_cells_on_turn_complete() {
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
         let _ = drain_history_cell_strings(&mut rx, u16::MAX);
 
         proc.handle_codex_event(Event {
@@ -4389,14 +4389,14 @@ mod tests {
         };
         let rendered = explored.join("\n") + "\n";
         assert_snapshot!(
-            "render_only_flushes_explored_cells_on_turn_complete",
+            "round_renderer_flushes_explored_cells_on_turn_complete",
             rendered
         );
     }
 
     #[test]
-    fn render_only_potter_project_started_emits_user_prompt() {
-        let (mut proc, mut rx) = make_render_only_processor_without_prompt();
+    fn round_renderer_potter_project_started_emits_user_prompt() {
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
         proc.handle_codex_event(Event {
             id: "potter-session-started".into(),
@@ -4414,18 +4414,18 @@ mod tests {
         };
 
         let prompt_rendered = prompt.join("\n") + "\n";
-        assert_snapshot!("render_only_potter_project_started", prompt_rendered);
+        assert_snapshot!("round_renderer_potter_project_started", prompt_rendered);
 
         let hint_rendered = project_hint.join("\n") + "\n";
         assert_snapshot!(
-            "render_only_potter_project_started_project_hint",
+            "round_renderer_potter_project_started_project_hint",
             hint_rendered
         );
     }
 
     #[test]
-    fn render_only_potter_round_started_does_not_emit_transcript_cells() {
-        let (mut proc, mut rx) = make_render_only_processor_without_prompt();
+    fn round_renderer_potter_round_started_does_not_emit_transcript_cells() {
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
         proc.handle_codex_event(Event {
             id: "potter-round-started".into(),
