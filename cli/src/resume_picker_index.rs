@@ -40,7 +40,7 @@ pub fn discover_resumable_projects(workdir: &Path) -> anyhow::Result<Vec<ResumeP
             continue;
         }
 
-        if let Ok(Some(row)) = row_for_progress_file(workdir, entry.path()) {
+        if let Some(row) = row_for_progress_file(workdir, entry.path()) {
             rows.push(row);
         }
     }
@@ -49,60 +49,36 @@ pub fn discover_resumable_projects(workdir: &Path) -> anyhow::Result<Vec<ResumeP
     Ok(rows)
 }
 
-fn row_for_progress_file(
-    workdir: &Path,
-    progress_file: &Path,
-) -> anyhow::Result<Option<ResumePickerRow>> {
-    let resolved = match crate::resume::resolve_project_paths(workdir, progress_file) {
-        Ok(resolved) => resolved,
-        Err(_) => return Ok(None),
-    };
+fn row_for_progress_file(workdir: &Path, progress_file: &Path) -> Option<ResumePickerRow> {
+    let resolved = crate::resume::resolve_project_paths(workdir, progress_file).ok()?;
 
     let potter_rollout_path = crate::potter_rollout::potter_rollout_path(&resolved.project_dir);
     if !potter_rollout_path.exists() || !potter_rollout_path.is_file() {
-        return Ok(None);
+        return None;
     }
 
-    let metadata = match std::fs::metadata(&potter_rollout_path) {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
-    };
-    let updated_at = match metadata.modified() {
-        Ok(updated_at) => updated_at,
-        Err(_) => return Ok(None),
-    };
+    let metadata = std::fs::metadata(&potter_rollout_path).ok()?;
+    let updated_at = metadata.modified().ok()?;
     let created_at = created_at_from_progress_file(
         &workdir.join(".codexpotter").join("projects"),
         progress_file,
     )
     .unwrap_or(updated_at);
 
-    let potter_rollout_lines = match crate::potter_rollout::read_lines(&potter_rollout_path) {
-        Ok(lines) => lines,
-        Err(_) => return Ok(None),
-    };
+    let potter_rollout_lines = crate::potter_rollout::read_lines(&potter_rollout_path).ok()?;
     if potter_rollout_lines.is_empty() {
-        return Ok(None);
+        return None;
     }
 
-    let index = match crate::potter_rollout_resume_index::build_resume_index(&potter_rollout_lines)
-    {
-        Ok(index) => index,
-        Err(_) => return Ok(None),
-    };
+    let index =
+        crate::potter_rollout_resume_index::build_resume_index(&potter_rollout_lines).ok()?;
 
     if !all_referenced_rollouts_exist(&resolved.workdir, &index) {
-        return Ok(None);
+        return None;
     }
 
-    let short_title = match crate::project::progress_file_short_title(&resolved.progress_file) {
-        Ok(short_title) => short_title,
-        Err(_) => return Ok(None),
-    };
-    let git_branch = match crate::project::progress_file_git_branch(&resolved.progress_file) {
-        Ok(git_branch) => git_branch,
-        Err(_) => return Ok(None),
-    };
+    let short_title = crate::project::progress_file_short_title(&resolved.progress_file).ok()?;
+    let git_branch = crate::project::progress_file_git_branch(&resolved.progress_file).ok()?;
 
     let user_request = match short_title {
         Some(title) => title,
@@ -113,13 +89,13 @@ fn row_for_progress_file(
             .unwrap_or_default(),
     };
 
-    Ok(Some(ResumePickerRow {
+    Some(ResumePickerRow {
         project_path: resolved.project_dir,
         user_request,
         created_at,
         updated_at,
         git_branch,
-    }))
+    })
 }
 
 fn created_at_from_progress_file(projects_root: &Path, progress_file: &Path) -> Option<SystemTime> {
