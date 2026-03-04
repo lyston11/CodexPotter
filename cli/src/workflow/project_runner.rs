@@ -127,17 +127,19 @@ where
     C: ProjectClock,
 {
     let mut pending_user_prompts = crate::workflow::prompt_queue::PromptQueue::empty();
+    let build_prompt_footer = || {
+        codex_tui::PromptFooterContext::new(
+            workdir.clone(),
+            crate::workflow::project::resolve_git_branch(&workdir),
+        )
+    };
 
     'project: loop {
         let next_prompt = pending_user_prompts.pop_next_prompt(|| ui.pop_queued_user_prompt());
 
         let next_prompt =
             crate::workflow::prompt_queue::next_prompt_or_prompt_user(next_prompt, || {
-                let prompt_footer = codex_tui::PromptFooterContext::new(
-                    workdir.clone(),
-                    crate::workflow::project::resolve_git_branch(&workdir),
-                );
-                ui.prompt_user(prompt_footer)
+                ui.prompt_user(build_prompt_footer())
             })
             .await?;
 
@@ -158,10 +160,7 @@ where
         ui.set_project_started_at(project_started_at);
 
         let rounds_total_u32 = u32::try_from(options.rounds.get()).unwrap_or(u32::MAX);
-        let prompt_footer = codex_tui::PromptFooterContext::new(
-            workdir.clone(),
-            crate::workflow::project::resolve_git_branch(&workdir),
-        );
+        let prompt_footer = build_prompt_footer();
 
         let (start_response, buffered_events) = app_server
             .project_start(crate::app_server::potter::ProjectStartParams {
