@@ -1,3 +1,14 @@
+//! Exec JSONL schema and stateful `EventMsg` → `ExecJsonlEvent` mapping.
+//!
+//! This module defines:
+//! - [`ExecJsonlEvent`]: the newline-delimited JSON event stream emitted by `codex-potter exec --json`
+//! - [`ExecJsonlEventProcessor`]: a stateful mapper that converts incoming [`EventMsg`] values into
+//!   one or more [`ExecJsonlEvent`] records
+//!
+//! The mapper is stateful and must be reset between rounds via
+//! [`ExecJsonlEventProcessor::reset_round_state`]. It keeps item ids monotonic across rounds, but
+//! clears all in-flight "item lifecycle" state (running commands, patch applies, todo lists).
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -367,6 +378,13 @@ struct CollabToolCallCompletion {
 }
 
 #[derive(Debug, Default)]
+/// Stateful mapper from `EventMsg` to `ExecJsonlEvent`.
+///
+/// The exec protocol models a single "thread" containing turns and items. Some items have a
+/// lifecycle (`item.started` → `item.updated` → `item.completed`) and require the mapper to track
+/// in-flight state to produce a well-formed JSONL stream.
+///
+/// Call [`Self::reset_round_state`] at the start of each new Potter round.
 pub struct ExecJsonlEventProcessor {
     workdir: Option<PathBuf>,
     next_item_id: u64,
@@ -379,6 +397,7 @@ pub struct ExecJsonlEventProcessor {
 }
 
 impl ExecJsonlEventProcessor {
+    /// Create an event processor that resolves relative file paths against `workdir`.
     pub fn with_workdir(workdir: PathBuf) -> Self {
         Self {
             workdir: Some(workdir),
@@ -386,6 +405,10 @@ impl ExecJsonlEventProcessor {
         }
     }
 
+    /// Convert a single protocol message into zero or more exec JSONL events.
+    ///
+    /// This method is intentionally infallible; unexpected messages should be ignored rather than
+    /// terminating the exec stream.
     pub fn collect_event(&mut self, msg: &EventMsg) -> Vec<ExecJsonlEvent> {
         match msg {
             EventMsg::SessionConfigured(ev) => {
@@ -532,6 +555,9 @@ impl ExecJsonlEventProcessor {
         }
     }
 
+    /// Clear all in-flight per-round state (running commands, patch applies, todo list, etc).
+    ///
+    /// Note: this does **not** reset the monotonically increasing `item_*` id counter.
     pub fn reset_round_state(&mut self) {
         self.running_commands.clear();
         self.running_patch_applies.clear();
