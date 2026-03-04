@@ -147,7 +147,12 @@ where
     /// Creates a new [`Terminal`] with the given [`Backend`] and [`TerminalOptions`].
     pub fn with_options(mut backend: B) -> io::Result<Self> {
         let screen_size = backend.size()?;
-        let cursor_pos = backend.get_cursor_position()?;
+        let cursor_pos = backend.get_cursor_position().unwrap_or_else(|err| {
+            // Some PTYs do not answer CPR (`ESC[6n`); continue with a safe default instead
+            // of failing TUI startup.
+            tracing::warn!("failed to read initial cursor position; defaulting to origin: {err}");
+            Position { x: 0, y: 0 }
+        });
         Ok(Self {
             backend,
             buffers: [Buffer::empty(Rect::ZERO), Buffer::empty(Rect::ZERO)],
@@ -592,9 +597,99 @@ impl ModifierDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_backend::VT100Backend;
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
     use ratatui::style::Style;
+
+    struct CursorPositionErrorBackend {
+        inner: VT100Backend,
+    }
+
+    impl CursorPositionErrorBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                inner: VT100Backend::new(width, height),
+            }
+        }
+    }
+
+    impl Write for CursorPositionErrorBackend {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            std::io::Write::flush(&mut self.inner)
+        }
+    }
+
+    impl Backend for CursorPositionErrorBackend {
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            Backend::draw(&mut self.inner, content)
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            Backend::hide_cursor(&mut self.inner)
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            Backend::show_cursor(&mut self.inner)
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            Err(io::Error::other(
+                "get_cursor_position is unsupported in test backend",
+            ))
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            Backend::set_cursor_position(&mut self.inner, position)
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            Backend::clear(&mut self.inner)
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+            Backend::clear_region(&mut self.inner, clear_type)
+        }
+
+        fn append_lines(&mut self, line_count: u16) -> io::Result<()> {
+            Backend::append_lines(&mut self.inner, line_count)
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            Backend::size(&self.inner)
+        }
+
+        fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+            Backend::window_size(&mut self.inner)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Backend::flush(&mut self.inner)
+        }
+
+        fn scroll_region_up(
+            &mut self,
+            region: std::ops::Range<u16>,
+            scroll_by: u16,
+        ) -> io::Result<()> {
+            Backend::scroll_region_up(&mut self.inner, region, scroll_by)
+        }
+
+        fn scroll_region_down(
+            &mut self,
+            region: std::ops::Range<u16>,
+            scroll_by: u16,
+        ) -> io::Result<()> {
+            Backend::scroll_region_down(&mut self.inner, region, scroll_by)
+        }
+    }
 
     #[test]
     fn diff_buffers_does_not_emit_clear_to_end_for_full_width_row() {
@@ -640,5 +735,13 @@ mod tests {
                 .any(|command| matches!(command, DrawCommand::ClearToEnd { x: 2, y: 0, .. })),
             "expected clear-to-end to start after the remaining wide char; commands: {commands:?}"
         );
+    }
+
+    #[test]
+    fn with_options_defaults_cursor_position_when_backend_cannot_report_it() {
+        let backend = CursorPositionErrorBackend::new(80, 24);
+        let term = Terminal::with_options(backend).expect("terminal");
+        assert_eq!(term.last_known_cursor_pos, Position { x: 0, y: 0 });
+        assert_eq!(term.viewport_area, Rect::new(0, 0, 0, 0));
     }
 }
