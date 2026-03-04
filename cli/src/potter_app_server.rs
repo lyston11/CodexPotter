@@ -12,6 +12,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::PotterProjectOutcome;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::TokenUsage;
@@ -944,6 +945,9 @@ async fn run_fresh_project(
 
     let mut ui = EventForwardingRoundUi::new(writer_tx);
 
+    let mut rounds_run = 0u32;
+    let mut outcome = PotterProjectOutcome::BudgetExhausted;
+
     for round_index in 0..rounds_total {
         let current_round = round_index.saturating_add(1);
         let project_started = if round_index == 0 {
@@ -968,19 +972,52 @@ async fn run_fresh_project(
                 project_succeeded_rounds: current_round,
             },
         )
-        .await?;
+        .await;
 
-        match &round_result.exit_reason {
-            codex_tui::ExitReason::Completed => {}
-            codex_tui::ExitReason::UserRequested
-            | codex_tui::ExitReason::TaskFailed(_)
-            | codex_tui::ExitReason::Fatal(_) => break,
-        }
-        if round_result.stop_due_to_finite_incantatem {
-            break;
+        let round_result = match round_result {
+            Ok(result) => result,
+            Err(err) => {
+                let message = format!("{err:#}");
+                ui.emit_marker(EventMsg::Error(ErrorEvent {
+                    message: message.clone(),
+                    codex_error_info: None,
+                }));
+                outcome = PotterProjectOutcome::Fatal { message };
+                break;
+            }
+        };
+
+        rounds_run = rounds_run.saturating_add(1);
+
+        match round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {
+                if round_result.stop_due_to_finite_incantatem {
+                    outcome = PotterProjectOutcome::Succeeded;
+                    break;
+                }
+                if round_index.saturating_add(1) >= rounds_total {
+                    outcome = PotterProjectOutcome::BudgetExhausted;
+                }
+            }
+            codex_tui::ExitReason::TaskFailed(message) => {
+                outcome = PotterProjectOutcome::TaskFailed { message };
+                break;
+            }
+            codex_tui::ExitReason::Fatal(message) => {
+                outcome = PotterProjectOutcome::Fatal { message };
+                break;
+            }
+            codex_tui::ExitReason::UserRequested => {
+                outcome = PotterProjectOutcome::Fatal {
+                    message: String::from("user requested"),
+                };
+                break;
+            }
         }
     }
 
+    let _ = rounds_run;
+    ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
     Ok(())
 }
 
@@ -1043,6 +1080,9 @@ async fn run_resumed_project(
             .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
         replay_event_msgs.append(&mut rollout_events);
 
+        let mut rounds_run = 0u32;
+        let mut outcome = PotterProjectOutcome::BudgetExhausted;
+
         let round_result = crate::round_runner::continue_potter_round(
             &mut ui,
             &round_context,
@@ -1055,20 +1095,53 @@ async fn run_resumed_project(
                 replay_event_msgs,
             },
         )
-        .await?;
+        .await;
 
-        match &round_result.exit_reason {
-            codex_tui::ExitReason::Completed => {}
-            codex_tui::ExitReason::UserRequested
-            | codex_tui::ExitReason::TaskFailed(_)
-            | codex_tui::ExitReason::Fatal(_) => return Ok(()),
-        }
-        if round_result.stop_due_to_finite_incantatem {
-            return Ok(());
+        let round_result = match round_result {
+            Ok(result) => result,
+            Err(err) => {
+                let message = format!("{err:#}");
+                ui.emit_marker(EventMsg::Error(ErrorEvent {
+                    message: message.clone(),
+                    codex_error_info: None,
+                }));
+                outcome = PotterProjectOutcome::Fatal { message };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(());
+            }
+        };
+
+        rounds_run = rounds_run.saturating_add(1);
+
+        match round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {
+                if round_result.stop_due_to_finite_incantatem {
+                    outcome = PotterProjectOutcome::Succeeded;
+                    ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                    return Ok(());
+                }
+            }
+            codex_tui::ExitReason::TaskFailed(message) => {
+                outcome = PotterProjectOutcome::TaskFailed { message };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(());
+            }
+            codex_tui::ExitReason::Fatal(message) => {
+                outcome = PotterProjectOutcome::Fatal { message };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(());
+            }
+            codex_tui::ExitReason::UserRequested => {
+                outcome = PotterProjectOutcome::Fatal {
+                    message: String::from("user requested"),
+                };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(());
+            }
         }
 
         for offset in 0..remaining_after_continue {
-            if offset.saturating_add(1) >= rounds_total {
+            if rounds_run >= rounds_total {
                 break;
             }
             let current_round = unfinished
@@ -1086,24 +1159,55 @@ async fn run_resumed_project(
                     project_succeeded_rounds,
                 },
             )
-            .await?;
+            .await;
 
-            match &round_result.exit_reason {
-                codex_tui::ExitReason::Completed => {}
-                codex_tui::ExitReason::UserRequested
-                | codex_tui::ExitReason::TaskFailed(_)
-                | codex_tui::ExitReason::Fatal(_) => break,
-            }
-            if round_result.stop_due_to_finite_incantatem {
-                break;
+            let round_result = match round_result {
+                Ok(result) => result,
+                Err(err) => {
+                    let message = format!("{err:#}");
+                    ui.emit_marker(EventMsg::Error(ErrorEvent {
+                        message: message.clone(),
+                        codex_error_info: None,
+                    }));
+                    outcome = PotterProjectOutcome::Fatal { message };
+                    break;
+                }
+            };
+
+            rounds_run = rounds_run.saturating_add(1);
+
+            match round_result.exit_reason {
+                codex_tui::ExitReason::Completed => {
+                    if round_result.stop_due_to_finite_incantatem {
+                        outcome = PotterProjectOutcome::Succeeded;
+                        break;
+                    }
+                }
+                codex_tui::ExitReason::TaskFailed(message) => {
+                    outcome = PotterProjectOutcome::TaskFailed { message };
+                    break;
+                }
+                codex_tui::ExitReason::Fatal(message) => {
+                    outcome = PotterProjectOutcome::Fatal { message };
+                    break;
+                }
+                codex_tui::ExitReason::UserRequested => {
+                    outcome = PotterProjectOutcome::Fatal {
+                        message: String::from("user requested"),
+                    };
+                    break;
+                }
             }
         }
 
+        let _ = rounds_run;
+        ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
         return Ok(());
     }
 
     // No unfinished round to continue (or policy says to start new rounds).
     let mut rounds_run = 0u32;
+    let mut outcome = PotterProjectOutcome::BudgetExhausted;
     while rounds_run < rounds_total {
         let current_round = rounds_run.saturating_add(1);
         let project_succeeded_rounds = baseline_rounds.saturating_add(current_round);
@@ -1118,20 +1222,50 @@ async fn run_resumed_project(
                 project_succeeded_rounds,
             },
         )
-        .await?;
+        .await;
+
+        let round_result = match round_result {
+            Ok(result) => result,
+            Err(err) => {
+                let message = format!("{err:#}");
+                ui.emit_marker(EventMsg::Error(ErrorEvent {
+                    message: message.clone(),
+                    codex_error_info: None,
+                }));
+                outcome = PotterProjectOutcome::Fatal { message };
+                break;
+            }
+        };
 
         rounds_run = rounds_run.saturating_add(1);
-        match &round_result.exit_reason {
-            codex_tui::ExitReason::Completed => {}
-            codex_tui::ExitReason::UserRequested
-            | codex_tui::ExitReason::TaskFailed(_)
-            | codex_tui::ExitReason::Fatal(_) => break,
-        }
-        if round_result.stop_due_to_finite_incantatem {
-            break;
+        match round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {
+                if round_result.stop_due_to_finite_incantatem {
+                    outcome = PotterProjectOutcome::Succeeded;
+                    break;
+                }
+                if rounds_run >= rounds_total {
+                    outcome = PotterProjectOutcome::BudgetExhausted;
+                }
+            }
+            codex_tui::ExitReason::TaskFailed(message) => {
+                outcome = PotterProjectOutcome::TaskFailed { message };
+                break;
+            }
+            codex_tui::ExitReason::Fatal(message) => {
+                outcome = PotterProjectOutcome::Fatal { message };
+                break;
+            }
+            codex_tui::ExitReason::UserRequested => {
+                outcome = PotterProjectOutcome::Fatal {
+                    message: String::from("user requested"),
+                };
+                break;
+            }
         }
     }
 
+    ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
     Ok(())
 }
 
@@ -1207,6 +1341,14 @@ impl EventForwardingRoundUi {
             };
             self.forward_event(&finished);
         }
+    }
+
+    fn emit_marker(&mut self, msg: EventMsg) {
+        let event = Event {
+            id: "".to_string(),
+            msg,
+        };
+        self.forward_event(&event);
     }
 }
 
