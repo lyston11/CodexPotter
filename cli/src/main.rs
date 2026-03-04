@@ -186,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(exit_code);
     }
 
+    crate::rounds::round_budget_to_u32(cli.rounds)?;
+
     let workdir = std::env::current_dir().context("resolve current directory")?;
     let codex_bin = resolve_codex_bin_or_exit(&cli.codex_bin);
 
