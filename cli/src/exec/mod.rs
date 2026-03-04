@@ -51,7 +51,13 @@ pub async fn run_exec_json(
         return 1;
     }
 
-    let rounds_total_u32 = u32::try_from(rounds.get()).unwrap_or(u32::MAX);
+    let rounds_total_u32 = match crate::rounds::round_budget_to_u32(rounds) {
+        Ok(rounds_total_u32) => rounds_total_u32,
+        Err(err) => {
+            let _ = write_exec_json_preflight_error(&err.to_string());
+            return 1;
+        }
+    };
 
     let mut client = match crate::app_server::potter::PotterAppServerClient::spawn(
         workdir.to_path_buf(),

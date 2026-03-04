@@ -376,7 +376,7 @@ async fn start_project(
     let rounds_total_u32 = match rounds {
         Some(rounds) if rounds > 0 => rounds,
         Some(_) => anyhow::bail!("rounds must be >= 1"),
-        None => u32::try_from(state.config.rounds.get()).unwrap_or(u32::MAX),
+        None => crate::rounds::round_budget_to_u32(state.config.rounds)?,
     };
     let mode = event_mode.unwrap_or_default();
 
@@ -487,7 +487,7 @@ async fn start_rounds(
     let rounds_total_u32 = match rounds {
         Some(rounds) if rounds > 0 => rounds,
         Some(_) => anyhow::bail!("rounds must be >= 1"),
-        None => u32::try_from(state.config.rounds.get()).unwrap_or(u32::MAX),
+        None => crate::rounds::round_budget_to_u32(state.config.rounds)?,
     };
 
     let potter_rollout_path =
@@ -502,7 +502,8 @@ async fn start_rounds(
     .context("reset progress file finite_incantatem")?;
 
     let baseline_rounds = count_completed_rounds(&resumed.potter_rollout_lines);
-    let baseline_rounds_u32 = u32::try_from(baseline_rounds).unwrap_or(u32::MAX);
+    let baseline_rounds_u32 =
+        crate::rounds::usize_to_u32(baseline_rounds, "potter-rollout baseline rounds")?;
     let git_commit_start = crate::workflow::project::progress_file_git_commit_start(
         &resumed.resolved.workdir,
         &resumed.progress_file_rel,

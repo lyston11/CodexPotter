@@ -19,6 +19,7 @@ mod config;
 mod exec;
 mod global_gitignore;
 mod path_utils;
+mod rounds;
 mod startup;
 mod workflow;
 

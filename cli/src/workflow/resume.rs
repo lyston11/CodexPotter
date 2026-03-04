@@ -335,11 +335,10 @@ where
     let project_started_at = clock.now_instant();
     ui.set_project_started_at(project_started_at);
 
-    let rounds = resume
-        .unfinished_round
-        .as_ref()
-        .map(|unfinished| unfinished.remaining_rounds_including_current)
-        .unwrap_or_else(|| u32::try_from(iterate_rounds.get()).unwrap_or(u32::MAX));
+    let rounds = match resume.unfinished_round.as_ref() {
+        Some(unfinished) => unfinished.remaining_rounds_including_current,
+        None => crate::rounds::round_budget_to_u32(iterate_rounds)?,
+    };
     let initial_status_header_prefix = resume.unfinished_round.as_ref().map(|unfinished| {
         format!(
             "Round {}/{}",

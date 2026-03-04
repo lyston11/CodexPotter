@@ -170,7 +170,7 @@ where
         let project_started_at = clock.now_instant();
         ui.set_project_started_at(project_started_at);
 
-        let rounds_total_u32 = u32::try_from(options.rounds.get()).unwrap_or(u32::MAX);
+        let rounds_total_u32 = crate::rounds::round_budget_to_u32(options.rounds)?;
         let prompt_footer = build_prompt_footer();
 
         let (start_response, buffered_events) = app_server
