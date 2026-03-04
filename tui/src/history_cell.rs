@@ -33,7 +33,7 @@ use crate::style::user_message_style;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use crate::update_action::UpdateAction;
 use crate::wrapping::RtOptions;
-use crate::wrapping::word_wrap_lines;
+use crate::wrapping::adaptive_wrap_lines;
 
 /// Represents an event to display in the conversation history. Returns its
 /// `Vec<Line<'static>>` representation to make it easier to display in a
@@ -120,7 +120,7 @@ impl HistoryCell for UserHistoryCell {
 
         let style = user_message_style();
 
-        let wrapped = word_wrap_lines(
+        let wrapped = adaptive_wrap_lines(
             self.message.lines().map(|l| Line::from(l).style(style)),
             // Wrap algorithm matches textarea.rs.
             RtOptions::new(usize::from(wrap_width))
@@ -155,7 +155,7 @@ impl AgentMessageCell {
 
 impl HistoryCell for AgentMessageCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        word_wrap_lines(
+        adaptive_wrap_lines(
             &self.lines,
             RtOptions::new(width as usize)
                 .initial_indent(if self.is_first_line {
@@ -340,7 +340,7 @@ impl HistoryCell for PrefixedWrappedHistoryCell {
         let opts = RtOptions::new(width.max(1) as usize)
             .initial_indent(self.initial_prefix.clone())
             .subsequent_indent(self.subsequent_prefix.clone());
-        let wrapped = word_wrap_lines(&self.text, opts);
+        let wrapped = adaptive_wrap_lines(&self.text, opts);
         let mut out = Vec::new();
         push_owned_lines(&wrapped, &mut out);
         out

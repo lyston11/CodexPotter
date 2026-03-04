@@ -2,7 +2,10 @@ use std::fmt;
 use std::io;
 use std::io::Write;
 
-use crate::wrapping::word_wrap_lines_borrowed;
+use crate::wrapping::RtOptions;
+use crate::wrapping::adaptive_wrap_line;
+use crate::wrapping::line_contains_url_like;
+use crate::wrapping::line_has_mixed_url_and_non_url_tokens;
 use crossterm::Command;
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
@@ -38,10 +41,35 @@ where
     let last_cursor_pos = terminal.last_known_cursor_pos;
     let writer = terminal.backend_mut();
 
-    // Pre-wrap lines using word-aware wrapping so terminal scrollback sees the same
-    // formatting as the TUI. This avoids character-level hard wrapping by the terminal.
-    let wrapped = word_wrap_lines_borrowed(&lines, area.width.max(1) as usize);
-    let wrapped_lines = wrapped.len() as u16;
+    // Pre-wrap lines for terminal scrollback. Three paths:
+    //
+    // - URL-only-ish lines are kept intact (no hard newlines inserted) so that
+    //   terminal emulators can match them as clickable links. The
+    //   terminal will character-wrap these lines at the viewport
+    //   boundary.
+    // - Mixed lines (URL + non-URL prose) are adaptively wrapped so
+    //   non-URL text still wraps naturally while URL tokens remain
+    //   unsplit.
+    // - Non-URL lines also flow through adaptive wrapping; behavior is
+    //   equivalent to standard wrapping when no URL is present.
+    let wrap_width = area.width.max(1) as usize;
+    let mut wrapped = Vec::new();
+    let mut wrapped_rows = 0usize;
+
+    for line in &lines {
+        let line_wrapped =
+            if line_contains_url_like(line) && !line_has_mixed_url_and_non_url_tokens(line) {
+                vec![line.clone()]
+            } else {
+                adaptive_wrap_line(line, RtOptions::new(wrap_width))
+            };
+        wrapped_rows += line_wrapped
+            .iter()
+            .map(|wrapped_line| wrapped_line.width().max(1).div_ceil(wrap_width))
+            .sum::<usize>();
+        wrapped.extend(line_wrapped);
+    }
+    let wrapped_lines = wrapped_rows as u16;
     let cursor_top = if area.bottom() < screen_size.height {
         // If the viewport is not at the bottom of the screen, scroll it down to make room.
         // Don't scroll it past the bottom of the screen.

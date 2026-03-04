@@ -13,8 +13,8 @@ use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
 use crate::shimmer::shimmer_spans;
 use crate::wrapping::RtOptions;
-use crate::wrapping::word_wrap_line;
-use crate::wrapping::word_wrap_lines;
+use crate::wrapping::adaptive_wrap_line;
+use crate::wrapping::adaptive_wrap_lines;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::ExecCommandSource;
 use itertools::Itertools;
@@ -226,7 +226,7 @@ impl HistoryCell for ExecCell {
             }
             let script = strip_bash_lc_and_escape(&call.command);
             let highlighted_script = highlight_bash_to_lines(&script);
-            let cmd_display = word_wrap_lines(
+            let cmd_display = adaptive_wrap_lines(
                 &highlighted_script,
                 RtOptions::new(width as usize)
                     .initial_indent("$ ".magenta().into())
@@ -239,7 +239,7 @@ impl HistoryCell for ExecCell {
                     let wrap_width = width.max(1) as usize;
                     let wrap_opts = RtOptions::new(wrap_width);
                     for unwrapped in output.formatted_output.lines().map(ansi_escape_line) {
-                        let wrapped = word_wrap_line(&unwrapped, wrap_opts.clone());
+                        let wrapped = adaptive_wrap_line(&unwrapped, wrap_opts.clone());
                         push_owned_lines(&wrapped, &mut lines);
                     }
                 }
@@ -340,7 +340,7 @@ impl ExecCell {
             let line = Line::from(line);
             let initial_indent = Line::from(vec![title.cyan(), " ".into()]);
             let subsequent_indent = " ".repeat(initial_indent.width()).into();
-            let wrapped = word_wrap_line(
+            let wrapped = adaptive_wrap_line(
                 &line,
                 RtOptions::new(width as usize)
                     .initial_indent(initial_indent)
@@ -409,7 +409,7 @@ impl ExecCell {
             let first_opts =
                 RtOptions::new(available_first_width).word_splitter(WordSplitter::NoHyphenation);
             let mut first_wrapped: Vec<Line<'static>> = Vec::new();
-            push_owned_lines(&word_wrap_line(first, first_opts), &mut first_wrapped);
+            push_owned_lines(&adaptive_wrap_line(first, first_opts), &mut first_wrapped);
             let mut first_wrapped_iter = first_wrapped.into_iter();
             if let Some(first_segment) = first_wrapped_iter.next() {
                 header_line.extend(first_segment);
@@ -418,7 +418,7 @@ impl ExecCell {
 
             for line in rest {
                 push_owned_lines(
-                    &word_wrap_line(line, continuation_opts.clone()),
+                    &adaptive_wrap_line(line, continuation_opts.clone()),
                     &mut continuation_lines,
                 );
             }
@@ -481,7 +481,7 @@ impl ExecCell {
                     RtOptions::new(output_wrap_width).word_splitter(WordSplitter::NoHyphenation);
                 for line in &raw_output.lines {
                     push_owned_lines(
-                        &word_wrap_line(line, output_opts.clone()),
+                        &adaptive_wrap_line(line, output_opts.clone()),
                         &mut wrapped_output,
                     );
                 }
@@ -753,7 +753,7 @@ mod tests {
         let mut full_wrapped_output: Vec<Line<'static>> = Vec::new();
         for line in &raw_output.lines {
             push_owned_lines(
-                &word_wrap_line(line, output_opts.clone()),
+                &adaptive_wrap_line(line, output_opts.clone()),
                 &mut full_wrapped_output,
             );
         }

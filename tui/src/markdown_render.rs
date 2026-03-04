@@ -1,7 +1,7 @@
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
 use crate::wrapping::RtOptions;
-use crate::wrapping::word_wrap_line;
+use crate::wrapping::adaptive_wrap_line;
 use pulldown_cmark::CodeBlockKind;
 use pulldown_cmark::CowStr;
 use pulldown_cmark::Event;
@@ -492,7 +492,7 @@ where
                 let opts = RtOptions::new(width)
                     .initial_indent(self.current_initial_indent.clone().into())
                     .subsequent_indent(self.current_subsequent_indent.clone().into());
-                for wrapped in word_wrap_line(&line, opts) {
+                for wrapped in adaptive_wrap_line(&line, opts) {
                     let owned = line_to_static(&wrapped).style(style);
                     self.text.lines.push(owned);
                 }

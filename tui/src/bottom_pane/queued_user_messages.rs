@@ -8,7 +8,7 @@ use ratatui::widgets::Paragraph;
 use crate::key_hint;
 use crate::render::renderable::Renderable;
 use crate::wrapping::RtOptions;
-use crate::wrapping::word_wrap_lines;
+use crate::wrapping::adaptive_wrap_lines;
 
 /// Widget that displays a list of user messages queued while a task is in progress.
 pub struct QueuedUserMessages {
@@ -30,7 +30,7 @@ impl QueuedUserMessages {
         let mut lines = vec![];
 
         for message in &self.messages {
-            let wrapped = word_wrap_lines(
+            let wrapped = adaptive_wrap_lines(
                 message.lines().map(|line| line.dim().italic()),
                 RtOptions::new(width as usize)
                     .initial_indent(Line::from("  ↳ ".dim()))
