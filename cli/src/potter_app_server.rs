@@ -263,8 +263,10 @@ async fn handle_request(
             }
         }
         PotterAppServerClientRequest::ProjectInterrupt { request_id, params } => {
-            interrupt_project(state, params);
-            send_response(writer_tx, request_id, serde_json::json!({}));
+            match interrupt_project(state, params) {
+                Ok(()) => send_response(writer_tx, request_id, serde_json::json!({})),
+                Err(err) => send_error(writer_tx, request_id, -32000, format!("{err:#}")),
+            }
         }
     }
 
@@ -492,13 +494,39 @@ async fn start_rounds(
     })
 }
 
-fn interrupt_project(state: &mut ServerState, params: ProjectInterruptParams) {
-    if let Some(running) = state.running.take()
-        && running.project_id == params.project_id
-    {
+fn interrupt_project(
+    state: &mut ServerState,
+    params: ProjectInterruptParams,
+) -> anyhow::Result<()> {
+    let ProjectInterruptParams { project_id } = params;
+
+    if let Some(running) = state.running.as_ref() {
+        anyhow::ensure!(
+            running.project_id == project_id,
+            "active running project mismatch: running={} requested={project_id}",
+            running.project_id
+        );
+
+        let running = state
+            .running
+            .take()
+            .context("take running project after id match")?;
         running.handle.abort();
+        state.resumed = None;
+        return Ok(());
     }
-    state.resumed = None;
+
+    if let Some(resumed) = state.resumed.as_ref() {
+        anyhow::ensure!(
+            resumed.project_id == project_id,
+            "active resumed project mismatch: resumed={} requested={project_id}",
+            resumed.project_id
+        );
+        state.resumed = None;
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 fn send_response<T>(writer_tx: &UnboundedSender<JSONRPCMessage>, request_id: RequestId, payload: T)
@@ -1605,6 +1633,79 @@ mod tests {
             matches!(completed, PotterProjectOutcome::Fatal { .. }),
             "expected fatal outcome, got {completed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn interrupt_project_id_mismatch_returns_jsonrpc_error_and_preserves_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let config = PotterAppServerConfig {
+            default_workdir: temp.path().to_path_buf(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server_backend::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+        };
+
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+
+        let mut state = ServerState {
+            config,
+            running: Some(RunningProject {
+                project_id: "project_1".to_string(),
+                handle,
+            }),
+            resumed: None,
+        };
+
+        let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (internal_tx, _internal_rx) = unbounded_channel::<InternalEvent>();
+
+        handle_request(
+            JSONRPCRequest {
+                id: RequestId::Integer(1),
+                method: "project/interrupt".to_string(),
+                params: Some(serde_json::json!({
+                    "projectId": "project_2",
+                })),
+            },
+            &mut state,
+            &writer_tx,
+            &internal_tx,
+        )
+        .await
+        .expect("handle request");
+
+        let msg = writer_rx.recv().await.expect("response");
+        let JSONRPCMessage::Error(error) = msg else {
+            panic!("expected JSONRPC error response, got {msg:?}");
+        };
+        assert_eq!(error.id, RequestId::Integer(1));
+        assert_eq!(error.error.code, -32000);
+        assert!(
+            error.error.message.contains("mismatch"),
+            "unexpected error message: {:?}",
+            error.error.message
+        );
+
+        assert!(
+            state
+                .running
+                .as_ref()
+                .is_some_and(|running| running.project_id == "project_1"),
+            "expected running project to be preserved; got state.running={:?}",
+            state.running
+        );
+
+        let running = state.running.take().expect("running project");
+        running.handle.abort();
+        let _ = running.handle.await;
     }
 
     fn drain_potter_events(mut writer_rx: UnboundedReceiver<JSONRPCMessage>) -> Vec<Event> {
