@@ -1,3 +1,17 @@
+//! CodexPotter CLI entrypoint.
+//!
+//! This binary wires together three major layers:
+//!
+//! - `app_server`: Drives the upstream `codex app-server` process (execution plane), and also
+//!   provides the long-lived `codex-potter app-server` implementation (project control plane).
+//! - `workflow`: Orchestrates CodexPotter projects/rounds, persists `potter-rollout.jsonl`, and
+//!   supports `resume` by replaying recorded events.
+//! - `exec`: Runs CodexPotter non-interactively and emits a machine-readable JSONL stream
+//!   (`codex-potter exec --json`).
+//!
+//! Interactive mode (default) uses the `codex-tui` crate for rendering; the TUI is kept as a pure
+//! renderer that is driven by the `EventMsg` stream from the app-server.
+
 mod app_server;
 mod atomic_write;
 mod codex_compat;

@@ -1,3 +1,15 @@
+//! Non-interactive `exec --json` runner.
+//!
+//! `codex-potter exec --json` is intended for automation and tooling integration. It runs a
+//! CodexPotter project in headless mode and emits newline-delimited JSON events to stdout.
+//!
+//! Design notes:
+//! - Output is a strict superset of upstream `codex exec --json` events (see [`ExecJsonlEvent`]).
+//! - Interactive requests (e.g. `RequestUserInput`) are treated as fatal because `exec` is
+//!   non-interactive.
+//! - Preflight failures should still produce a single JSONL `error` event so downstream consumers
+//!   can handle failures uniformly.
+
 mod jsonl;
 
 #[cfg(test)]
