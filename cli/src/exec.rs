@@ -5,8 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use chrono::Local;
-use codex_tui::ExitReason;
+use anyhow::Context;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::PotterProjectOutcome;
 
 pub async fn run_exec_json(
     workdir: &Path,
@@ -14,7 +15,6 @@ pub async fn run_exec_json(
     rounds: NonZeroUsize,
     codex_bin: String,
     backend_launch: crate::app_server_backend::AppServerLaunchConfig,
-    codex_compat_home: Option<PathBuf>,
 ) -> i32 {
     let prompt = match prompt {
         Some(prompt) => prompt,
@@ -32,176 +32,182 @@ pub async fn run_exec_json(
         return 1;
     }
 
-    let now = Local::now();
-    let init = match crate::project::init_project(workdir, &prompt, now) {
-        Ok(init) => init,
+    let rounds_total_u32 = u32::try_from(rounds.get()).unwrap_or(u32::MAX);
+
+    let mut client = match crate::potter_app_server_client::PotterAppServerClient::spawn(
+        workdir.to_path_buf(),
+        codex_bin,
+        rounds,
+        backend_launch,
+    )
+    .await
+    {
+        Ok(client) => client,
         Err(err) => {
             let _ = write_exec_json_preflight_error(&format!("{err:#}"));
             return 1;
         }
     };
 
-    let project_started_at = Instant::now();
-    let progress_file_abs = workdir.join(&init.progress_file_rel);
-    let project_dir_rel = match init.progress_file_rel.parent() {
-        Some(dir) => dir.to_path_buf(),
-        None => {
-            let _ = write_exec_json_preflight_error(
-                "failed to derive project_dir from progress file path",
-            );
-            return 1;
-        }
-    };
-    let project_dir_abs = workdir.join(&project_dir_rel);
-    let potter_rollout_path = crate::potter_rollout::potter_rollout_path(&project_dir_abs);
+    if let Err(err) = client.initialize().await {
+        let _ = write_exec_json_preflight_error(&format!("{err:#}"));
+        return 1;
+    }
 
-    let git_branch = match crate::project::progress_file_git_branch(&progress_file_abs) {
-        Ok(branch) => branch,
+    let mut buffered_events = Vec::new();
+    let start_response = match client
+        .project_start(
+            crate::potter_app_server_protocol::ProjectStartParams {
+                user_message: prompt.clone(),
+                cwd: Some(workdir.to_path_buf()),
+                rounds: Some(rounds_total_u32),
+                event_mode: Some(crate::potter_app_server_protocol::PotterEventMode::ExecJson),
+            },
+            &mut buffered_events,
+        )
+        .await
+    {
+        Ok(response) => response,
         Err(err) => {
             let _ = write_exec_json_preflight_error(&format!("{err:#}"));
+            let _ = client.shutdown().await;
             return 1;
         }
     };
 
     let stdout = std::io::stdout();
-    let mut out = stdout.lock();
+    let mut emitter = ExecJsonlEmitter::new(stdout.lock(), start_response.working_dir.clone());
 
-    if write_jsonl_event(
-        &mut out,
-        &crate::exec_jsonl::ExecJsonlEvent::PotterProjectStarted(
+    if emitter
+        .write_jsonl_event(&crate::exec_jsonl::ExecJsonlEvent::PotterProjectStarted(
             crate::exec_jsonl::PotterProjectStartedEvent {
-                working_dir: workdir.to_string_lossy().to_string(),
-                project_dir: project_dir_abs.to_string_lossy().to_string(),
-                progress_file: progress_file_abs.to_string_lossy().to_string(),
+                working_dir: start_response.working_dir.to_string_lossy().to_string(),
+                project_dir: start_response.project_dir.to_string_lossy().to_string(),
+                progress_file: start_response.progress_file.to_string_lossy().to_string(),
                 user_message: prompt.clone(),
-                git_commit_start: init.git_commit_start.clone(),
-                git_branch: git_branch.clone(),
+                git_commit_start: start_response.git_commit_start.clone(),
+                git_branch: start_response.git_branch.clone(),
             },
-        ),
-    )
-    .is_err()
+        ))
+        .is_err()
     {
+        let _ = client.shutdown().await;
         return 1;
     }
 
-    let developer_prompt = crate::project::render_developer_prompt(&init.progress_file_rel);
-    let turn_prompt = crate::project::fixed_prompt().trim_end().to_string();
-    let rounds_total = u32::try_from(rounds.get()).unwrap_or(u32::MAX);
+    let project_started_at = Instant::now();
 
-    let mut ui = crate::exec_json_round_ui::ExecJsonRoundUi::new(out, workdir.to_path_buf());
+    let mut final_outcome: Option<PotterProjectOutcome> = None;
+    let mut should_interrupt_project = false;
 
-    let round_context = crate::round_runner::PotterRoundContext {
-        codex_bin,
-        developer_prompt,
-        backend_launch,
-        backend_event_mode: crate::app_server_backend::AppServerEventMode::ExecJson,
-        codex_compat_home,
-        thread_cwd: Some(workdir.to_path_buf()),
-        turn_prompt,
-        workdir: workdir.to_path_buf(),
-        progress_file_rel: init.progress_file_rel.clone(),
-        user_prompt_file: init.progress_file_rel.clone(),
-        git_commit_start: init.git_commit_start.clone(),
-        potter_rollout_path,
-        project_started_at,
-    };
-
-    let mut rounds_run: u32 = 0;
-    let mut final_outcome: crate::exec_jsonl::PotterProjectCompletedOutcome =
-        crate::exec_jsonl::PotterProjectCompletedOutcome::BudgetExhausted;
-    let mut final_message: Option<String> = None;
-
-    for round_index in 0..rounds.get() {
-        let current_round = u32::try_from(round_index.saturating_add(1)).unwrap_or(u32::MAX);
-        let project_started = if round_index == 0 {
-            Some(crate::round_runner::PotterProjectStartedInfo {
-                user_message: Some(prompt.clone()),
-                working_dir: workdir.to_path_buf(),
-                project_dir: project_dir_rel.clone(),
-                user_prompt_file: init.progress_file_rel.clone(),
-            })
+    let mut buffered_iter = buffered_events.into_iter();
+    while final_outcome.is_none() {
+        let next = if let Some(event) = buffered_iter.next() {
+            Some(event)
         } else {
-            None
-        };
-
-        let round_result = match crate::round_runner::run_potter_round(
-            &mut ui,
-            &round_context,
-            crate::round_runner::PotterRoundOptions {
-                pad_before_first_cell: round_index != 0,
-                project_started,
-                round_current: current_round,
-                round_total: rounds_total,
-                project_succeeded_rounds: current_round,
-            },
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                final_outcome = crate::exec_jsonl::PotterProjectCompletedOutcome::Fatal;
-                final_message = Some(format!("{err:#}"));
-                break;
-            }
-        };
-
-        rounds_run = rounds_run.saturating_add(1);
-
-        match round_result.exit_reason {
-            ExitReason::Completed => {
-                if round_result.stop_due_to_finite_incantatem {
-                    final_outcome = crate::exec_jsonl::PotterProjectCompletedOutcome::Succeeded;
+            match client.read_next_event().await {
+                Ok(event) => event,
+                Err(err) => {
+                    let message = format!("{err:#}");
+                    should_interrupt_project = true;
+                    if emitter.fail_fast_with_error(message.clone()).is_err() {
+                        let _ = client.shutdown().await;
+                        return 1;
+                    }
+                    final_outcome = Some(PotterProjectOutcome::Fatal { message });
                     break;
                 }
             }
-            ExitReason::TaskFailed(message) => {
-                final_outcome = crate::exec_jsonl::PotterProjectCompletedOutcome::TaskFailed;
-                final_message = Some(message);
+        };
+
+        let Some(event) = next else {
+            let message = "potter app-server event stream closed unexpectedly".to_string();
+            should_interrupt_project = true;
+            if emitter.fail_fast_with_error(message.clone()).is_err() {
+                let _ = client.shutdown().await;
+                return 1;
+            }
+            final_outcome = Some(PotterProjectOutcome::Fatal { message });
+            break;
+        };
+
+        match emitter.process_event_msg(&event.msg) {
+            Ok(ExecEventProgress::Continue) => {}
+            Ok(ExecEventProgress::ProjectCompleted { outcome }) => {
+                final_outcome = Some(outcome);
                 break;
             }
-            ExitReason::Fatal(message) => {
-                final_outcome = crate::exec_jsonl::PotterProjectCompletedOutcome::Fatal;
-                final_message = Some(message);
+            Ok(ExecEventProgress::FailFast { message }) => {
+                should_interrupt_project = true;
+                if emitter.fail_fast_with_error(message.clone()).is_err() {
+                    let _ = client.shutdown().await;
+                    return 1;
+                }
+                final_outcome = Some(PotterProjectOutcome::Fatal { message });
                 break;
             }
-            ExitReason::UserRequested => {
-                final_outcome = crate::exec_jsonl::PotterProjectCompletedOutcome::Fatal;
-                final_message = Some(String::from("user requested"));
+            Err(err) => {
+                let message = format!("{err:#}");
+                should_interrupt_project = true;
+                if emitter.fail_fast_with_error(message.clone()).is_err() {
+                    let _ = client.shutdown().await;
+                    return 1;
+                }
+                final_outcome = Some(PotterProjectOutcome::Fatal { message });
                 break;
             }
         }
     }
 
-    let mut out = ui.into_output();
+    let rounds_run = emitter.rounds_run();
 
-    let git_commit_end = crate::project::resolve_git_commit(workdir);
+    if should_interrupt_project {
+        let _ = client
+            .project_interrupt(
+                crate::potter_app_server_protocol::ProjectInterruptParams {
+                    project_id: start_response.project_id.clone(),
+                },
+                &mut Vec::new(),
+            )
+            .await;
+    }
 
+    let final_outcome = final_outcome.unwrap_or_else(|| PotterProjectOutcome::Fatal {
+        message: "missing PotterProjectCompleted marker".to_string(),
+    });
+    let (final_outcome_json, final_message) = exec_project_outcome(&final_outcome);
+
+    let git_commit_end = crate::project::resolve_git_commit(&start_response.working_dir);
     let project_completed = crate::exec_jsonl::ExecJsonlEvent::PotterProjectCompleted(
         crate::exec_jsonl::PotterProjectCompletedEvent {
-            outcome: final_outcome.clone(),
+            outcome: final_outcome_json.clone(),
             message: final_message.clone(),
             rounds_run,
-            rounds_total,
+            rounds_total: start_response.rounds_total,
             duration_secs: project_started_at.elapsed().as_secs(),
-            progress_file: progress_file_abs.to_string_lossy().to_string(),
-            git_commit_start: init.git_commit_start,
+            progress_file: start_response.progress_file.to_string_lossy().to_string(),
+            git_commit_start: start_response.git_commit_start.clone(),
             git_commit_end,
-            git_branch,
+            git_branch: start_response.git_branch.clone(),
         },
     );
 
-    if write_jsonl_event(&mut out, &project_completed).is_err() {
+    if emitter.write_jsonl_event(&project_completed).is_err() {
+        let _ = client.shutdown().await;
         return 1;
     }
 
-    if matches!(
-        final_outcome,
+    let exit_code = if matches!(
+        final_outcome_json,
         crate::exec_jsonl::PotterProjectCompletedOutcome::Succeeded
     ) {
         0
     } else {
         1
-    }
+    };
+
+    let _ = client.shutdown().await;
+    exit_code
 }
 
 fn read_prompt_from_stdin() -> anyhow::Result<String> {
@@ -230,4 +236,160 @@ fn write_jsonl_event<W: Write>(
     out.write_all(b"\n")?;
     out.flush()?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecEventProgress {
+    Continue,
+    ProjectCompleted { outcome: PotterProjectOutcome },
+    FailFast { message: String },
+}
+
+struct ExecJsonlEmitter<W: Write> {
+    output: W,
+    processor: crate::exec_jsonl::ExecJsonlEventProcessor,
+    json_turn_open: bool,
+    round_in_progress: bool,
+    rounds_run: u32,
+}
+
+impl<W: Write> ExecJsonlEmitter<W> {
+    fn new(output: W, workdir: PathBuf) -> Self {
+        Self {
+            output,
+            processor: crate::exec_jsonl::ExecJsonlEventProcessor::with_workdir(workdir),
+            json_turn_open: false,
+            round_in_progress: false,
+            rounds_run: 0,
+        }
+    }
+
+    fn rounds_run(&self) -> u32 {
+        self.rounds_run
+    }
+
+    fn write_jsonl_event(
+        &mut self,
+        event: &crate::exec_jsonl::ExecJsonlEvent,
+    ) -> anyhow::Result<()> {
+        write_jsonl_event(&mut self.output, event).context("write exec jsonl event")?;
+        self.observe_json_turn_state(event);
+        Ok(())
+    }
+
+    fn observe_json_turn_state(&mut self, event: &crate::exec_jsonl::ExecJsonlEvent) {
+        match event {
+            crate::exec_jsonl::ExecJsonlEvent::TurnStarted(_) => self.json_turn_open = true,
+            crate::exec_jsonl::ExecJsonlEvent::TurnCompleted(_)
+            | crate::exec_jsonl::ExecJsonlEvent::TurnFailed(_) => self.json_turn_open = false,
+            _ => {}
+        }
+    }
+
+    fn start_round(&mut self) {
+        self.processor.reset_round_state();
+        self.json_turn_open = false;
+        self.round_in_progress = true;
+    }
+
+    fn process_event_msg(&mut self, msg: &EventMsg) -> anyhow::Result<ExecEventProgress> {
+        match msg {
+            EventMsg::RequestUserInput(ev) => {
+                let message = format!(
+                    "unsupported interactive request: RequestUserInput call_id={}",
+                    ev.call_id
+                );
+                return Ok(ExecEventProgress::FailFast { message });
+            }
+            EventMsg::ElicitationRequest(ev) => {
+                let message = format!(
+                    "unsupported interactive request: ElicitationRequest server_name={} request_id={}",
+                    ev.server_name, ev.id
+                );
+                return Ok(ExecEventProgress::FailFast { message });
+            }
+            EventMsg::PotterProjectCompleted { outcome } => {
+                return Ok(ExecEventProgress::ProjectCompleted {
+                    outcome: outcome.clone(),
+                });
+            }
+            _ => {}
+        }
+
+        if matches!(msg, EventMsg::PotterRoundStarted { .. }) {
+            self.start_round();
+        }
+
+        for mapped in self.processor.collect_event(msg) {
+            self.write_jsonl_event(&mapped)?;
+        }
+
+        if matches!(msg, EventMsg::PotterRoundFinished { .. }) {
+            self.round_in_progress = false;
+            self.rounds_run = self.rounds_run.saturating_add(1);
+        }
+
+        Ok(ExecEventProgress::Continue)
+    }
+
+    fn fail_fast_with_error(&mut self, message: String) -> anyhow::Result<()> {
+        self.write_jsonl_event(&crate::exec_jsonl::ExecJsonlEvent::Error(
+            crate::exec_jsonl::ThreadErrorEvent {
+                message: message.clone(),
+            },
+        ))?;
+        self.synthesize_round_fatal_closure(&message)?;
+        Ok(())
+    }
+
+    fn synthesize_round_fatal_closure(&mut self, message: &str) -> anyhow::Result<()> {
+        if self.json_turn_open {
+            self.write_jsonl_event(&crate::exec_jsonl::ExecJsonlEvent::TurnFailed(
+                crate::exec_jsonl::TurnFailedEvent {
+                    error: crate::exec_jsonl::ThreadErrorEvent {
+                        message: message.to_string(),
+                    },
+                },
+            ))?;
+        }
+
+        if self.round_in_progress {
+            self.write_jsonl_event(&crate::exec_jsonl::ExecJsonlEvent::PotterRoundCompleted(
+                crate::exec_jsonl::PotterRoundCompletedEvent {
+                    outcome: crate::exec_jsonl::PotterRoundCompletedOutcome::Fatal,
+                    message: Some(message.to_string()),
+                },
+            ))?;
+            self.round_in_progress = false;
+            self.rounds_run = self.rounds_run.saturating_add(1);
+        }
+
+        Ok(())
+    }
+}
+
+fn exec_project_outcome(
+    outcome: &PotterProjectOutcome,
+) -> (
+    crate::exec_jsonl::PotterProjectCompletedOutcome,
+    Option<String>,
+) {
+    match outcome {
+        PotterProjectOutcome::Succeeded => (
+            crate::exec_jsonl::PotterProjectCompletedOutcome::Succeeded,
+            None,
+        ),
+        PotterProjectOutcome::BudgetExhausted => (
+            crate::exec_jsonl::PotterProjectCompletedOutcome::BudgetExhausted,
+            None,
+        ),
+        PotterProjectOutcome::TaskFailed { message } => (
+            crate::exec_jsonl::PotterProjectCompletedOutcome::TaskFailed,
+            Some(message.clone()),
+        ),
+        PotterProjectOutcome::Fatal { message } => (
+            crate::exec_jsonl::PotterProjectCompletedOutcome::Fatal,
+            Some(message.clone()),
+        ),
+    }
 }

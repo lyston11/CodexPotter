@@ -9,6 +9,7 @@ mod exec_jsonl;
 mod global_gitignore;
 mod path_utils;
 mod potter_app_server;
+mod potter_app_server_client;
 mod potter_app_server_protocol;
 mod potter_rollout;
 mod potter_rollout_resume_index;
@@ -192,21 +193,12 @@ async fn main() -> anyhow::Result<()> {
             cli.dangerously_bypass_approvals_and_sandbox,
         );
 
-        let codex_compat_home = match crate::codex_compat::ensure_default_codex_compat_home() {
-            Ok(home) => home,
-            Err(err) => {
-                eprintln!("warning: failed to configure codex-compat home: {err}");
-                None
-            }
-        };
-
         let exit_code = crate::exec::run_exec_json(
             &workdir,
             prompt.clone(),
             cli.rounds,
             codex_bin,
             backend_launch,
-            codex_compat_home,
         )
         .await;
         std::process::exit(exit_code);

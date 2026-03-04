@@ -30,6 +30,7 @@ use crate::app_server_protocol::JSONRPCNotification;
 use crate::app_server_protocol::JSONRPCRequest;
 use crate::app_server_protocol::JSONRPCResponse;
 use crate::app_server_protocol::RequestId;
+use crate::potter_app_server_protocol::POTTER_EVENT_NOTIFICATION_METHOD;
 use crate::potter_app_server_protocol::PotterAppServerClientNotification;
 use crate::potter_app_server_protocol::PotterAppServerClientRequest;
 use crate::potter_app_server_protocol::PotterEventMode;
@@ -47,8 +48,6 @@ use crate::potter_app_server_protocol::ProjectStartResponse;
 use crate::potter_app_server_protocol::ProjectStartRoundsParams;
 use crate::potter_app_server_protocol::ProjectStartRoundsResponse;
 use crate::potter_app_server_protocol::ResumePolicy;
-
-const EVENT_NOTIFICATION_METHOD: &str = "codex/event/potter";
 
 #[derive(Debug, Clone)]
 pub struct PotterAppServerConfig {
@@ -1315,7 +1314,7 @@ impl EventForwardingRoundUi {
         let _ = self
             .writer_tx
             .send(JSONRPCMessage::Notification(JSONRPCNotification {
-                method: EVENT_NOTIFICATION_METHOD.to_string(),
+                method: POTTER_EVENT_NOTIFICATION_METHOD.to_string(),
                 params: Some(params),
             }));
     }

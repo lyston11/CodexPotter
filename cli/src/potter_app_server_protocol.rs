@@ -10,6 +10,8 @@ use crate::app_server_protocol::JSONRPCNotification;
 use crate::app_server_protocol::JSONRPCRequest;
 use crate::app_server_protocol::RequestId;
 
+pub const POTTER_EVENT_NOTIFICATION_METHOD: &str = "codex/event/potter";
+
 /// Requests from a Potter app-server client.
 ///
 /// The wire format intentionally mirrors upstream Codex app-server JSON-RPC requests:
