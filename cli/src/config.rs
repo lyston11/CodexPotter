@@ -1,3 +1,18 @@
+//! CodexPotter CLI configuration.
+//!
+//! This module owns reading and writing the user config file at `~/.codexpotter/config.toml`
+//! (see [`ConfigStore::new_default`]).
+//!
+//! Design notes:
+//! - Writes are comment-preserving whenever possible (via `toml_edit`).
+//! - Reads are intentionally resilient: if the TOML is invalid, we fall back to a tiny
+//!   line-based parser for a small set of boolean keys so the CLI can still start and users can
+//!   fix the file in place.
+//!
+//! Current keys:
+//! - `[notice] hide_gitignore_prompt` (bool): hides the gitignore startup prompt.
+//! - `check_for_update_on_startup` (bool): enables update checks on startup (default: `true`).
+
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,6 +24,7 @@ use toml_edit::value;
 
 use crate::atomic_write::write_atomic_text;
 
+/// Persistent user configuration backed by a TOML file on disk.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     path: PathBuf,
