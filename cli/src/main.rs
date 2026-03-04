@@ -241,7 +241,6 @@ async fn main() -> anyhow::Result<()> {
         maybe_prompt_global_gitignore(&mut ui, &workdir, plan).await;
     }
 
-    let project_queue_allow_prompt_user = true;
     let mut project_queue_workdir = workdir.clone();
 
     let mut potter_app_server = crate::potter_app_server_client::PotterAppServerClient::spawn(
@@ -333,7 +332,9 @@ async fn main() -> anyhow::Result<()> {
         &mut potter_app_server,
         project_queue_workdir.clone(),
         crate::project_runner::ProjectQueueOptions {
-            allow_prompt_user: project_queue_allow_prompt_user,
+            // Keep the project queue interactive even after `resume` completes, so users can
+            // continue queueing work (or simply wait) without restarting the CLI.
+            allow_prompt_user: true,
             rounds: cli.rounds,
             turn_prompt: turn_prompt.clone(),
         },
