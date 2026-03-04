@@ -1795,6 +1795,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupt_project_sets_interrupt_flag_on_first_request_and_keeps_running_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let config = PotterAppServerConfig {
+            default_workdir: temp.path().to_path_buf(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+        };
+
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+
+        let mut state = ServerState {
+            config,
+            running: Some(RunningProject {
+                project_id: "project_1".to_string(),
+                handle,
+                interrupt_tx,
+            }),
+            resumed: None,
+        };
+
+        let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (internal_tx, _internal_rx) = unbounded_channel::<InternalEvent>();
+
+        handle_request(
+            JSONRPCRequest {
+                id: RequestId::Integer(1),
+                method: "project/interrupt".to_string(),
+                params: Some(serde_json::json!({
+                    "projectId": "project_1",
+                })),
+            },
+            &mut state,
+            &writer_tx,
+            &internal_tx,
+        )
+        .await
+        .expect("handle request");
+
+        let msg = writer_rx.recv().await.expect("response");
+        let JSONRPCMessage::Response(response) = msg else {
+            panic!("expected JSONRPC response, got {msg:?}");
+        };
+        assert_eq!(response.id, RequestId::Integer(1));
+        assert_eq!(response.result, serde_json::json!({}));
+
+        assert!(
+            state.running.is_some(),
+            "expected running project to remain active; got state.running={:?}",
+            state.running
+        );
+        assert!(
+            *interrupt_rx.borrow(),
+            "expected interrupt flag to be set on first request"
+        );
+
+        let running = state.running.take().expect("running project");
+        running.handle.abort();
+        let _ = running.handle.await;
+    }
+
+    #[tokio::test]
+    async fn interrupt_project_force_aborts_on_second_request() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let config = PotterAppServerConfig {
+            default_workdir: temp.path().to_path_buf(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+        };
+
+        struct DropNotify(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl Drop for DropNotify {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let (drop_tx, drop_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let notify = DropNotify(Some(drop_tx));
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            drop(notify);
+        });
+        tokio::task::yield_now().await;
+
+        let (interrupt_tx, _interrupt_rx) = watch::channel(false);
+
+        let mut state = ServerState {
+            config,
+            running: Some(RunningProject {
+                project_id: "project_1".to_string(),
+                handle,
+                interrupt_tx,
+            }),
+            resumed: None,
+        };
+
+        let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (internal_tx, _internal_rx) = unbounded_channel::<InternalEvent>();
+
+        for request_id in [1, 2] {
+            handle_request(
+                JSONRPCRequest {
+                    id: RequestId::Integer(request_id),
+                    method: "project/interrupt".to_string(),
+                    params: Some(serde_json::json!({
+                        "projectId": "project_1",
+                    })),
+                },
+                &mut state,
+                &writer_tx,
+                &internal_tx,
+            )
+            .await
+            .expect("handle request");
+
+            let msg = writer_rx.recv().await.expect("response");
+            let JSONRPCMessage::Response(response) = msg else {
+                panic!("expected JSONRPC response, got {msg:?}");
+            };
+            assert_eq!(response.id, RequestId::Integer(request_id));
+            assert_eq!(response.result, serde_json::json!({}));
+        }
+
+        assert!(
+            state.running.is_none(),
+            "expected running project to be force-aborted on second interrupt; got state.running={:?}",
+            state.running
+        );
+
+        tokio::task::yield_now().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), drop_rx)
+            .await
+            .expect("expected aborted task to be dropped")
+            .expect("drop notify");
+    }
+
+    #[tokio::test]
     async fn interrupt_project_id_mismatch_returns_jsonrpc_error_and_preserves_state() {
         let temp = tempfile::tempdir().expect("tempdir");
 
