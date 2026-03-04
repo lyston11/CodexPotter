@@ -7,7 +7,11 @@ use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::line_contains_url_like;
 use crate::wrapping::line_has_mixed_url_and_non_url_tokens;
 use crossterm::Command;
+use crossterm::cursor::MoveDown;
 use crossterm::cursor::MoveTo;
+use crossterm::cursor::MoveToColumn;
+use crossterm::cursor::RestorePosition;
+use crossterm::cursor::SavePosition;
 use crossterm::queue;
 use crossterm::style::Color as CColor;
 use crossterm::style::Colors;
@@ -122,6 +126,18 @@ where
 
     for line in wrapped {
         queue!(writer, Print("\r\n"))?;
+        // URL lines can be wider than the terminal and will
+        // character-wrap onto continuation rows. Pre-clear those rows
+        // so stale content from a previously longer line is erased.
+        let physical_rows = line.width().max(1).div_ceil(wrap_width);
+        if physical_rows > 1 {
+            queue!(writer, SavePosition)?;
+            for _ in 1..physical_rows {
+                queue!(writer, MoveDown(1), MoveToColumn(0))?;
+                queue!(writer, Clear(ClearType::UntilNewLine))?;
+            }
+            queue!(writer, RestorePosition)?;
+        }
         queue!(
             writer,
             SetColors(Colors::new(
@@ -554,5 +570,45 @@ mod tests {
                 cell.fgcolor()
             );
         }
+    }
+
+    #[test]
+    fn vt100_unwrapped_url_like_clears_continuation_rows() {
+        let width: u16 = 20;
+        let height: u16 = 10;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, height - 1, width, 1);
+        term.set_viewport_area(viewport);
+
+        let filler_line: Line<'static> = Line::from(vec![
+            "  │ ".into(),
+            "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX".into(),
+        ]);
+        insert_history_lines(&mut term, vec![filler_line]).expect("insert filler history");
+
+        let url_like = "example.test/api/v1/short";
+        let url_line: Line<'static> = Line::from(vec!["  │ ".into(), url_like.into()]);
+        insert_history_lines(&mut term, vec![url_line]).expect("insert url-like history");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+        let first_row = rows
+            .iter()
+            .position(|row| row.contains("│ example.test/api"))
+            .unwrap_or_else(|| panic!("expected url-like first row in screen rows: {rows:?}"));
+        assert!(
+            first_row + 1 < rows.len(),
+            "expected a continuation row for wrapped URL-like line, rows: {rows:?}"
+        );
+        let continuation_row = rows[first_row + 1].trim_end();
+
+        assert!(
+            continuation_row.contains("/v1/short") || continuation_row.contains("short"),
+            "expected continuation row to contain wrapped URL-like tail, got: {continuation_row:?}"
+        );
+        assert!(
+            !continuation_row.contains('X'),
+            "expected continuation row to be cleared before writing wrapped URL-like content, got: {continuation_row:?}"
+        );
     }
 }
