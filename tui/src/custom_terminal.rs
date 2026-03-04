@@ -84,13 +84,13 @@ pub struct Frame<'a> {
     ///
     /// If `None`, the cursor is hidden and its position is controlled by the backend. If `Some((x,
     /// y))`, the cursor is shown and placed at `(x, y)` after the call to `Terminal::draw()`.
-    pub cursor_position: Option<Position>,
+    cursor_position: Option<Position>,
 
     /// The area of the viewport
-    pub viewport_area: Rect,
+    viewport_area: Rect,
 
     /// The buffer that is used to draw the current frame
-    pub buffer: &'a mut Buffer,
+    buffer: &'a mut Buffer,
 }
 
 impl Frame<'_> {
