@@ -34,6 +34,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::watch;
 
 use crate::app_server::potter::POTTER_EVENT_NOTIFICATION_METHOD;
 use crate::app_server::potter::PotterAppServerClientNotification;
@@ -74,6 +75,7 @@ pub struct PotterAppServerConfig {
 struct RunningProject {
     project_id: String,
     handle: tokio::task::JoinHandle<()>,
+    interrupt_tx: watch::Sender<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -537,18 +539,26 @@ fn interrupt_project(
     let ProjectInterruptParams { project_id } = params;
 
     if let Some(running) = state.running.as_ref() {
+        let running_project_id = running.project_id.clone();
+        let already_requested = *running.interrupt_tx.borrow();
+        let interrupt_tx = running.interrupt_tx.clone();
+
         anyhow::ensure!(
-            running.project_id == project_id,
-            "active running project mismatch: running={} requested={project_id}",
-            running.project_id
+            running_project_id == project_id,
+            "active running project mismatch: running={running_project_id} requested={project_id}",
         );
 
-        let running = state
-            .running
-            .take()
-            .context("take running project after id match")?;
-        running.handle.abort();
-        state.resumed = None;
+        if already_requested {
+            let running = state
+                .running
+                .take()
+                .context("take running project after id match")?;
+            running.handle.abort();
+            state.resumed = None;
+            return Ok(());
+        }
+
+        let _ = interrupt_tx.send(true);
         return Ok(());
     }
 
@@ -932,9 +942,10 @@ fn spawn_fresh_project(
     anyhow::ensure!(running.is_none(), "internal error: project already running");
     *resumed = None;
 
+    let (interrupt_tx, interrupt_rx) = watch::channel(false);
     let project_id_for_event = project_id.clone();
     let handle = tokio::task::spawn_local(async move {
-        if let Err(err) = run_fresh_project(config, writer_tx.clone(), plan).await {
+        if let Err(err) = run_fresh_project(config, writer_tx.clone(), plan, interrupt_rx).await {
             eprintln!("potter app-server fresh project failed: {err:#}");
         }
         let _ = internal_tx.send(InternalEvent::ProjectFinished {
@@ -942,7 +953,11 @@ fn spawn_fresh_project(
         });
     });
 
-    *running = Some(RunningProject { project_id, handle });
+    *running = Some(RunningProject {
+        project_id,
+        handle,
+        interrupt_tx,
+    });
 
     Ok(())
 }
@@ -959,9 +974,10 @@ fn spawn_resumed_project(
     anyhow::ensure!(running.is_none(), "internal error: project already running");
     *resumed = None;
 
+    let (interrupt_tx, interrupt_rx) = watch::channel(false);
     let project_id_for_event = project_id.clone();
     let handle = tokio::task::spawn_local(async move {
-        if let Err(err) = run_resumed_project(config, writer_tx.clone(), plan).await {
+        if let Err(err) = run_resumed_project(config, writer_tx.clone(), plan, interrupt_rx).await {
             eprintln!("potter app-server resumed project failed: {err:#}");
         }
         let _ = internal_tx.send(InternalEvent::ProjectFinished {
@@ -969,7 +985,11 @@ fn spawn_resumed_project(
         });
     });
 
-    *running = Some(RunningProject { project_id, handle });
+    *running = Some(RunningProject {
+        project_id,
+        handle,
+        interrupt_tx,
+    });
 
     Ok(())
 }
@@ -978,6 +998,7 @@ async fn run_fresh_project(
     config: PotterAppServerConfig,
     writer_tx: UnboundedSender<JSONRPCMessage>,
     plan: FreshProjectPlan,
+    interrupt_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let FreshProjectPlan {
         workdir,
@@ -1014,7 +1035,7 @@ async fn run_fresh_project(
         project_started_at,
     };
 
-    let mut ui = EventForwardingRoundUi::new(writer_tx);
+    let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
 
     let mut rounds_run = 0u32;
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
@@ -1093,6 +1114,7 @@ async fn run_resumed_project(
     config: PotterAppServerConfig,
     writer_tx: UnboundedSender<JSONRPCMessage>,
     plan: ResumedProjectPlan,
+    interrupt_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let ResumedProjectPlan {
         resumed,
@@ -1129,7 +1151,7 @@ async fn run_resumed_project(
         project_started_at,
     };
 
-    let mut ui = EventForwardingRoundUi::new(writer_tx);
+    let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
 
     if let Some(unfinished) = resumed.index.unfinished_round.clone()
         && matches!(resume_policy, ResumePolicy::ContinueUnfinishedRound)
@@ -1359,15 +1381,20 @@ fn backend_event_mode_for_potter(mode: PotterEventMode) -> crate::app_server::Ap
 
 struct EventForwardingRoundUi {
     writer_tx: UnboundedSender<JSONRPCMessage>,
+    interrupt_rx: watch::Receiver<bool>,
     token_usage: TokenUsage,
     thread_id: Option<ThreadId>,
     saw_round_finished: bool,
 }
 
 impl EventForwardingRoundUi {
-    fn new(writer_tx: UnboundedSender<JSONRPCMessage>) -> Self {
+    fn new(
+        writer_tx: UnboundedSender<JSONRPCMessage>,
+        interrupt_rx: watch::Receiver<bool>,
+    ) -> Self {
         Self {
             writer_tx,
+            interrupt_rx,
             token_usage: TokenUsage::default(),
             thread_id: None,
             saw_round_finished: false,
@@ -1461,6 +1488,12 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
                 })
                 .map_err(|_| anyhow::anyhow!("codex op channel closed"))?;
 
+            let mut interrupt_sent = false;
+            if *self.interrupt_rx.borrow() {
+                let _ = codex_op_tx.send(codex_protocol::protocol::Op::Interrupt);
+                interrupt_sent = true;
+            }
+
             loop {
                 while let Ok(event) = codex_event_rx.try_recv() {
                     self.forward_event(&event);
@@ -1483,6 +1516,12 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
                 }
 
                 tokio::select! {
+                    interrupt_changed = self.interrupt_rx.changed(), if !interrupt_sent => {
+                        if interrupt_changed.is_ok() && *self.interrupt_rx.borrow() {
+                            let _ = codex_op_tx.send(codex_protocol::protocol::Op::Interrupt);
+                            interrupt_sent = true;
+                        }
+                    }
                     Some(message) = fatal_exit_rx.recv() => {
                         while let Ok(event) = codex_event_rx.try_recv() {
                             self.forward_event(&event);
@@ -1553,6 +1592,66 @@ mod tests {
                 .expect("decode")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn event_forwarding_round_ui_sends_interrupt_and_waits_for_round_finished() {
+        let (writer_tx, _writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+
+        let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<codex_protocol::protocol::Op>();
+        let (codex_event_tx, codex_event_rx) = unbounded_channel::<Event>();
+        let (_fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+
+        let params = codex_tui::RenderRoundParams {
+            prompt: "Hello".to_string(),
+            pad_before_first_cell: false,
+            status_header_prefix: None,
+            prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None),
+            codex_op_tx,
+            codex_event_rx,
+            fatal_exit_rx,
+        };
+
+        let render = async move {
+            let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+            crate::workflow::round_runner::PotterRoundUi::render_round(&mut ui, params).await
+        };
+
+        let driver = async move {
+            let first_op = codex_op_rx.recv().await.expect("op");
+            assert_eq!(
+                first_op,
+                codex_protocol::protocol::Op::UserInput {
+                    items: vec![UserInput::Text {
+                        text: "Hello".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    final_output_json_schema: None,
+                }
+            );
+
+            interrupt_tx.send(true).expect("interrupt");
+
+            let second_op = codex_op_rx.recv().await.expect("op");
+            assert_eq!(second_op, codex_protocol::protocol::Op::Interrupt);
+
+            codex_event_tx
+                .send(Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::UserRequested,
+                    },
+                })
+                .expect("round finished");
+        };
+
+        let (exit_info, ()) = tokio::join!(render, driver);
+        let exit_info = exit_info.expect("render");
+        assert!(matches!(
+            exit_info.exit_reason,
+            codex_tui::ExitReason::UserRequested
+        ));
     }
 
     #[tokio::test]
@@ -1668,8 +1767,9 @@ mod tests {
         };
 
         let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (_interrupt_tx, interrupt_rx) = watch::channel(false);
 
-        run_resumed_project(config, writer_tx, plan)
+        run_resumed_project(config, writer_tx, plan, interrupt_rx)
             .await
             .expect("run resumed project");
 
@@ -1713,12 +1813,14 @@ mod tests {
         let handle = tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         });
+        let (interrupt_tx, _interrupt_rx) = watch::channel(false);
 
         let mut state = ServerState {
             config,
             running: Some(RunningProject {
                 project_id: "project_1".to_string(),
                 handle,
+                interrupt_tx,
             }),
             resumed: None,
         };
@@ -1784,12 +1886,14 @@ mod tests {
         };
 
         let handle = tokio::spawn(async {});
+        let (interrupt_tx, _interrupt_rx) = watch::channel(false);
 
         let mut state = ServerState {
             config,
             running: Some(RunningProject {
                 project_id: "project_1".to_string(),
                 handle,
+                interrupt_tx,
             }),
             resumed: None,
         };
