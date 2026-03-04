@@ -1,0 +1,1310 @@
+use std::io::BufRead as _;
+use std::num::NonZeroUsize;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+use anyhow::Context;
+use chrono::Local;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::PotterRoundOutcome;
+use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::user_input::UserInput;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::unbounded_channel;
+
+use crate::app_server_protocol::JSONRPCError;
+use crate::app_server_protocol::JSONRPCErrorError;
+use crate::app_server_protocol::JSONRPCMessage;
+use crate::app_server_protocol::JSONRPCNotification;
+use crate::app_server_protocol::JSONRPCRequest;
+use crate::app_server_protocol::JSONRPCResponse;
+use crate::app_server_protocol::RequestId;
+use crate::potter_app_server_protocol::PotterAppServerClientNotification;
+use crate::potter_app_server_protocol::PotterAppServerClientRequest;
+use crate::potter_app_server_protocol::PotterEventMode;
+use crate::potter_app_server_protocol::ProjectInterruptParams;
+use crate::potter_app_server_protocol::ProjectListEntry;
+use crate::potter_app_server_protocol::ProjectListParams;
+use crate::potter_app_server_protocol::ProjectListResponse;
+use crate::potter_app_server_protocol::ProjectResumeParams;
+use crate::potter_app_server_protocol::ProjectResumeReplay;
+use crate::potter_app_server_protocol::ProjectResumeReplayRound;
+use crate::potter_app_server_protocol::ProjectResumeResponse;
+use crate::potter_app_server_protocol::ProjectResumeUnfinishedRound;
+use crate::potter_app_server_protocol::ProjectStartParams;
+use crate::potter_app_server_protocol::ProjectStartResponse;
+use crate::potter_app_server_protocol::ProjectStartRoundsParams;
+use crate::potter_app_server_protocol::ProjectStartRoundsResponse;
+use crate::potter_app_server_protocol::ResumePolicy;
+
+const EVENT_NOTIFICATION_METHOD: &str = "codex/event/potter";
+
+#[derive(Debug, Clone)]
+pub struct PotterAppServerConfig {
+    pub default_workdir: PathBuf,
+    pub codex_bin: String,
+    pub backend_launch: crate::app_server_backend::AppServerLaunchConfig,
+    pub codex_compat_home: Option<PathBuf>,
+    pub rounds: NonZeroUsize,
+}
+
+#[derive(Debug)]
+struct RunningProject {
+    project_id: String,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+struct ResumedProject {
+    project_id: String,
+    resolved: crate::resume::ResolvedProjectPaths,
+    progress_file_rel: PathBuf,
+    potter_rollout_lines: Vec<crate::potter_rollout::PotterRolloutLine>,
+    index: crate::potter_rollout_resume_index::PotterRolloutResumeIndex,
+}
+
+struct ServerState {
+    config: PotterAppServerConfig,
+    running: Option<RunningProject>,
+    resumed: Option<ResumedProject>,
+}
+
+enum InternalEvent {
+    ProjectFinished { project_id: String },
+}
+
+pub async fn run_potter_app_server(config: PotterAppServerConfig) -> anyhow::Result<()> {
+    tokio::task::LocalSet::new()
+        .run_until(run_potter_app_server_inner(config))
+        .await
+}
+
+async fn run_potter_app_server_inner(config: PotterAppServerConfig) -> anyhow::Result<()> {
+    let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
+    let writer = tokio::spawn(async move {
+        let mut stdout = tokio::io::stdout();
+        while let Some(msg) = writer_rx.recv().await {
+            let json = serde_json::to_vec(&msg).context("serialize potter app-server jsonrpc")?;
+            stdout
+                .write_all(&json)
+                .await
+                .context("write potter app-server stdout")?;
+            stdout
+                .write_all(b"\n")
+                .await
+                .context("write potter app-server newline")?;
+            stdout
+                .flush()
+                .await
+                .context("flush potter app-server stdout")?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let (internal_tx, mut internal_rx) = unbounded_channel::<InternalEvent>();
+    let mut state = ServerState {
+        config,
+        running: None,
+        resumed: None,
+    };
+
+    let stdin = tokio::io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
+
+    loop {
+        tokio::select! {
+            maybe_line = lines.next_line() => {
+                let Some(line) = maybe_line.context("read potter app-server stdin line")? else {
+                    break;
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                let msg: JSONRPCMessage = match serde_json::from_str(&line) {
+                    Ok(msg) => msg,
+                    Err(_) => continue,
+                };
+                handle_jsonrpc_message(msg, &mut state, &writer_tx, &internal_tx).await;
+            }
+            Some(event) = internal_rx.recv() => match event {
+                InternalEvent::ProjectFinished { project_id } => {
+                    if state
+                        .running
+                        .as_ref()
+                        .is_some_and(|running| running.project_id == project_id)
+                    {
+                        state.running = None;
+                    }
+                }
+            }
+        }
+    }
+
+    drop(writer_tx);
+    let _ = writer.await;
+    Ok(())
+}
+
+async fn handle_jsonrpc_message(
+    msg: JSONRPCMessage,
+    state: &mut ServerState,
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    internal_tx: &UnboundedSender<InternalEvent>,
+) {
+    match msg {
+        JSONRPCMessage::Request(request) => {
+            if let Err(err) = handle_request(request, state, writer_tx, internal_tx).await {
+                eprintln!("potter app-server request failed: {err:#}");
+            }
+        }
+        JSONRPCMessage::Notification(notification) => {
+            if let Err(err) = handle_notification(notification).await {
+                eprintln!("potter app-server notification failed: {err:#}");
+            }
+        }
+        JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_) => {}
+    }
+}
+
+async fn handle_notification(notification: JSONRPCNotification) -> anyhow::Result<()> {
+    let _notification = PotterAppServerClientNotification::try_from(notification)?;
+    Ok(())
+}
+
+async fn handle_request(
+    request: JSONRPCRequest,
+    state: &mut ServerState,
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    internal_tx: &UnboundedSender<InternalEvent>,
+) -> anyhow::Result<()> {
+    let request_id = request.id.clone();
+    let method = request.method.clone();
+
+    let parsed = match PotterAppServerClientRequest::try_from(request) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            send_error(
+                writer_tx,
+                request_id,
+                -32602,
+                format!("invalid request {method:?}: {err}"),
+            );
+            return Ok(());
+        }
+    };
+
+    match parsed {
+        PotterAppServerClientRequest::Initialize { request_id, .. } => {
+            send_response(writer_tx, request_id, serde_json::json!({}));
+        }
+        PotterAppServerClientRequest::ProjectList {
+            request_id, params, ..
+        } => {
+            let response = project_list(&state.config.default_workdir, params)?;
+            send_response(writer_tx, request_id, response);
+        }
+        PotterAppServerClientRequest::ProjectStart { request_id, params } => {
+            if state.running.is_some() {
+                send_error(
+                    writer_tx,
+                    request_id,
+                    -32000,
+                    "a project is already running".to_string(),
+                );
+                return Ok(());
+            }
+
+            let response = start_project(state, params, writer_tx, internal_tx).await?;
+            send_response(writer_tx, request_id, response);
+        }
+        PotterAppServerClientRequest::ProjectResume { request_id, params } => {
+            if state.running.is_some() {
+                send_error(
+                    writer_tx,
+                    request_id,
+                    -32000,
+                    "a project is already running".to_string(),
+                );
+                return Ok(());
+            }
+
+            let response = resume_project(state, params)?;
+            send_response(writer_tx, request_id, response);
+        }
+        PotterAppServerClientRequest::ProjectStartRounds { request_id, params } => {
+            if state.running.is_some() {
+                send_error(
+                    writer_tx,
+                    request_id,
+                    -32000,
+                    "a project is already running".to_string(),
+                );
+                return Ok(());
+            }
+
+            let response = start_rounds(state, params, writer_tx, internal_tx).await?;
+            send_response(writer_tx, request_id, response);
+        }
+        PotterAppServerClientRequest::ProjectInterrupt { request_id, params } => {
+            interrupt_project(state, params);
+            send_response(writer_tx, request_id, serde_json::json!({}));
+        }
+    }
+
+    Ok(())
+}
+
+fn project_list(
+    default_workdir: &Path,
+    params: ProjectListParams,
+) -> anyhow::Result<ProjectListResponse> {
+    let ProjectListParams { cwd } = params;
+    let workdir = cwd.unwrap_or_else(|| default_workdir.to_path_buf());
+
+    let rows = crate::resume_picker_index::discover_resumable_projects(&workdir)
+        .with_context(|| format!("discover resumable projects under {}", workdir.display()))?;
+
+    let mut projects = Vec::new();
+    for row in rows {
+        let Some(created_at) = system_time_to_unix_secs(row.created_at) else {
+            continue;
+        };
+        let Some(updated_at) = system_time_to_unix_secs(row.updated_at) else {
+            continue;
+        };
+        projects.push(ProjectListEntry {
+            project_path: row.project_path,
+            user_request: row.user_request,
+            created_at_unix_secs: created_at,
+            updated_at_unix_secs: updated_at,
+            git_branch: row.git_branch,
+        });
+    }
+
+    Ok(ProjectListResponse { projects })
+}
+
+async fn start_project(
+    state: &mut ServerState,
+    params: ProjectStartParams,
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    internal_tx: &UnboundedSender<InternalEvent>,
+) -> anyhow::Result<ProjectStartResponse> {
+    let ProjectStartParams {
+        user_message,
+        cwd,
+        rounds,
+        event_mode,
+    } = params;
+
+    let workdir = cwd.unwrap_or_else(|| state.config.default_workdir.clone());
+    let workdir = workdir
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", workdir.display()))?;
+
+    let init = crate::project::init_project(&workdir, &user_message, Local::now())
+        .context("initialize .codexpotter project")?;
+    let progress_file_abs = workdir.join(&init.progress_file_rel);
+    let project_dir_rel = init
+        .progress_file_rel
+        .parent()
+        .context("derive project_dir from progress file path")?
+        .to_path_buf();
+    let project_dir_abs = workdir.join(&project_dir_rel);
+
+    let potter_rollout_path = crate::potter_rollout::potter_rollout_path(&project_dir_abs);
+    let git_branch = crate::project::progress_file_git_branch(&progress_file_abs)
+        .context("read git_branch from progress file")?;
+
+    let rounds_total_u32 = match rounds {
+        Some(rounds) if rounds > 0 => rounds,
+        Some(_) => anyhow::bail!("rounds must be >= 1"),
+        None => u32::try_from(state.config.rounds.get()).unwrap_or(u32::MAX),
+    };
+    let mode = event_mode.unwrap_or_default();
+
+    let project_id = progress_file_abs.to_string_lossy().to_string();
+    spawn_fresh_project(
+        &mut state.running,
+        &mut state.resumed,
+        state.config.clone(),
+        writer_tx.clone(),
+        internal_tx.clone(),
+        project_id.clone(),
+        FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: user_message.clone(),
+            project_dir_rel: project_dir_rel.clone(),
+            progress_file_rel: init.progress_file_rel.clone(),
+            git_commit_start: init.git_commit_start.clone(),
+            potter_rollout_path,
+            rounds_total: rounds_total_u32,
+            event_mode: mode,
+        },
+    )?;
+
+    Ok(ProjectStartResponse {
+        project_id,
+        working_dir: workdir,
+        project_dir: project_dir_abs,
+        progress_file_rel: init.progress_file_rel,
+        progress_file: progress_file_abs,
+        git_commit_start: init.git_commit_start,
+        git_branch,
+        rounds_total: rounds_total_u32,
+    })
+}
+
+fn resume_project(
+    state: &mut ServerState,
+    params: ProjectResumeParams,
+) -> anyhow::Result<ProjectResumeResponse> {
+    let ProjectResumeParams {
+        project_path,
+        cwd,
+        event_mode: _,
+    } = params;
+
+    let cwd = cwd.unwrap_or_else(|| state.config.default_workdir.clone());
+    let resolved = crate::resume::resolve_project_paths(&cwd, &project_path)?;
+
+    let progress_file_rel = resolved
+        .progress_file
+        .strip_prefix(&resolved.workdir)
+        .context("derive progress file relative path")?
+        .to_path_buf();
+
+    let git_branch = crate::project::progress_file_git_branch(&resolved.progress_file)
+        .context("read git_branch from progress file")?;
+
+    let potter_rollout_path = crate::potter_rollout::potter_rollout_path(&resolved.project_dir);
+    let potter_rollout_lines = load_potter_rollout_lines(&potter_rollout_path)?;
+    let index = crate::potter_rollout_resume_index::build_resume_index(&potter_rollout_lines)?;
+
+    let replay = build_resume_replay(&resolved, &index)?;
+    let unfinished_round = build_unfinished_round_pre_action(&resolved, &replay, &index)?;
+
+    let project_id = resolved.progress_file.to_string_lossy().to_string();
+
+    state.resumed = Some(ResumedProject {
+        project_id: project_id.clone(),
+        resolved: resolved.clone(),
+        progress_file_rel: progress_file_rel.clone(),
+        potter_rollout_lines,
+        index,
+    });
+
+    Ok(ProjectResumeResponse {
+        project_id,
+        working_dir: resolved.workdir,
+        project_dir: resolved.project_dir,
+        progress_file_rel,
+        progress_file: resolved.progress_file,
+        git_branch,
+        replay,
+        unfinished_round,
+    })
+}
+
+async fn start_rounds(
+    state: &mut ServerState,
+    params: ProjectStartRoundsParams,
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    internal_tx: &UnboundedSender<InternalEvent>,
+) -> anyhow::Result<ProjectStartRoundsResponse> {
+    let ProjectStartRoundsParams {
+        project_id,
+        rounds,
+        resume_policy,
+        event_mode,
+    } = params;
+
+    let Some(resumed) = state.resumed.clone() else {
+        anyhow::bail!("no resumed project is active");
+    };
+    anyhow::ensure!(resumed.project_id == project_id, "resumed project mismatch");
+
+    let mode = event_mode.unwrap_or_default();
+    let resume_policy = resume_policy.unwrap_or_default();
+
+    let rounds_total_u32 = match rounds {
+        Some(rounds) if rounds > 0 => rounds,
+        Some(_) => anyhow::bail!("rounds must be >= 1"),
+        None => u32::try_from(state.config.rounds.get()).unwrap_or(u32::MAX),
+    };
+
+    let potter_rollout_path =
+        crate::potter_rollout::potter_rollout_path(&resumed.resolved.project_dir);
+
+    // Resume continuation always starts a new iteration window; reset the progress file flag.
+    crate::project::set_progress_file_finite_incantatem(
+        &resumed.resolved.workdir,
+        &resumed.progress_file_rel,
+        false,
+    )
+    .context("reset progress file finite_incantatem")?;
+
+    let baseline_rounds = count_completed_rounds(&resumed.potter_rollout_lines);
+    let baseline_rounds_u32 = u32::try_from(baseline_rounds).unwrap_or(u32::MAX);
+    let git_commit_start = crate::project::progress_file_git_commit_start(
+        &resumed.resolved.workdir,
+        &resumed.progress_file_rel,
+    )
+    .context("read git_commit from progress file")?;
+
+    spawn_resumed_project(
+        &mut state.running,
+        &mut state.resumed,
+        state.config.clone(),
+        writer_tx.clone(),
+        internal_tx.clone(),
+        resumed.project_id.clone(),
+        ResumedProjectPlan {
+            resumed,
+            baseline_rounds: baseline_rounds_u32,
+            git_commit_start,
+            potter_rollout_path,
+            rounds_total: rounds_total_u32,
+            resume_policy,
+            event_mode: mode,
+        },
+    )?;
+
+    Ok(ProjectStartRoundsResponse {
+        rounds_total: rounds_total_u32,
+    })
+}
+
+fn interrupt_project(state: &mut ServerState, params: ProjectInterruptParams) {
+    if let Some(running) = state.running.take()
+        && running.project_id == params.project_id
+    {
+        running.handle.abort();
+    }
+    state.resumed = None;
+}
+
+fn send_response<T>(writer_tx: &UnboundedSender<JSONRPCMessage>, request_id: RequestId, payload: T)
+where
+    T: serde::Serialize,
+{
+    let result = match serde_json::to_value(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            send_error(
+                writer_tx,
+                request_id,
+                -32000,
+                format!("failed to serialize response: {err}"),
+            );
+            return;
+        }
+    };
+    let _ = writer_tx.send(JSONRPCMessage::Response(JSONRPCResponse {
+        id: request_id,
+        result,
+    }));
+}
+
+fn send_error(
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    request_id: RequestId,
+    code: i64,
+    message: String,
+) {
+    let _ = writer_tx.send(JSONRPCMessage::Error(JSONRPCError {
+        error: JSONRPCErrorError {
+            code,
+            message,
+            data: None,
+        },
+        id: request_id,
+    }));
+}
+
+fn system_time_to_unix_secs(time: SystemTime) -> Option<u64> {
+    time.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+fn load_potter_rollout_lines(
+    potter_rollout_path: &Path,
+) -> anyhow::Result<Vec<crate::potter_rollout::PotterRolloutLine>> {
+    if !potter_rollout_path.exists() {
+        anyhow::bail!(
+            "unsupported project: the project is from an older version of CodexPotter (missing potter-rollout.jsonl)",
+        );
+    }
+    if !potter_rollout_path.is_file() {
+        anyhow::bail!(
+            "unsupported project: expected a file at {}",
+            potter_rollout_path.display()
+        );
+    }
+
+    let lines = crate::potter_rollout::read_lines(potter_rollout_path)
+        .with_context(|| format!("read {}", potter_rollout_path.display()))?;
+    if lines.is_empty() {
+        anyhow::bail!("potter-rollout is empty: {}", potter_rollout_path.display());
+    }
+    Ok(lines)
+}
+
+fn count_completed_rounds(lines: &[crate::potter_rollout::PotterRolloutLine]) -> usize {
+    lines
+        .iter()
+        .filter(|line| {
+            matches!(
+                line,
+                crate::potter_rollout::PotterRolloutLine::RoundFinished { .. }
+            )
+        })
+        .count()
+}
+
+fn build_resume_replay(
+    resolved: &crate::resume::ResolvedProjectPaths,
+    index: &crate::potter_rollout_resume_index::PotterRolloutResumeIndex,
+) -> anyhow::Result<ProjectResumeReplay> {
+    let mut completed_rounds = Vec::new();
+    let mut is_first_round = true;
+
+    for round in &index.completed_rounds {
+        let mut events = Vec::new();
+        if is_first_round {
+            is_first_round = false;
+            events.push(EventMsg::PotterProjectStarted {
+                user_message: index.project_started.user_message.clone(),
+                working_dir: resolved.workdir.clone(),
+                project_dir: resolved.project_dir.clone(),
+                user_prompt_file: index.project_started.user_prompt_file.clone(),
+            });
+        }
+
+        events.push(EventMsg::PotterRoundStarted {
+            current: round.round_current,
+            total: round.round_total,
+        });
+
+        let rollout_path = resolve_rollout_path_for_replay(resolved, &round.rollout_path);
+        if let Some(cfg) =
+            synthesize_session_configured_event(round.thread_id, rollout_path.clone())?
+        {
+            events.push(EventMsg::SessionConfigured(cfg));
+        }
+        let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
+            .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+        events.append(&mut rollout_events);
+
+        if let Some(project_succeeded) = &round.project_succeeded {
+            events.push(EventMsg::PotterProjectSucceeded {
+                rounds: project_succeeded.rounds,
+                duration: std::time::Duration::from_secs(project_succeeded.duration_secs),
+                user_prompt_file: project_succeeded.user_prompt_file.clone(),
+                git_commit_start: project_succeeded.git_commit_start.clone(),
+                git_commit_end: project_succeeded.git_commit_end.clone(),
+            });
+        }
+
+        events.push(EventMsg::PotterRoundFinished {
+            outcome: round.outcome.clone(),
+        });
+
+        completed_rounds.push(ProjectResumeReplayRound {
+            outcome: round.outcome.clone(),
+            events,
+        });
+    }
+
+    Ok(ProjectResumeReplay { completed_rounds })
+}
+
+fn build_unfinished_round_pre_action(
+    resolved: &crate::resume::ResolvedProjectPaths,
+    replay: &ProjectResumeReplay,
+    index: &crate::potter_rollout_resume_index::PotterRolloutResumeIndex,
+) -> anyhow::Result<Option<ProjectResumeUnfinishedRound>> {
+    let Some(unfinished) = &index.unfinished_round else {
+        return Ok(None);
+    };
+
+    let mut pre_action_events = Vec::new();
+    if replay.completed_rounds.is_empty() {
+        pre_action_events.push(EventMsg::PotterProjectStarted {
+            user_message: index.project_started.user_message.clone(),
+            working_dir: resolved.workdir.clone(),
+            project_dir: resolved.project_dir.clone(),
+            user_prompt_file: index.project_started.user_prompt_file.clone(),
+        });
+    }
+
+    pre_action_events.push(EventMsg::PotterRoundStarted {
+        current: unfinished.round_current,
+        total: unfinished.round_total,
+    });
+    pre_action_events.push(EventMsg::PotterRoundFinished {
+        outcome: PotterRoundOutcome::Completed,
+    });
+
+    let remaining_rounds_including_current =
+        remaining_rounds_including_current(unfinished.round_current, unfinished.round_total)?;
+
+    Ok(Some(ProjectResumeUnfinishedRound {
+        round_current: unfinished.round_current,
+        round_total: unfinished.round_total,
+        pre_action_events,
+        remaining_rounds_including_current,
+    }))
+}
+
+fn remaining_rounds_including_current(round_current: u32, round_total: u32) -> anyhow::Result<u32> {
+    if round_current == 0 {
+        anyhow::bail!("potter-rollout: round_current must be >= 1");
+    }
+    if round_total == 0 {
+        anyhow::bail!("potter-rollout: round_total must be >= 1");
+    }
+    if round_current > round_total {
+        anyhow::bail!(
+            "potter-rollout: round_current {round_current} exceeds round_total {round_total}",
+        );
+    }
+    Ok(round_total.saturating_sub(round_current).saturating_add(1))
+}
+
+fn resolve_rollout_path_for_replay(
+    project: &crate::resume::ResolvedProjectPaths,
+    rollout_path: &Path,
+) -> PathBuf {
+    if rollout_path.is_absolute() {
+        return rollout_path.to_path_buf();
+    }
+    project.workdir.join(rollout_path)
+}
+
+fn synthesize_session_configured_event(
+    thread_id: ThreadId,
+    rollout_path: PathBuf,
+) -> anyhow::Result<Option<SessionConfiguredEvent>> {
+    let Some(snapshot) = read_rollout_context_snapshot(&rollout_path)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(SessionConfiguredEvent {
+        session_id: thread_id,
+        forked_from_id: None,
+        model: snapshot.model,
+        model_provider_id: snapshot.model_provider_id,
+        cwd: snapshot.cwd,
+        reasoning_effort: None,
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        rollout_path,
+    }))
+}
+
+struct RolloutContextSnapshot {
+    cwd: PathBuf,
+    model: String,
+    model_provider_id: String,
+}
+
+fn read_rollout_context_snapshot(
+    rollout_path: &Path,
+) -> anyhow::Result<Option<RolloutContextSnapshot>> {
+    let file = std::fs::File::open(rollout_path)
+        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut cwd: Option<PathBuf> = None;
+    let mut model: Option<String> = None;
+    let mut model_provider_id: Option<String> = None;
+
+    for (idx, line) in reader.lines().enumerate() {
+        let line_number = idx + 1;
+        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line)
+            .with_context(|| format!("parse rollout json line {line_number}: {line}"))?;
+        let Some(item_type) = value.get("type").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        match item_type {
+            "turn_context" => {
+                if cwd.is_some() && model.is_some() {
+                    continue;
+                }
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                if cwd.is_none()
+                    && let Some(v) = payload.get("cwd")
+                {
+                    cwd = serde_json::from_value::<PathBuf>(v.clone()).ok();
+                }
+                if model.is_none() {
+                    model = payload
+                        .get("model")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned);
+                }
+            }
+            "session_meta" => {
+                if model_provider_id.is_some() {
+                    continue;
+                }
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                model_provider_id = payload
+                    .get("model_provider")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned);
+            }
+            _ => {}
+        }
+
+        if cwd.is_some() && model.is_some() && model_provider_id.is_some() {
+            break;
+        }
+    }
+
+    let Some(cwd) = cwd else {
+        return Ok(None);
+    };
+    let Some(model) = model else {
+        return Ok(None);
+    };
+
+    Ok(Some(RolloutContextSnapshot {
+        cwd,
+        model,
+        model_provider_id: model_provider_id.unwrap_or_default(),
+    }))
+}
+
+fn read_upstream_rollout_event_msgs(rollout_path: &Path) -> anyhow::Result<Vec<EventMsg>> {
+    let file = std::fs::File::open(rollout_path)
+        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut out = Vec::new();
+    for (idx, line) in reader.lines().enumerate() {
+        let line_number = idx + 1;
+        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line)
+            .with_context(|| format!("parse rollout json line {line_number}: {line}"))?;
+        let Some(item_type) = value.get("type").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if item_type != "event_msg" {
+            continue;
+        }
+        let payload = value
+            .get("payload")
+            .context("rollout event_msg missing payload")?;
+        let msg = serde_json::from_value::<EventMsg>(payload.clone())
+            .with_context(|| format!("decode EventMsg from rollout line {line_number}"))?;
+        out.push(msg);
+    }
+
+    Ok(crate::resume::filter_pending_interactive_prompts_for_replay(out))
+}
+
+#[derive(Debug, Clone)]
+struct FreshProjectPlan {
+    workdir: PathBuf,
+    user_message: String,
+    project_dir_rel: PathBuf,
+    progress_file_rel: PathBuf,
+    git_commit_start: String,
+    potter_rollout_path: PathBuf,
+    rounds_total: u32,
+    event_mode: PotterEventMode,
+}
+
+#[derive(Debug, Clone)]
+struct ResumedProjectPlan {
+    resumed: ResumedProject,
+    baseline_rounds: u32,
+    git_commit_start: String,
+    potter_rollout_path: PathBuf,
+    rounds_total: u32,
+    resume_policy: ResumePolicy,
+    event_mode: PotterEventMode,
+}
+
+fn spawn_fresh_project(
+    running: &mut Option<RunningProject>,
+    resumed: &mut Option<ResumedProject>,
+    config: PotterAppServerConfig,
+    writer_tx: UnboundedSender<JSONRPCMessage>,
+    internal_tx: UnboundedSender<InternalEvent>,
+    project_id: String,
+    plan: FreshProjectPlan,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(running.is_none(), "internal error: project already running");
+    *resumed = None;
+
+    let project_id_for_event = project_id.clone();
+    let handle = tokio::task::spawn_local(async move {
+        if let Err(err) = run_fresh_project(config, writer_tx.clone(), plan).await {
+            eprintln!("potter app-server fresh project failed: {err:#}");
+        }
+        let _ = internal_tx.send(InternalEvent::ProjectFinished {
+            project_id: project_id_for_event,
+        });
+    });
+
+    *running = Some(RunningProject { project_id, handle });
+
+    Ok(())
+}
+
+fn spawn_resumed_project(
+    running: &mut Option<RunningProject>,
+    resumed: &mut Option<ResumedProject>,
+    config: PotterAppServerConfig,
+    writer_tx: UnboundedSender<JSONRPCMessage>,
+    internal_tx: UnboundedSender<InternalEvent>,
+    project_id: String,
+    plan: ResumedProjectPlan,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(running.is_none(), "internal error: project already running");
+    *resumed = None;
+
+    let project_id_for_event = project_id.clone();
+    let handle = tokio::task::spawn_local(async move {
+        if let Err(err) = run_resumed_project(config, writer_tx.clone(), plan).await {
+            eprintln!("potter app-server resumed project failed: {err:#}");
+        }
+        let _ = internal_tx.send(InternalEvent::ProjectFinished {
+            project_id: project_id_for_event,
+        });
+    });
+
+    *running = Some(RunningProject { project_id, handle });
+
+    Ok(())
+}
+
+async fn run_fresh_project(
+    config: PotterAppServerConfig,
+    writer_tx: UnboundedSender<JSONRPCMessage>,
+    plan: FreshProjectPlan,
+) -> anyhow::Result<()> {
+    let FreshProjectPlan {
+        workdir,
+        user_message,
+        project_dir_rel,
+        progress_file_rel,
+        git_commit_start,
+        potter_rollout_path,
+        rounds_total,
+        event_mode,
+    } = plan;
+
+    let project_started_at = Instant::now();
+    let developer_prompt = crate::project::render_developer_prompt(&progress_file_rel);
+    let turn_prompt = crate::project::fixed_prompt().trim_end().to_string();
+
+    let backend_event_mode = backend_event_mode_for_potter(event_mode);
+
+    let round_context = crate::round_runner::PotterRoundContext {
+        codex_bin: config.codex_bin,
+        developer_prompt,
+        backend_launch: config.backend_launch,
+        backend_event_mode,
+        codex_compat_home: config.codex_compat_home,
+        thread_cwd: Some(workdir.clone()),
+        turn_prompt,
+        workdir: workdir.clone(),
+        progress_file_rel: progress_file_rel.clone(),
+        user_prompt_file: progress_file_rel.clone(),
+        git_commit_start,
+        potter_rollout_path,
+        project_started_at,
+    };
+
+    let mut ui = EventForwardingRoundUi::new(writer_tx);
+
+    for round_index in 0..rounds_total {
+        let current_round = round_index.saturating_add(1);
+        let project_started = if round_index == 0 {
+            Some(crate::round_runner::PotterProjectStartedInfo {
+                user_message: Some(user_message.clone()),
+                working_dir: workdir.clone(),
+                project_dir: project_dir_rel.clone(),
+                user_prompt_file: progress_file_rel.clone(),
+            })
+        } else {
+            None
+        };
+
+        let round_result = crate::round_runner::run_potter_round(
+            &mut ui,
+            &round_context,
+            crate::round_runner::PotterRoundOptions {
+                pad_before_first_cell: round_index != 0,
+                project_started,
+                round_current: current_round,
+                round_total: rounds_total,
+                project_succeeded_rounds: current_round,
+            },
+        )
+        .await?;
+
+        match &round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {}
+            codex_tui::ExitReason::UserRequested
+            | codex_tui::ExitReason::TaskFailed(_)
+            | codex_tui::ExitReason::Fatal(_) => break,
+        }
+        if round_result.stop_due_to_finite_incantatem {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_resumed_project(
+    config: PotterAppServerConfig,
+    writer_tx: UnboundedSender<JSONRPCMessage>,
+    plan: ResumedProjectPlan,
+) -> anyhow::Result<()> {
+    let ResumedProjectPlan {
+        resumed,
+        baseline_rounds,
+        git_commit_start,
+        potter_rollout_path,
+        rounds_total,
+        resume_policy,
+        event_mode,
+    } = plan;
+
+    let project_started_at = Instant::now();
+    let developer_prompt = crate::project::render_developer_prompt(&resumed.progress_file_rel);
+    let turn_prompt = crate::project::fixed_prompt().trim_end().to_string();
+
+    let backend_event_mode = backend_event_mode_for_potter(event_mode);
+
+    let round_context = crate::round_runner::PotterRoundContext {
+        codex_bin: config.codex_bin,
+        developer_prompt,
+        backend_launch: config.backend_launch,
+        backend_event_mode,
+        codex_compat_home: config.codex_compat_home,
+        thread_cwd: Some(resumed.resolved.workdir.clone()),
+        turn_prompt,
+        workdir: resumed.resolved.workdir.clone(),
+        progress_file_rel: resumed.progress_file_rel.clone(),
+        user_prompt_file: resumed.progress_file_rel.clone(),
+        git_commit_start,
+        potter_rollout_path,
+        project_started_at,
+    };
+
+    let mut ui = EventForwardingRoundUi::new(writer_tx);
+
+    if let Some(unfinished) = resumed.index.unfinished_round.clone()
+        && matches!(resume_policy, ResumePolicy::ContinueUnfinishedRound)
+    {
+        let total_rounds = unfinished.round_total;
+        let remaining =
+            remaining_rounds_including_current(unfinished.round_current, unfinished.round_total)?;
+        let remaining_after_continue = remaining.saturating_sub(1);
+
+        let rollout_path =
+            resolve_rollout_path_for_replay(&resumed.resolved, &unfinished.rollout_path);
+        let mut replay_event_msgs = Vec::new();
+        if let Some(cfg) =
+            synthesize_session_configured_event(unfinished.thread_id, rollout_path.clone())?
+        {
+            replay_event_msgs.push(EventMsg::SessionConfigured(cfg));
+        }
+        let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
+            .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+        replay_event_msgs.append(&mut rollout_events);
+
+        let round_result = crate::round_runner::continue_potter_round(
+            &mut ui,
+            &round_context,
+            crate::round_runner::PotterContinueRoundOptions {
+                pad_before_first_cell: true,
+                round_current: unfinished.round_current,
+                round_total: total_rounds,
+                project_succeeded_rounds: baseline_rounds.saturating_add(1),
+                resume_thread_id: unfinished.thread_id,
+                replay_event_msgs,
+            },
+        )
+        .await?;
+
+        match &round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {}
+            codex_tui::ExitReason::UserRequested
+            | codex_tui::ExitReason::TaskFailed(_)
+            | codex_tui::ExitReason::Fatal(_) => return Ok(()),
+        }
+        if round_result.stop_due_to_finite_incantatem {
+            return Ok(());
+        }
+
+        for offset in 0..remaining_after_continue {
+            if offset.saturating_add(1) >= rounds_total {
+                break;
+            }
+            let current_round = unfinished
+                .round_current
+                .saturating_add(offset.saturating_add(1));
+            let project_succeeded_rounds = baseline_rounds.saturating_add(offset.saturating_add(2));
+            let round_result = crate::round_runner::run_potter_round(
+                &mut ui,
+                &round_context,
+                crate::round_runner::PotterRoundOptions {
+                    pad_before_first_cell: true,
+                    project_started: None,
+                    round_current: current_round,
+                    round_total: total_rounds,
+                    project_succeeded_rounds,
+                },
+            )
+            .await?;
+
+            match &round_result.exit_reason {
+                codex_tui::ExitReason::Completed => {}
+                codex_tui::ExitReason::UserRequested
+                | codex_tui::ExitReason::TaskFailed(_)
+                | codex_tui::ExitReason::Fatal(_) => break,
+            }
+            if round_result.stop_due_to_finite_incantatem {
+                break;
+            }
+        }
+
+        return Ok(());
+    }
+
+    // No unfinished round to continue (or policy says to start new rounds).
+    let mut rounds_run = 0u32;
+    while rounds_run < rounds_total {
+        let current_round = rounds_run.saturating_add(1);
+        let project_succeeded_rounds = baseline_rounds.saturating_add(current_round);
+        let round_result = crate::round_runner::run_potter_round(
+            &mut ui,
+            &round_context,
+            crate::round_runner::PotterRoundOptions {
+                pad_before_first_cell: true,
+                project_started: None,
+                round_current: current_round,
+                round_total: rounds_total,
+                project_succeeded_rounds,
+            },
+        )
+        .await?;
+
+        rounds_run = rounds_run.saturating_add(1);
+        match &round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {}
+            codex_tui::ExitReason::UserRequested
+            | codex_tui::ExitReason::TaskFailed(_)
+            | codex_tui::ExitReason::Fatal(_) => break,
+        }
+        if round_result.stop_due_to_finite_incantatem {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn backend_event_mode_for_potter(
+    mode: PotterEventMode,
+) -> crate::app_server_backend::AppServerEventMode {
+    match mode {
+        PotterEventMode::Interactive => crate::app_server_backend::AppServerEventMode::Interactive,
+        PotterEventMode::ExecJson => crate::app_server_backend::AppServerEventMode::ExecJson,
+    }
+}
+
+struct EventForwardingRoundUi {
+    writer_tx: UnboundedSender<JSONRPCMessage>,
+    token_usage: TokenUsage,
+    thread_id: Option<ThreadId>,
+    saw_round_finished: bool,
+}
+
+impl EventForwardingRoundUi {
+    fn new(writer_tx: UnboundedSender<JSONRPCMessage>) -> Self {
+        Self {
+            writer_tx,
+            token_usage: TokenUsage::default(),
+            thread_id: None,
+            saw_round_finished: false,
+        }
+    }
+
+    fn forward_event(&mut self, event: &Event) {
+        if let EventMsg::TokenCount(ev) = &event.msg
+            && let Some(info) = &ev.info
+        {
+            self.token_usage = info.total_token_usage.clone();
+        }
+        if let EventMsg::SessionConfigured(cfg) = &event.msg {
+            self.thread_id = Some(cfg.session_id);
+        }
+
+        if matches!(&event.msg, EventMsg::PotterRoundFinished { .. }) {
+            self.saw_round_finished = true;
+        }
+
+        let Ok(params) = serde_json::to_value(event) else {
+            return;
+        };
+        let _ = self
+            .writer_tx
+            .send(JSONRPCMessage::Notification(JSONRPCNotification {
+                method: EVENT_NOTIFICATION_METHOD.to_string(),
+                params: Some(params),
+            }));
+    }
+
+    fn synthesize_round_fatal_closure(&mut self, message: &str) {
+        let error = Event {
+            id: "".to_string(),
+            msg: EventMsg::Error(ErrorEvent {
+                message: message.to_string(),
+                codex_error_info: None,
+            }),
+        };
+        self.forward_event(&error);
+
+        if !self.saw_round_finished {
+            let finished = Event {
+                id: "".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Fatal {
+                        message: message.to_string(),
+                    },
+                },
+            };
+            self.forward_event(&finished);
+        }
+    }
+}
+
+impl crate::round_runner::PotterRoundUi for EventForwardingRoundUi {
+    fn set_project_started_at(&mut self, _started_at: Instant) {}
+
+    fn render_round<'a>(
+        &'a mut self,
+        params: codex_tui::RenderRoundParams,
+    ) -> crate::round_runner::UiFuture<'a, codex_tui::AppExitInfo> {
+        Box::pin(async move {
+            let codex_tui::RenderRoundParams {
+                prompt,
+                codex_op_tx,
+                mut codex_event_rx,
+                mut fatal_exit_rx,
+                ..
+            } = params;
+
+            self.token_usage = TokenUsage::default();
+            self.thread_id = None;
+            self.saw_round_finished = false;
+
+            codex_op_tx
+                .send(codex_protocol::protocol::Op::UserInput {
+                    items: vec![UserInput::Text {
+                        text: prompt,
+                        text_elements: Vec::new(),
+                    }],
+                    final_output_json_schema: None,
+                })
+                .map_err(|_| anyhow::anyhow!("codex op channel closed"))?;
+
+            loop {
+                while let Ok(event) = codex_event_rx.try_recv() {
+                    self.forward_event(&event);
+                    if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                        return Ok(codex_tui::AppExitInfo {
+                            token_usage: self.token_usage.clone(),
+                            thread_id: self.thread_id,
+                            exit_reason: exit_reason_from_outcome(outcome),
+                        });
+                    }
+                }
+
+                if let Ok(message) = fatal_exit_rx.try_recv() {
+                    self.synthesize_round_fatal_closure(&message);
+                    return Ok(codex_tui::AppExitInfo {
+                        token_usage: self.token_usage.clone(),
+                        thread_id: self.thread_id,
+                        exit_reason: codex_tui::ExitReason::Fatal(message),
+                    });
+                }
+
+                tokio::select! {
+                    Some(message) = fatal_exit_rx.recv() => {
+                        while let Ok(event) = codex_event_rx.try_recv() {
+                            self.forward_event(&event);
+                        }
+                        self.synthesize_round_fatal_closure(&message);
+                        return Ok(codex_tui::AppExitInfo {
+                            token_usage: self.token_usage.clone(),
+                            thread_id: self.thread_id,
+                            exit_reason: codex_tui::ExitReason::Fatal(message),
+                        });
+                    }
+                    maybe_event = codex_event_rx.recv() => {
+                        let Some(event) = maybe_event else {
+                            let message = "event stream closed unexpectedly".to_string();
+                            self.synthesize_round_fatal_closure(&message);
+                            return Ok(codex_tui::AppExitInfo {
+                                token_usage: self.token_usage.clone(),
+                                thread_id: self.thread_id,
+                                exit_reason: codex_tui::ExitReason::Fatal(message),
+                            });
+                        };
+                        self.forward_event(&event);
+                        if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                            return Ok(codex_tui::AppExitInfo {
+                                token_usage: self.token_usage.clone(),
+                                thread_id: self.thread_id,
+                                exit_reason: exit_reason_from_outcome(outcome),
+                            });
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
+fn exit_reason_from_outcome(outcome: &PotterRoundOutcome) -> codex_tui::ExitReason {
+    match outcome {
+        PotterRoundOutcome::Completed => codex_tui::ExitReason::Completed,
+        PotterRoundOutcome::UserRequested => codex_tui::ExitReason::UserRequested,
+        PotterRoundOutcome::TaskFailed { message } => {
+            codex_tui::ExitReason::TaskFailed(message.clone())
+        }
+        PotterRoundOutcome::Fatal { message } => codex_tui::ExitReason::Fatal(message.clone()),
+    }
+}

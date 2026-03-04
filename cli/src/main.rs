@@ -8,6 +8,8 @@ mod exec_json_round_ui;
 mod exec_jsonl;
 mod global_gitignore;
 mod path_utils;
+mod potter_app_server;
+mod potter_app_server_protocol;
 mod potter_rollout;
 mod potter_rollout_resume_index;
 mod potter_stream_recovery;
@@ -106,6 +108,10 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Run a long-lived JSON-RPC app-server that encapsulates CodexPotter project logic.
+    ///
+    /// This is primarily intended for internal use.
+    AppServer,
 }
 
 fn parse_cli() -> Cli {
@@ -118,6 +124,43 @@ fn parse_cli() -> Cli {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
+
+    if matches!(cli.command, Some(CliCommand::AppServer)) {
+        let workdir = std::env::current_dir().context("resolve current directory")?;
+
+        let codex_bin = match startup::resolve_codex_bin(&cli.codex_bin) {
+            Ok(resolved) => resolved.command_for_spawn,
+            Err(err) => {
+                eprint!("{}", err.render_ansi());
+                std::process::exit(1);
+            }
+        };
+
+        let backend_launch = app_server_backend::AppServerLaunchConfig::from_cli(
+            cli.sandbox,
+            cli.dangerously_bypass_approvals_and_sandbox,
+        );
+
+        let codex_compat_home = match crate::codex_compat::ensure_default_codex_compat_home() {
+            Ok(home) => home,
+            Err(err) => {
+                eprintln!("warning: failed to configure codex-compat home: {err}");
+                None
+            }
+        };
+
+        crate::potter_app_server::run_potter_app_server(
+            crate::potter_app_server::PotterAppServerConfig {
+                default_workdir: workdir,
+                codex_bin,
+                backend_launch,
+                codex_compat_home,
+                rounds: cli.rounds,
+            },
+        )
+        .await?;
+        return Ok(());
+    }
 
     if let Some(CliCommand::Exec { prompt, json }) = cli.command.as_ref() {
         if !json {
@@ -498,6 +541,13 @@ mod tests {
         };
         assert_eq!(prompt, Some("hello".to_string()));
         assert!(json);
+    }
+
+    #[test]
+    fn app_server_subcommand_parses() {
+        let cli = Cli::try_parse_from(["codex-potter", "app-server"]).expect("parse args");
+
+        assert!(matches!(cli.command, Some(CliCommand::AppServer)));
     }
 
     #[test]

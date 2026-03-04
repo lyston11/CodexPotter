@@ -1098,7 +1098,7 @@ impl PendingInteractiveReplayState {
     }
 }
 
-fn filter_pending_interactive_prompts_for_replay(events: Vec<EventMsg>) -> Vec<EventMsg> {
+pub fn filter_pending_interactive_prompts_for_replay(events: Vec<EventMsg>) -> Vec<EventMsg> {
     let mut state = PendingInteractiveReplayState::default();
     for msg in &events {
         state.note_event_msg(msg);

@@ -6,6 +6,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::app_server_protocol::InitializeParams;
+use crate::app_server_protocol::JSONRPCNotification;
+use crate::app_server_protocol::JSONRPCRequest;
 use crate::app_server_protocol::RequestId;
 
 /// Requests from a Potter app-server client.
@@ -68,6 +70,22 @@ pub enum PotterAppServerClientRequest {
 pub enum PotterAppServerClientNotification {
     #[serde(rename = "initialized")]
     Initialized,
+}
+
+impl TryFrom<JSONRPCRequest> for PotterAppServerClientRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(value: JSONRPCRequest) -> Result<Self, Self::Error> {
+        serde_json::from_value(serde_json::to_value(value)?)
+    }
+}
+
+impl TryFrom<JSONRPCNotification> for PotterAppServerClientNotification {
+    type Error = serde_json::Error;
+
+    fn try_from(value: JSONRPCNotification) -> Result<Self, Self::Error> {
+        serde_json::from_value(serde_json::to_value(value)?)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -149,7 +167,7 @@ pub struct ProjectResumeParams {
     pub event_mode: Option<PotterEventMode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectResumeResponse {
     pub project_id: String,
@@ -167,20 +185,20 @@ pub struct ProjectResumeResponse {
 /// Replay payload for `project/resume`.
 ///
 /// This is "history-only": it never re-runs tools, and it never starts a new round.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectResumeReplay {
     pub completed_rounds: Vec<ProjectResumeReplayRound>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectResumeReplayRound {
     pub outcome: PotterRoundOutcome,
     pub events: Vec<EventMsg>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectResumeUnfinishedRound {
     pub round_current: u32,
@@ -222,4 +240,3 @@ pub struct ProjectStartRoundsResponse {
 pub struct ProjectInterruptParams {
     pub project_id: String,
 }
-
