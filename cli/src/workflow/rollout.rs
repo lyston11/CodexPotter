@@ -1,3 +1,12 @@
+//! Potter rollout log (project boundary JSONL).
+//!
+//! CodexPotter persists an append-only `potter-rollout.jsonl` alongside each project. This log
+//! records project and round boundaries (started/configured/finished) and a subset of metadata
+//! needed for resume and auditing.
+//!
+//! The writer is intentionally strict: failures are surfaced to the caller so the control plane
+//! can abort rather than silently diverging from the persisted replay source of truth.
+
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;

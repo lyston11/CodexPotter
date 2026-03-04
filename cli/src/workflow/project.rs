@@ -1,3 +1,15 @@
+//! Project initialization and progress-file front matter helpers.
+//!
+//! This module owns the on-disk bootstrap for a new CodexPotter project:
+//! - Create `.codexpotter/projects/YYYY/MM/DD/N/MAIN.md` from prompt templates.
+//! - Record git metadata into YAML front matter (`git_commit`, `git_branch`).
+//! - Provide helpers to read/update selected front matter keys (for example
+//!   `finite_incantatem`).
+//!
+//! The front matter parsing here is intentionally tiny and strict: it only supports the subset
+//! of YAML that CodexPotter writes, and it errors loudly on malformed delimiters/values to avoid
+//! silently diverging from the progress file as the source of truth.
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;

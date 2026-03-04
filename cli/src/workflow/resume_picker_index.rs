@@ -1,3 +1,12 @@
+//! Resume picker project discovery.
+//!
+//! This module scans `.codexpotter/projects/**/MAIN.md` under a workdir and builds
+//! [`codex_tui::ResumePickerRow`] items for the TUI resume picker.
+//!
+//! Entries are filtered conservatively: we require a non-empty `potter-rollout.jsonl` and all
+//! referenced upstream rollout files to exist, so selecting a row always results in a resumable
+//! project.
+
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;

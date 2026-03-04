@@ -1,6 +1,22 @@
+//! Lightweight helpers for user-facing filesystem paths.
+//!
+//! These helpers are intended for CLI inputs and log messages:
+//! - [`expand_tilde`] expands `~` / `~/...` into the user's home directory.
+//! - [`display_with_tilde`] converts paths under the home directory back into a `~/...` display
+//!   form for readability.
+//!
+//! This module intentionally does **not** implement full shell expansion (no `$VAR`, no `~user`),
+//! and it is best-effort when the platform does not expose a home directory.
+
 use std::path::Path;
 use std::path::PathBuf;
 
+/// Expand a `~` / `~/...` path into the user's home directory.
+///
+/// Returns the original `path` unchanged when:
+/// - the input is not valid UTF-8
+/// - the input does not start with `~`
+/// - the home directory cannot be determined
 pub fn expand_tilde(path: &Path) -> PathBuf {
     let Some(path_str) = path.to_str() else {
         return path.to_path_buf();
@@ -17,6 +33,10 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
     home.join(rest)
 }
 
+/// Display a path using `~` when it is under the user's home directory.
+///
+/// Returns the default `path.display()` string when the home directory cannot be determined or
+/// when `path` is outside the home directory.
 pub fn display_with_tilde(path: &Path) -> String {
     let Some(home) = dirs::home_dir() else {
         return path.display().to_string();
@@ -31,4 +51,49 @@ pub fn display_with_tilde(path: &Path) -> String {
     }
 
     format!("~/{}", stripped.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_with_tilde;
+    use super::expand_tilde;
+    use pretty_assertions::assert_eq;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn expand_tilde_returns_original_when_no_tilde_prefix() {
+        let path = PathBuf::from("foo").join("bar");
+        assert_eq!(expand_tilde(&path), path);
+    }
+
+    #[test]
+    fn expand_tilde_expands_home_when_available() {
+        let Some(home) = dirs::home_dir() else {
+            assert_eq!(expand_tilde(Path::new("~")), PathBuf::from("~"));
+            return;
+        };
+
+        assert_eq!(expand_tilde(Path::new("~")), home);
+        assert_eq!(expand_tilde(Path::new("~/nested")), home.join("nested"));
+    }
+
+    #[test]
+    fn display_with_tilde_returns_original_when_not_under_home_or_home_missing() {
+        let path = PathBuf::from("foo").join("bar");
+        assert_eq!(display_with_tilde(&path), path.display().to_string());
+    }
+
+    #[test]
+    fn display_with_tilde_uses_tilde_for_home_paths_when_available() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+
+        assert_eq!(display_with_tilde(&home), "~".to_string());
+        assert_eq!(
+            display_with_tilde(&home.join("nested").join("file")),
+            format!("~/{}", PathBuf::from("nested").join("file").display())
+        );
+    }
 }

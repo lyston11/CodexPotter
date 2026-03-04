@@ -1,3 +1,15 @@
+//! Backend event bridge for persistence and synthetic markers.
+//!
+//! While a round is running, CodexPotter forwards backend `EventMsg` items to the UI. This bridge
+//! observes the same events to:
+//! - Record `RoundConfigured` / `RoundFinished` (and optional `ProjectSucceeded`) entries into
+//!   `potter-rollout.jsonl`.
+//! - Inject a `PotterProjectSucceeded` event into the UI stream when `finite_incantatem: true` is
+//!   set in the progress file and the current round finishes successfully.
+//!
+//! The bridge is designed to be strict: persistence failures are treated as fatal so resume never
+//! reads a partially diverged log.
+
 use std::path::PathBuf;
 use std::time::Instant;
 

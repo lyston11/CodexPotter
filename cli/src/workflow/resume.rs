@@ -1,3 +1,18 @@
+//! Project resume: replay and continue.
+//!
+//! `codex-potter resume` replays a previously recorded CodexPotter project and optionally
+//! continues iterating additional rounds.
+//!
+//! The resume flow is split into two phases:
+//! - **Replay**: render recorded `EventMsg` items for completed rounds (and an optional unfinished
+//!   round prelude) without executing tools.
+//! - **Iterate**: if the user chooses to continue, ask the potter app-server to start more rounds
+//!   (`project/start_rounds`) and then hand off to [`crate::workflow::project_render_loop`] for
+//!   live rendering.
+//!
+//! This command changes the process working directory to the project's recorded working dir so
+//! subsequent relative paths match the original run.
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;

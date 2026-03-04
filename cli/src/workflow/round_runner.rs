@@ -1,3 +1,14 @@
+//! Single-round orchestration.
+//!
+//! A "round" is one upstream `codex app-server` session driven by the UI. This module wires:
+//! - A backend task that runs the upstream app-server and emits `EventMsg` notifications.
+//! - A forwarder task that persists boundary markers to `potter-rollout.jsonl` via
+//!   [`super::round_event_bridge::PotterRoundEventBridge`] and forwards events to the UI.
+//! - A UI driver ([`PotterRoundUi`]) that renders the round and sends `Op` requests.
+//!
+//! On non-completed UI exits (user/fatal/task failure) we abort the backend to avoid orphaned
+//! processes.
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;

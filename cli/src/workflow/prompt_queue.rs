@@ -1,3 +1,12 @@
+//! Prompt queue utilities.
+//!
+//! CodexPotter can obtain follow-up prompts from multiple sources:
+//! - The interactive user composer (typed by the user).
+//! - "Queued user prompts" emitted during round execution and stored by the UI.
+//!
+//! This module provides a tiny helper to prefer queued prompts when available, falling back to
+//! prompting the user only when the queue is empty.
+
 use std::future::Future;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

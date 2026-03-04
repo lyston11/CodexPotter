@@ -1,8 +1,19 @@
+//! Small utilities for atomic-ish file writes.
+//!
+//! Currently this module provides [`write_atomic_text`], which writes a text file by creating a
+//! temporary file in the same directory and then persisting it to the target path. This keeps the
+//! final replacement atomic on platforms/filesystems where rename is atomic.
+
 use std::path::Path;
 
 use anyhow::Context;
 use tempfile::NamedTempFile;
 
+/// Write text to `path` by writing into a temp file in the same directory and persisting it.
+///
+/// Behavior:
+/// - Creates the parent directory when missing.
+/// - Ensures the resulting file ends with a trailing newline.
 pub fn write_atomic_text(path: &Path, contents: &str) -> anyhow::Result<()> {
     let Some(parent) = path.parent() else {
         anyhow::bail!("invalid path for atomic write: {}", path.display());

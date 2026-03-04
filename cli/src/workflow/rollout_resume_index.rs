@@ -1,3 +1,13 @@
+//! Build an in-memory resume index from `potter-rollout.jsonl`.
+//!
+//! Resume needs a structured view of the append-only rollout log. This module parses the log
+//! into:
+//! - the initial `ProjectStarted` info
+//! - a list of completed rounds with their thread ids, rollout paths and outcomes
+//! - an optional unfinished round at EOF (round started/configured but no finished marker)
+//!
+//! Parsing is strict and validates key invariants so corrupted logs fail fast.
+
 use std::path::PathBuf;
 
 use codex_protocol::ThreadId;

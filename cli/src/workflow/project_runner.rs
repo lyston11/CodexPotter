@@ -1,3 +1,14 @@
+//! Interactive project queue runner.
+//!
+//! This module runs one or more CodexPotter projects in a loop:
+//! - Collect the next user prompt either from the UI composer or from queued prompts emitted by
+//!   the UI during round execution (see [`crate::workflow::prompt_queue`]).
+//! - Start a new server-side project via `project/start`.
+//! - Render the project by delegating to [`crate::workflow::project_render_loop`].
+//!
+//! Exiting the UI triggers a best-effort `project/interrupt` so the server does not keep a
+//! dangling running project.
+
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Instant;

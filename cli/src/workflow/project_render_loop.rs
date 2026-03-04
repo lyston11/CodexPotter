@@ -1,3 +1,16 @@
+//! Multi-round project rendering loop.
+//!
+//! A running CodexPotter project is hosted by the long-lived `codex-potter app-server` and emits
+//! a single stream of `EventMsg` notifications. This module consumes that stream and drives a
+//! per-round UI renderer ([`PotterRoundUi`]), pausing the stream between rounds so each round is
+//! rendered as a coherent unit.
+//!
+//! Notes:
+//! - Callers can pass `buffered_events` (notably from `resume`) that must be rendered before
+//!   reading from the live server stream.
+//! - The project is considered complete only after observing `PotterProjectCompleted`; missing
+//!   that marker is treated as a fatal protocol error.
+
 use std::collections::VecDeque;
 
 use anyhow::Context;
