@@ -320,9 +320,6 @@ async fn main() -> anyhow::Result<()> {
         &mut potter_app_server,
         project_queue_workdir.clone(),
         crate::workflow::project_runner::ProjectQueueOptions {
-            // Keep the project queue interactive even after `resume` completes, so users can
-            // continue queueing work (or simply wait) without restarting the CLI.
-            allow_prompt_user: true,
             rounds: cli.rounds,
             turn_prompt: turn_prompt.clone(),
         },

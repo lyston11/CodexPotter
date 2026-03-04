@@ -10,8 +10,6 @@ use crate::workflow::round_runner::UiFuture;
 /// Runtime configuration for running one or more CodexPotter projects.
 #[derive(Debug, Clone)]
 pub struct ProjectQueueOptions {
-    /// Whether to prompt the user for a project goal when the queue is empty.
-    pub allow_prompt_user: bool,
     /// Round budget per project (passed to `project/start`).
     pub rounds: NonZeroUsize,
     /// Per-round prompt passed to the TUI renderer.
@@ -33,9 +31,6 @@ pub enum ProjectQueueExit {
 }
 
 /// Run CodexPotter projects until the queue is exhausted.
-///
-/// When `options.allow_prompt_user` is `false`, this only drains prompts queued via the bottom
-/// composer (and exits when the queue is empty).
 pub async fn run_project_queue(
     ui: &mut codex_tui::CodexPotterTui,
     app_server: &mut crate::app_server::potter::PotterAppServerClient,
@@ -136,7 +131,7 @@ where
     'project: loop {
         let next_prompt = pending_user_prompts.pop_next_prompt(|| ui.pop_queued_user_prompt());
 
-        let next_prompt = if options.allow_prompt_user {
+        let next_prompt =
             crate::workflow::prompt_queue::next_prompt_or_prompt_user(next_prompt, || {
                 let prompt_footer = codex_tui::PromptFooterContext::new(
                     workdir.clone(),
@@ -144,10 +139,7 @@ where
                 );
                 ui.prompt_user(prompt_footer)
             })
-            .await?
-        } else {
-            next_prompt.map(crate::workflow::prompt_queue::NextPrompt::FromQueue)
-        };
+            .await?;
 
         let Some(next_prompt) = next_prompt else {
             break 'project;
@@ -415,9 +407,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drains_queued_prompts_without_prompting_user() {
+    async fn drains_queued_prompts_before_prompting_user() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let mut ui = MockUi::new(vec![String::from("one"), String::from("two")], Vec::new());
+        let mut ui = MockUi::new(vec![String::from("one"), String::from("two")], vec![None]);
         let mut app_server = MockAppServer::default();
         let clock = TestClock;
 
@@ -426,7 +418,6 @@ mod tests {
             &mut app_server,
             temp.path().to_path_buf(),
             ProjectQueueOptions {
-                allow_prompt_user: false,
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
             },
@@ -440,7 +431,7 @@ mod tests {
             app_server.started_prompts(),
             vec![String::from("one"), String::from("two")]
         );
-        assert_eq!(ui.prompt_user_calls, 0);
+        assert_eq!(ui.prompt_user_calls, 1);
         assert_eq!(ui.clear_calls, 0);
         assert_eq!(ui.queued_prompts, VecDeque::<String>::new());
     }
@@ -457,7 +448,6 @@ mod tests {
             &mut app_server,
             temp.path().to_path_buf(),
             ProjectQueueOptions {
-                allow_prompt_user: true,
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
             },
@@ -484,7 +474,6 @@ mod tests {
             &mut app_server,
             temp.path().to_path_buf(),
             ProjectQueueOptions {
-                allow_prompt_user: true,
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
             },
