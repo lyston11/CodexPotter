@@ -37,7 +37,7 @@ Examples of **upstream-derived** surfaces that should remain close to upstream:
 
 - `file-search/` (crate `codex-file-search`)
 - most of `tui/src/render/`, `tui/src/markdown*`, `tui/src/exec_cell/`, `tui/src/streaming/`
-- the app-server protocol mirror in `cli/src/app_server_protocol/`
+- the app-server protocol mirror in `cli/src/app_server/upstream_protocol/protocol/`
 
 ## How to compare with upstream (without guessing)
 

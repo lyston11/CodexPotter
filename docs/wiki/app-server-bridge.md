@@ -3,17 +3,18 @@
 `codex-potter` does not embed Codex "core" in-process. Instead, each round spawns an external
 upstream `codex` process in **app-server** mode and talks to it over stdin/stdout.
 
-This page documents the bridge implementation in `cli/src/app_server_backend.rs` and the local
-schema copy in `cli/src/app_server_protocol/`.
+This page documents the bridge implementation in `cli/src/app_server/codex_backend.rs` and the
+local schema copy in `cli/src/app_server/upstream_protocol/protocol/`.
 
 ## Ownership
 
-- **Potter-specific**: the bridge task (`cli/src/app_server_backend.rs`) is owned by this repo.
+- **Potter-specific**: the bridge task (`cli/src/app_server/codex_backend.rs`) is owned by this repo.
   It exists because `codex-potter` is non-interactive and needs a stable, bounded, programmatic
   way to drive `codex`.
 - **Upstream-derived**: JSON-RPC method names, payload shapes, and most semantics come from the
-  upstream `codex` CLI app-server. The protocol structs under `cli/src/app_server_protocol/` are a
-  trimmed local mirror; keep them aligned with upstream when updating.
+  upstream `codex` CLI app-server. The protocol structs under
+  `cli/src/app_server/upstream_protocol/protocol/` are a trimmed local mirror; keep them aligned
+  with upstream when updating.
 
 ## Transport model (stdin/stdout, line-delimited JSON)
 
@@ -23,7 +24,7 @@ The bridge uses a simple newline-delimited JSON transport:
 - client writes one JSON object per line to stdin
 
 This is intentionally **not** full JSON-RPC 2.0 (we do not send or expect the `"jsonrpc": "2.0"`
-field). See `cli/src/app_server_protocol/jsonrpc_lite.rs`.
+field). See `cli/src/app_server/upstream_protocol/jsonrpc_lite.rs`.
 
 ## Process + sandbox model
 
@@ -59,7 +60,7 @@ state.
 
 ### 1) Spawn (`codex … app-server`)
 
-Entry point: `spawn_app_server(...)` in `cli/src/app_server_backend.rs`.
+Entry point: `spawn_app_server(...)` in `cli/src/app_server/codex_backend.rs`.
 
 It runs:
 
@@ -80,7 +81,7 @@ Sequence:
 2. Wait for the matching response
 3. Send a notification: `initialized`
 
-The typed request wrapper lives in `cli/src/app_server_protocol/protocol/common.rs`:
+The typed request wrapper lives in `cli/src/app_server/upstream_protocol/protocol/common.rs`:
 
 - `ClientRequest::Initialize` uses **v1** payloads (`protocol/v1.rs`)
 - `ClientNotification::Initialized` is a notification without `params`

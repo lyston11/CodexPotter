@@ -41,23 +41,22 @@ The workflow template defines:
   - **Not currently parsed by the `codex-potter` runner** (the CLI does not read it).
 - `short_title`: short human-readable title for the project
   - Set during the first round (when `status: initial`).
-  - **Not currently parsed by the runner**.
+  - Used by the resume picker UI when present (`cli/src/workflow/resume_picker_index.rs`).
 - `git_commit`: git commit SHA captured when the project is created
   - Empty when the working directory is not a git repo (or HEAD cannot be resolved).
-  - **Not currently parsed by the runner**.
+  - Used in the project-success summary (`cli/src/app_server/potter/server.rs`).
 - `git_branch`: git branch name captured when the project is created
   - Empty when not on a branch (detached HEAD) or when the working directory is not a git repo.
-  - **Not currently parsed by the runner**.
+  - Used by the resume picker UI when present (`cli/src/workflow/resume_picker_index.rs`).
 - `finite_incantatem`: `true` | `false`
-  - **The only field currently read by the runner.**
   - When `true`, the CLI stops running additional rounds for the current project
-    (`cli/src/project.rs`: `progress_file_has_finite_incantatem_true`).
+    (`cli/src/workflow/round_runner.rs`).
   - Queued projects (queued user prompts) continue normally.
 
 ### How the file is used at runtime
 
 - The CLI injects the progress file *relative path* into the developer prompt
-  (`cli/src/project.rs`: `render_developer_prompt` + `cli/prompts/developer_prompt.md`).
+  (`cli/src/workflow/project.rs`: `render_developer_prompt` + `cli/prompts/developer_prompt.md`).
 - Each round uses a fixed user prompt (`cli/prompts/prompt.md`) that instructs the agent to
   continue working according to the workflow.
 - The agent is expected to:

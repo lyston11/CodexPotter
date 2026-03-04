@@ -12,7 +12,7 @@ debugging or evolving the repo:
 
 ### Per-project (under the current working directory)
 
-Created by `cli/src/project.rs`:
+Created by `cli/src/workflow/project.rs`:
 
 - `.codexpotter/projects/YYYY/MM/DD/N/MAIN.md`
   - the progress file that the agent is instructed to read/update each round
@@ -75,13 +75,13 @@ approvals.
   - passes upstream Codex's bypass flag when spawning the app-server
   - requests `danger-full-access` at the thread level
 
-Implementation: `cli/src/app_server_backend.rs` (`AppServerLaunchConfig::from_cli`).
+Implementation: `cli/src/app_server/codex_backend.rs` (`AppServerLaunchConfig::from_cli`).
 
 ### Approval policy
 
-- `thread/start` requests `approvalPolicy: "never"` (`cli/src/app_server_backend.rs`).
+- `thread/start` requests `approvalPolicy: "never"` (`cli/src/app_server/codex_backend.rs`).
 - If the app-server still emits approval requests, `codex-potter` auto-accepts them to avoid
-  hanging (see `handle_server_request` in `cli/src/app_server_backend.rs`).
+  hanging (see `handle_server_request` in `cli/src/app_server/codex_backend.rs`).
 
 ## Tests and snapshot maintenance
 

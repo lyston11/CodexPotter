@@ -24,7 +24,7 @@ Responsibilities:
   (`cli/src/global_gitignore.rs` + TUI prompt helpers).
 - Prompt for the initial project goal (via `codex_tui::CodexPotterTui`).
 - Create the per-project progress file and knowledge base directory under the *current working
-  directory* (`cli/src/project.rs`).
+  directory* (`cli/src/workflow/project.rs`).
 - Run a bounded number of rounds (`--rounds`), where each round:
   - starts a fresh external `codex app-server`
   - sends a fixed user prompt (`cli/prompts/prompt.md`)
@@ -39,8 +39,8 @@ Responsibilities:
 app-server mode and communicates via JSON-RPC over stdin/stdout:
 
 - spawn: `codex [--sandbox ...] [--dangerously-bypass-approvals-and-sandbox] app-server`
-  (`cli/src/app_server_backend.rs`)
-- protocol: a local copy of the app-server schema in `cli/src/app_server_protocol/` (v1/v2)
+  (`cli/src/app_server/codex_backend.rs`)
+- protocol: a local copy of the app-server schema in `cli/src/app_server/upstream_protocol/protocol/` (v1/v2)
 
 Within each round, `codex-potter` creates a new thread (`thread/start`) and then starts a turn
 (`turn/start`). On retryable stream/network failures it may issue follow-up `continue` turns
@@ -64,9 +64,10 @@ Potter-specific additions:
 - `EventMsg::PotterRoundFinished`
 - `EventMsg::PotterProjectSucceeded`
 
-These markers are synthesized by the control plane (`cli/src/main.rs` and
-`cli/src/app_server_backend.rs`, not emitted by the upstream app-server) so the TUI can render
-project/round boundaries and successful project completion as normal history cells.
+These markers are synthesized by the control plane (round orchestration in `cli/src/workflow/` and
+the backend bridge in `cli/src/app_server/codex_backend.rs`; they are not emitted by the upstream
+app-server) so the TUI can render project/round boundaries and successful project completion as
+normal history cells.
 
 ### TUI renderer (crate: `codex-tui`)
 
@@ -120,7 +121,7 @@ Durable memory is the progress file and the repository state on disk.
 1. Resolve the `codex` binary (`cli/src/startup.rs`).
 2. (Best-effort) configure `~/.codexpotter/codex-compat/` and pass it to the app-server by setting
    the `CODEX_HOME` environment variable when spawning the process
-   (`cli/src/codex_compat.rs` + `cli/src/app_server_backend.rs`).
+   (`cli/src/codex_compat.rs` + `cli/src/app_server/codex_backend.rs`).
 3. Initialize the terminal UI (`codex_tui::CodexPotterTui::new()`).
 4. Optionally show a global gitignore recommendation prompt.
 5. Prompt the user for the initial goal (`CodexPotterTui::prompt_user(...)`).
@@ -142,7 +143,7 @@ For each round:
    - `PotterRoundStarted` (for every round)
    - `PotterProjectSucceeded` (only when the project finishes successfully, i.e. `finite_incantatem: true`)
 2. CLI spawns `codex app-server` and starts the JSON-RPC bridge task
-   (`cli/src/app_server_backend.rs`).
+   (`cli/src/app_server/codex_backend.rs`).
 3. Backend performs:
    - `initialize`
    - `thread/start` (approval policy is `never`; sandbox is derived from CLI flags)
@@ -156,7 +157,7 @@ For each round:
    into `HistoryCell`s and renders them.
 6. When the control plane emits `EventMsg::PotterRoundFinished`, the UI exits the round
    runner. The CLI checks the progress file front matter for `finite_incantatem: true` and decides
-   whether to stop the project early (`cli/src/project.rs`).
+   whether to stop the project early (`cli/src/workflow/round_runner.rs`).
 
 ### 4) Queued prompts during a turn
 

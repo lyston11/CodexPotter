@@ -23,16 +23,16 @@ At a high level, the "control plane" is in `cli/`, while the "rendering plane" i
    `codex_tui::CodexPotterTui`.
 2. The TUI prompts for an initial goal (`tui/src/app_server_render.rs`: prompt screen).
 3. The CLI creates a project progress file under `.codexpotter/projects/.../MAIN.md` and prepares
-   the developer prompt that points at that file (`cli/src/project.rs`).
+   the developer prompt that points at that file (`cli/src/workflow/project.rs`).
 4. For each round:
    - The CLI spawns an external `codex app-server` process and runs the JSON-RPC bridge
-     (`cli/src/app_server_backend.rs`).
+     (`cli/src/app_server/codex_backend.rs`).
    - The UI runs the round render loop (`tui/src/app_server_render.rs`), which:
      - sends `Op::UserInput` to start the turn,
      - consumes `EventMsg` notifications and renders them as `HistoryCell`s,
      - allows the user to queue additional prompts (stored inside `CodexPotterTui`).
 5. After each round the CLI checks `finite_incantatem` in the progress file and decides whether to stop
-   the current project (`cli/src/project.rs`).
+   the current project (`cli/src/workflow/round_runner.rs`).
 6. After the project ends, queued prompts become new projects (new `.codexpotter/projects/...`
    directories) rather than continuing the same conversation context.
 
@@ -51,11 +51,11 @@ Key modules (high-level):
     gitignored knowledge base directory exists for intermediate notes.
   - Runs up to `--rounds N`; each round starts a fresh `codex app-server` and renders a single
     "turn".
-- `cli/src/project.rs`: progress file creation and fixed per-turn prompt (`prompts/prompt.md`).
-- `cli/src/app_server_backend.rs`: JSON-RPC bridge to `codex app-server`; converts server events
+- `cli/src/workflow/project.rs`: progress file creation and fixed per-turn prompt (`prompts/prompt.md`).
+- `cli/src/app_server/codex_backend.rs`: JSON-RPC bridge to `codex app-server`; converts server events
   into `codex_protocol::protocol::Event` and forwards to the UI. Also auto-approves requests when
   the app-server asks for approvals.
-- `cli/src/app_server_protocol/`: local copy of the app-server JSON-RPC schema (v1/v2).
+- `cli/src/app_server/upstream_protocol/protocol/`: local copy of the app-server JSON-RPC schema (v1/v2).
 - `cli/src/codex_compat.rs`: maintains a `~/.codexpotter/codex-compat/` directory and symlinks
   `$CODEX_HOME/{config.toml,auth.json}` into it (defaults to `~/.codex/{config.toml,auth.json}` when
   `CODEX_HOME` is unset); used to point the app-server at a stable "Codex home".
@@ -65,8 +65,8 @@ Key modules (high-level):
 Key types:
 
 - `Cli` (`cli/src/main.rs`): CLI flags (`--rounds`, `--sandbox`, `--codex-bin`, `--yolo`).
-- `ProjectInit` (`cli/src/project.rs`): derived paths for the progress file.
-- `AppServerLaunchConfig` (`cli/src/app_server_backend.rs`): controls spawn sandbox vs thread
+- `ProjectInit` (`cli/src/workflow/project.rs`): derived paths for the progress file.
+- `AppServerLaunchConfig` (`cli/src/app_server/codex_backend.rs`): controls spawn sandbox vs thread
   sandbox and `--yolo` behavior.
 
 Upstream status:
@@ -145,8 +145,8 @@ When changing code, treat these as "ownership signals":
 - If a module exists in upstream `codex-rs/` with the same path and similar contents, treat it as
   upstream-derived. Prefer minimal diffs and port upstream fixes back and forth deliberately.
 - Modules that only exist in this repo are potter-specific. Examples:
-  - `cli/src/app_server_backend.rs`
-  - `cli/src/project.rs` (progress file templates + multi-round prompt shape)
+  - `cli/src/app_server/codex_backend.rs`
+  - `cli/src/workflow/project.rs` (progress file templates + multi-round prompt shape)
   - `tui/src/potter_tui.rs`
   - potter-only protocol variants in `protocol/src/protocol.rs`
 
