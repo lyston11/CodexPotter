@@ -61,6 +61,12 @@ impl CodexPotterTui {
         })
     }
 
+    fn reset_event_stream_after_prompt(&mut self) {
+        self.tui.pause_events();
+        tui::flush_terminal_input_buffer();
+        self.tui.resume_events();
+    }
+
     /// Enable/disable update checks and update prompts on startup.
     ///
     /// When disabled, CodexPotter will not check for updates and will suppress the update prompt
@@ -82,9 +88,7 @@ impl CodexPotterTui {
 
         // Drop and recreate the underlying crossterm EventStream so any buffered input from the
         // prompt can't leak into the next screen (e.g. the global gitignore prompt / composer).
-        self.tui.pause_events();
-        tui::flush_terminal_input_buffer();
-        self.tui.resume_events();
+        self.reset_event_stream_after_prompt();
 
         Ok(match result {
             crate::update_prompt::UpdatePromptOutcome::Continue => None,
@@ -108,9 +112,7 @@ impl CodexPotterTui {
 
         // Drop and recreate the underlying crossterm EventStream so any buffered input from the
         // prompt can't leak into the next screen (e.g. the composer).
-        self.tui.pause_events();
-        tui::flush_terminal_input_buffer();
-        self.tui.resume_events();
+        self.reset_event_stream_after_prompt();
 
         result
     }
@@ -158,9 +160,7 @@ impl CodexPotterTui {
         let result =
             crate::action_picker_prompt::prompt_action_picker(&mut self.tui, actions).await;
 
-        self.tui.pause_events();
-        tui::flush_terminal_input_buffer();
-        self.tui.resume_events();
+        self.reset_event_stream_after_prompt();
 
         result
     }
@@ -177,9 +177,7 @@ impl CodexPotterTui {
             crate::resume_picker_prompt::run_resume_picker_prompt_with_tui(&mut self.tui, rows)
                 .await;
 
-        self.tui.pause_events();
-        tui::flush_terminal_input_buffer();
-        self.tui.resume_events();
+        self.reset_event_stream_after_prompt();
 
         result
     }
