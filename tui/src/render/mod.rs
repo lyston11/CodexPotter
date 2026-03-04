@@ -22,7 +22,6 @@ impl Insets {
         }
     }
 
-    #[allow(dead_code)]
     pub fn vh(v: u16, h: u16) -> Self {
         Self {
             top: v,

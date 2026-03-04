@@ -42,12 +42,6 @@ pub fn menu_surface_inset(area: Rect) -> Rect {
     area.inset(Insets::vh(MENU_SURFACE_INSET_V, MENU_SURFACE_INSET_H))
 }
 
-/// Total vertical padding introduced by the menu surface treatment.
-#[allow(dead_code)]
-pub const fn menu_surface_padding_height() -> u16 {
-    MENU_SURFACE_INSET_V * 2
-}
-
 /// Paint the shared menu background and return the inset content area.
 ///
 /// This keeps the surface treatment consistent across selection-style overlays.

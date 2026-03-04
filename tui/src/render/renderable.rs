@@ -18,37 +18,25 @@ pub trait Renderable {
     }
 }
 
-pub enum RenderableItem<'a> {
-    Owned(Box<dyn Renderable + 'a>),
-    Borrowed(&'a dyn Renderable),
-}
+pub struct RenderableItem<'a>(Box<dyn Renderable + 'a>);
 
-impl<'a> Renderable for RenderableItem<'a> {
+impl Renderable for RenderableItem<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        match self {
-            RenderableItem::Owned(child) => child.render(area, buf),
-            RenderableItem::Borrowed(child) => child.render(area, buf),
-        }
+        self.0.render(area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        match self {
-            RenderableItem::Owned(child) => child.desired_height(width),
-            RenderableItem::Borrowed(child) => child.desired_height(width),
-        }
+        self.0.desired_height(width)
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        match self {
-            RenderableItem::Owned(child) => child.cursor_pos(area),
-            RenderableItem::Borrowed(child) => child.cursor_pos(area),
-        }
+        self.0.cursor_pos(area)
     }
 }
 
 impl<'a> From<Box<dyn Renderable + 'a>> for RenderableItem<'a> {
     fn from(value: Box<dyn Renderable + 'a>) -> Self {
-        RenderableItem::Owned(value)
+        Self(value)
     }
 }
 
@@ -198,195 +186,7 @@ impl<'a> ColumnRenderable<'a> {
     }
 
     pub fn push(&mut self, child: impl Into<Box<dyn Renderable + 'a>>) {
-        self.children.push(RenderableItem::Owned(child.into()));
-    }
-
-    #[allow(dead_code)]
-    pub fn push_ref<R>(&mut self, child: &'a R)
-    where
-        R: Renderable + 'a,
-    {
-        self.children
-            .push(RenderableItem::Borrowed(child as &'a dyn Renderable));
-    }
-}
-
-#[allow(dead_code)]
-pub struct FlexChild<'a> {
-    flex: i32,
-    child: RenderableItem<'a>,
-}
-
-#[allow(dead_code)]
-pub struct FlexRenderable<'a> {
-    children: Vec<FlexChild<'a>>,
-}
-
-/// Lays out children in a column, with the ability to specify a flex factor for each child.
-///
-/// Children with flex factor > 0 will be allocated the remaining space after the non-flex children,
-/// proportional to the flex factor.
-#[allow(dead_code)]
-impl<'a> FlexRenderable<'a> {
-    pub fn new() -> Self {
-        Self { children: vec![] }
-    }
-
-    pub fn push(&mut self, flex: i32, child: impl Into<RenderableItem<'a>>) {
-        self.children.push(FlexChild {
-            flex,
-            child: child.into(),
-        });
-    }
-
-    /// Loosely inspired by Flutter's Flex widget.
-    ///
-    /// Ref https://github.com/flutter/flutter/blob/3fd81edbf1e015221e143c92b2664f4371bdc04a/packages/flutter/lib/src/rendering/flex.dart#L1205-L1209
-    fn allocate(&self, area: Rect) -> Vec<Rect> {
-        let mut allocated_rects = Vec::with_capacity(self.children.len());
-        let mut child_sizes = vec![0; self.children.len()];
-        let mut allocated_size = 0;
-        let mut total_flex = 0;
-
-        // 1. Allocate space to non-flex children.
-        let max_size = area.height;
-        let mut last_flex_child_idx = 0;
-        for (i, FlexChild { flex, child }) in self.children.iter().enumerate() {
-            if *flex > 0 {
-                total_flex += flex;
-                last_flex_child_idx = i;
-            } else {
-                child_sizes[i] = child
-                    .desired_height(area.width)
-                    .min(max_size.saturating_sub(allocated_size));
-                allocated_size += child_sizes[i];
-            }
-        }
-        let free_space = max_size.saturating_sub(allocated_size);
-        // 2. Allocate space to flex children, proportional to their flex factor.
-        let mut allocated_flex_space = 0;
-        if total_flex > 0 {
-            let space_per_flex = free_space / total_flex as u16;
-            for (i, FlexChild { flex, child }) in self.children.iter().enumerate() {
-                if *flex > 0 {
-                    // Last flex child gets all the remaining space, to prevent a rounding error
-                    // from not allocating all the space.
-                    let max_child_extent = if i == last_flex_child_idx {
-                        free_space - allocated_flex_space
-                    } else {
-                        space_per_flex * *flex as u16
-                    };
-                    let child_size = child.desired_height(area.width).min(max_child_extent);
-                    child_sizes[i] = child_size;
-                    allocated_flex_space += child_size;
-                }
-            }
-        }
-
-        let mut y = area.y;
-        for size in child_sizes {
-            let child_area = Rect::new(area.x, y, area.width, size);
-            allocated_rects.push(child_area);
-            y += child_area.height;
-        }
-        allocated_rects
-    }
-}
-
-impl<'a> Renderable for FlexRenderable<'a> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        self.allocate(area)
-            .into_iter()
-            .zip(self.children.iter())
-            .for_each(|(rect, child)| {
-                child.child.render(rect, buf);
-            });
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        self.allocate(Rect::new(0, 0, width, u16::MAX))
-            .last()
-            .map(|rect| rect.bottom())
-            .unwrap_or(0)
-    }
-
-    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        self.allocate(area)
-            .into_iter()
-            .zip(self.children.iter())
-            .find_map(|(rect, child)| child.child.cursor_pos(rect))
-    }
-}
-
-#[allow(dead_code)]
-pub struct RowRenderable<'a> {
-    children: Vec<(u16, RenderableItem<'a>)>,
-}
-
-impl Renderable for RowRenderable<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let mut x = area.x;
-        for (width, child) in &self.children {
-            let available_width = area.width.saturating_sub(x - area.x);
-            let child_area = Rect::new(x, area.y, (*width).min(available_width), area.height);
-            if child_area.is_empty() {
-                break;
-            }
-            child.render(child_area, buf);
-            x = x.saturating_add(*width);
-        }
-    }
-    fn desired_height(&self, width: u16) -> u16 {
-        let mut max_height = 0;
-        let mut width_remaining = width;
-        for (child_width, child) in &self.children {
-            let w = (*child_width).min(width_remaining);
-            if w == 0 {
-                break;
-            }
-            let height = child.desired_height(w);
-            if height > max_height {
-                max_height = height;
-            }
-            width_remaining = width_remaining.saturating_sub(w);
-        }
-        max_height
-    }
-
-    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let mut x = area.x;
-        for (width, child) in &self.children {
-            let available_width = area.width.saturating_sub(x - area.x);
-            let child_area = Rect::new(x, area.y, (*width).min(available_width), area.height);
-            if !child_area.is_empty()
-                && let Some(pos) = child.cursor_pos(child_area)
-            {
-                return Some(pos);
-            }
-            x = x.saturating_add(*width);
-        }
-        None
-    }
-}
-
-#[allow(dead_code)]
-impl<'a> RowRenderable<'a> {
-    pub fn new() -> Self {
-        Self { children: vec![] }
-    }
-
-    pub fn push(&mut self, width: u16, child: impl Into<Box<dyn Renderable>>) {
-        self.children
-            .push((width, RenderableItem::Owned(child.into())));
-    }
-
-    #[allow(dead_code)]
-    pub fn push_ref<R>(&mut self, width: u16, child: &'a R)
-    where
-        R: Renderable + 'a,
-    {
-        self.children
-            .push((width, RenderableItem::Borrowed(child as &'a dyn Renderable)));
+        self.children.push(RenderableItem::from(child.into()));
     }
 }
 
@@ -429,7 +229,7 @@ where
 {
     fn inset(self, insets: Insets) -> RenderableItem<'a> {
         let child: RenderableItem<'a> =
-            RenderableItem::Owned(Box::new(self) as Box<dyn Renderable + 'a>);
-        RenderableItem::Owned(Box::new(InsetRenderable { child, insets }))
+            RenderableItem::from(Box::new(self) as Box<dyn Renderable + 'a>);
+        RenderableItem::from(Box::new(InsetRenderable { child, insets }) as Box<dyn Renderable + 'a>)
     }
 }

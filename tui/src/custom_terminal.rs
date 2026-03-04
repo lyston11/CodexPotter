@@ -355,7 +355,6 @@ where
     /// Gets the current cursor position.
     ///
     /// This is the position of the cursor after the last draw call.
-    #[allow(dead_code)]
     pub fn get_cursor_position(&mut self) -> io::Result<Position> {
         self.backend.get_cursor_position()
     }
@@ -377,20 +376,6 @@ where
             .set_cursor_position(self.viewport_area.as_position())?;
         self.backend.clear_region(ClearType::AfterCursor)?;
         // Reset the back buffer to make sure the next update will redraw everything.
-        self.previous_buffer_mut().reset();
-        Ok(())
-    }
-
-    /// Clear terminal scrollback (if supported) and force a full redraw.
-    #[allow(dead_code)]
-    pub fn clear_scrollback(&mut self) -> io::Result<()> {
-        if self.viewport_area.is_empty() {
-            return Ok(());
-        }
-        self.backend
-            .set_cursor_position(self.viewport_area.as_position())?;
-        queue!(self.backend, Clear(crossterm::terminal::ClearType::Purge))?;
-        std::io::Write::flush(&mut self.backend)?;
         self.previous_buffer_mut().reset();
         Ok(())
     }
