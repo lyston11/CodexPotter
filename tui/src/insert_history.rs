@@ -331,6 +331,7 @@ mod tests {
     use super::*;
     use crate::markdown_render::render_markdown_text;
     use crate::test_backend::VT100Backend;
+    use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
 
@@ -573,6 +574,90 @@ mod tests {
     }
 
     #[test]
+    fn vt100_prefixed_url_keeps_prefix_and_url_on_same_row() {
+        let width: u16 = 48;
+        let height: u16 = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, height - 1, width, 1);
+        term.set_viewport_area(viewport);
+
+        let url = "http://a-long-url.com/this/that/blablablab/new.aspx/many_people_like_how";
+        let line: Line<'static> = Line::from(vec!["  │ ".into(), url.into()]);
+
+        insert_history_lines(&mut term, vec![line]).expect("insert history");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+
+        assert!(
+            rows.iter().any(|r| r.contains("│ http://a-long-url.com")),
+            "expected prefix and URL on same row, rows: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.trim_end() == "│"),
+            "unexpected orphan prefix row, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn vt100_prefixed_url_like_without_scheme_keeps_prefix_and_token_on_same_row() {
+        let width: u16 = 48;
+        let height: u16 = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, height - 1, width, 1);
+        term.set_viewport_area(viewport);
+
+        let url_like =
+            "example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890";
+        let line: Line<'static> = Line::from(vec!["  │ ".into(), url_like.into()]);
+
+        insert_history_lines(&mut term, vec![line]).expect("insert history");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("│ example.test/api/v1/projects")),
+            "expected prefix and URL-like token on same row, rows: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.trim_end() == "│"),
+            "unexpected orphan prefix row, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn vt100_prefixed_mixed_url_line_wraps_suffix_words_together() {
+        let width: u16 = 24;
+        let height: u16 = 10;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, height - 1, width, 1);
+        term.set_viewport_area(viewport);
+
+        let url = "https://example.test/path/abcdef12345";
+        let line: Line<'static> = Line::from(vec![
+            "  │ ".into(),
+            "see ".into(),
+            url.into(),
+            " tail words".into(),
+        ]);
+
+        insert_history_lines(&mut term, vec![line]).expect("insert mixed history");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+        assert!(
+            rows.iter().any(|r| r.contains("│ see")),
+            "expected prefixed prose before URL, rows: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("tail words")),
+            "expected suffix words to wrap as a phrase, rows: {rows:?}"
+        );
+    }
+
+    #[test]
     fn vt100_unwrapped_url_like_clears_continuation_rows() {
         let width: u16 = 20;
         let height: u16 = 10;
@@ -609,6 +694,41 @@ mod tests {
         assert!(
             !continuation_row.contains('X'),
             "expected continuation row to be cleared before writing wrapped URL-like content, got: {continuation_row:?}"
+        );
+    }
+
+    #[test]
+    fn vt100_long_unwrapped_url_does_not_insert_extra_blank_gap_before_content() {
+        let width: u16 = 56;
+        let height: u16 = 24;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        let viewport = Rect::new(0, height - 1, width, 1);
+        term.set_viewport_area(viewport);
+
+        let prompt = "Write a long URL as output for testing";
+        insert_history_lines(&mut term, vec![Line::from(prompt)]).expect("insert prompt line");
+
+        let long_url = format!(
+            "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/{}",
+            "very-long-segment-".repeat(16),
+        );
+        let url_line: Line<'static> = Line::from(vec!["• ".into(), long_url.into()]);
+        insert_history_lines(&mut term, vec![url_line]).expect("insert long url line");
+
+        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
+        let prompt_row = rows
+            .iter()
+            .position(|row| row.contains("Write a long URL as output for testing"))
+            .unwrap_or_else(|| panic!("expected prompt row in screen rows: {rows:?}"));
+        let url_row = rows
+            .iter()
+            .position(|row| row.contains("• https://example.test/api"))
+            .unwrap_or_else(|| panic!("expected URL first row in screen rows: {rows:?}"));
+
+        assert!(
+            url_row <= prompt_row + 2,
+            "expected URL content to appear immediately after prompt (allowing at most one spacer row), got prompt_row={prompt_row}, url_row={url_row}, rows={rows:?}",
         );
     }
 }
