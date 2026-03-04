@@ -1,3 +1,14 @@
+//! JSON-RPC protocol for `codex-potter app-server`.
+//!
+//! This module defines the request/response types for CodexPotter's project-level app-server.
+//! The wire format intentionally mirrors upstream Codex app-server JSON-RPC:
+//!
+//! - Request/notification envelopes use `method` + optional `id` + `params`.
+//! - The `"jsonrpc": "2.0"` field is omitted (see `app_server_protocol::jsonrpc_lite`).
+//!
+//! Keeping the shapes close to upstream reduces mental overhead and makes it easier to share
+//! tooling across `codex` and `codex-potter`.
+
 use std::path::PathBuf;
 
 use codex_protocol::protocol::EventMsg;

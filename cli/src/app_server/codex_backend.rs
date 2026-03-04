@@ -1,3 +1,16 @@
+//! Upstream `codex app-server` backend driver.
+//!
+//! This module is the execution plane for CodexPotter rounds:
+//!
+//! - Spawns an external `codex app-server` process (one process per round).
+//! - Drives the JSON-RPC request/response lifecycle (`thread/*`, `turn/start`, etc.).
+//! - Translates upstream notifications into `codex_protocol::protocol::EventMsg`.
+//! - Implements CodexPotter-specific stream recovery by injecting `PotterStreamRecovery*` markers
+//!   and retrying with follow-up `Continue` turns when retryable transient errors occur.
+//!
+//! The backend emits a well-formed round boundary by synthesizing `EventMsg::PotterRoundFinished`,
+//! and applies additional event filtering depending on [`AppServerEventMode`].
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;

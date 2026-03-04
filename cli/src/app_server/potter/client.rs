@@ -1,3 +1,14 @@
+//! Client for `codex-potter app-server`.
+//!
+//! This client spawns the current `codex-potter` executable in `app-server` mode and speaks a
+//! small JSON-RPC protocol over stdin/stdout. It is used by:
+//!
+//! - interactive CLI sessions (`codex-potter` default + `resume`)
+//! - non-interactive automation (`codex-potter exec --json`)
+//!
+//! The server is responsible for project-level orchestration; this client is intentionally thin
+//! and does not interpret `EventMsg` semantics beyond buffering and forwarding.
+
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::Stdio;

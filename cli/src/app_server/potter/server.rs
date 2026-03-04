@@ -1,3 +1,15 @@
+//! CodexPotter project-level app-server implementation.
+//!
+//! This JSON-RPC server is the "control plane" for CodexPotter:
+//!
+//! - Maintains active project state (fresh projects and resumed projects).
+//! - Spawns per-round upstream `codex app-server` backends via `crate::app_server::codex_backend`.
+//! - Forwards all `EventMsg` notifications to clients via `codex/event/potter`.
+//! - Persists project boundaries to `potter-rollout.jsonl` and supports replay via `project/resume`.
+//!
+//! The server is long-lived and can serve multiple sequential project runs. Each round backend is
+//! short-lived and isolated by spawning a new upstream process.
+
 use std::io::BufRead as _;
 use std::num::NonZeroUsize;
 use std::path::Path;
