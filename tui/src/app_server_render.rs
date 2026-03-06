@@ -1897,6 +1897,8 @@ mod tests {
     use codex_protocol::protocol::StreamErrorEvent;
     use codex_protocol::protocol::TokenCountEvent;
     use codex_protocol::protocol::TokenUsageInfo;
+    use codex_protocol::protocol::TurnAbortReason;
+    use codex_protocol::protocol::TurnAbortedEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
     use insta::assert_snapshot;
@@ -3724,6 +3726,89 @@ mod tests {
 
         assert_snapshot!(
             "round_renderer_end_to_end_vt100",
+            terminal.backend().vt100().screen().contents()
+        );
+    }
+
+    #[test]
+    fn round_renderer_esc_interrupt_flow_vt100() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let width: u16 = 80;
+        let height: u16 = 12;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
+        terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.processor.emit_user_prompt("test prompt".to_string());
+        let mut has_emitted_history_lines = false;
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            width,
+        );
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(saw_interrupt, "expected Esc to request Op::Interrupt");
+
+        app.processor.handle_codex_event(Event {
+            id: "turn-aborted".into(),
+            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some("turn-1".to_string()),
+                reason: TurnAbortReason::Interrupted,
+            }),
+        });
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        assert_snapshot!(
+            "round_renderer_esc_interrupt_flow_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
