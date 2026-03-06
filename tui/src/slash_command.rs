@@ -8,6 +8,8 @@ pub enum SlashCommand {
     Mention,
     /// Open the syntax theme picker (`/theme`).
     Theme,
+    /// Open the transcript verbosity picker (`/verbosity`).
+    Verbosity,
     /// Exit the TUI (`/exit`).
     Exit,
 }
@@ -18,6 +20,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Mention => "mention a file",
             SlashCommand::Theme => "choose a syntax highlighting theme",
+            SlashCommand::Verbosity => "choose how interim transcript items are shown",
             SlashCommand::Exit => "exit Codex",
         }
     }
@@ -27,6 +30,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Mention => "mention",
             SlashCommand::Theme => "theme",
+            SlashCommand::Verbosity => "verbosity",
             SlashCommand::Exit => "exit",
         }
     }
@@ -35,7 +39,7 @@ impl SlashCommand {
     pub fn available_during_task(self) -> bool {
         match self {
             SlashCommand::Theme => false,
-            SlashCommand::Mention | SlashCommand::Exit => true,
+            SlashCommand::Mention | SlashCommand::Verbosity | SlashCommand::Exit => true,
         }
     }
 
@@ -51,6 +55,7 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     vec![
         (SlashCommand::Mention.command(), SlashCommand::Mention),
         (SlashCommand::Theme.command(), SlashCommand::Theme),
+        (SlashCommand::Verbosity.command(), SlashCommand::Verbosity),
         (SlashCommand::Exit.command(), SlashCommand::Exit),
     ]
 }

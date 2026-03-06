@@ -4,6 +4,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::Op;
 
 use crate::history_cell::HistoryCell;
+use crate::verbosity::Verbosity;
 use codex_file_search::FileMatch;
 
 #[allow(clippy::large_enum_variant)]
@@ -37,5 +38,10 @@ pub enum AppEvent {
     /// Apply a user-confirmed syntax theme selection.
     SyntaxThemeSelected {
         name: String,
+    },
+
+    /// Apply a user-confirmed transcript verbosity selection.
+    VerbositySelected {
+        verbosity: Verbosity,
     },
 }

@@ -10,6 +10,7 @@ use crate::AppExitInfo;
 use crate::bottom_pane::PromptFooterContext;
 use crate::tui;
 use crate::tui::Tui;
+use crate::verbosity::Verbosity;
 
 /// Parameters for [`CodexPotterTui::render_round`].
 pub struct RenderRoundParams {
@@ -35,6 +36,7 @@ pub struct CodexPotterTui {
     composer_draft: Option<crate::bottom_pane::ChatComposerDraft>,
     check_for_update_on_startup: bool,
     startup_warnings: Vec<String>,
+    verbosity: Verbosity,
 }
 
 impl CodexPotterTui {
@@ -50,6 +52,14 @@ impl CodexPotterTui {
         {
             startup_warnings.push(warning);
         }
+        let verbosity = match crate::potter_config::load_potter_tui_verbosity() {
+            Ok(Some(verbosity)) => verbosity,
+            Ok(None) => Verbosity::default(),
+            Err(err) => {
+                startup_warnings.push(format!("Failed to load TUI verbosity: {err}"));
+                Verbosity::default()
+            }
+        };
         Ok(Self {
             tui: Tui::new(terminal),
             has_rendered_round: false,
@@ -58,6 +68,7 @@ impl CodexPotterTui {
             composer_draft: None,
             check_for_update_on_startup: true,
             startup_warnings,
+            verbosity,
         })
     }
 
@@ -133,6 +144,7 @@ impl CodexPotterTui {
             self.check_for_update_on_startup,
             startup_warnings,
             composer_draft,
+            &mut self.verbosity,
             prompt_footer,
         )
         .await
@@ -228,6 +240,7 @@ impl CodexPotterTui {
         let state = crate::app_server_render::RoundUiState {
             queued_user_messages: &mut queued,
             composer_draft: &mut composer_draft,
+            verbosity: &mut self.verbosity,
         };
         let result = crate::app_server_render::run_round_with_tui_options_and_queue(
             &mut self.tui,

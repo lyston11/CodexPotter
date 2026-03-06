@@ -13,7 +13,7 @@
 //!
 //! See `tui/AGENTS.md` for the canonical list. Highlights:
 //!
-//! - Supports a `/` command picker popup (subset: `/theme`, `/exit`, `/mention`).
+//! - Supports a `/` command picker popup (subset: `/theme`, `/verbosity`, `/exit`, `/mention`).
 //! - No `?` shortcuts overlay (`?` is inserted literally).
 //! - `Esc` only dismisses popups; there is no Esc-driven rewind/backtrack UX.
 //! - No steer mode: <kbd>Enter</kbd> queues the message instead of submitting immediately.

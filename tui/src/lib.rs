@@ -30,6 +30,7 @@ mod markdown_stream;
 mod mention_codec;
 mod multi_agents;
 mod path_utils;
+mod potter_config;
 mod potter_tui;
 mod prompt_history_store;
 mod render;
@@ -52,6 +53,8 @@ mod ui_consts;
 mod update_action;
 mod update_prompt;
 mod updates;
+mod verbosity;
+mod verbosity_picker;
 mod version;
 mod wrapping;
 

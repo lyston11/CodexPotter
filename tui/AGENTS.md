@@ -20,7 +20,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 
 ### Text Box
 
-- Slash command picker exists but only supports `/theme`, `/exit`, `/mention`.
+- Slash command picker exists but only supports `/theme`, `/verbosity`, `/exit`, `/mention`.
 - No `?` shortcuts overlay (treat `?` as a literal character).
 - `Tab` inserts a literal tab character (`\t`) into the composer.
 - Supports `$` skills picker.

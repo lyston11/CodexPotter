@@ -49,6 +49,7 @@ use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
+use crate::verbosity::Verbosity;
 
 fn render_runner_viewport(
     area: ratatui::layout::Rect,
@@ -115,6 +116,7 @@ pub async fn prompt_user_with_tui(
     check_for_update_on_startup: bool,
     startup_warnings: Vec<String>,
     composer_draft: Option<ChatComposerDraft>,
+    verbosity: &mut Verbosity,
     prompt_footer: PromptFooterContext,
 ) -> anyhow::Result<Option<String>> {
     let (app_event_tx_raw, mut app_event_rx) = unbounded_channel::<AppEvent>();
@@ -189,8 +191,10 @@ pub async fn prompt_user_with_tui(
         prompt_history,
         file_search,
         should_pad_prompt_viewport,
+        *verbosity,
     );
     let _ = app.run(tui, &mut app_event_rx, None, None).await?;
+    *verbosity = app.processor.verbosity;
 
     Ok(match app.prompt_action.take() {
         Some(PromptScreenAction::Submitted(text)) => Some(text),
@@ -298,6 +302,8 @@ pub struct RoundUiState<'a> {
     pub queued_user_messages: &'a mut VecDeque<String>,
     /// Draft composer contents to restore when returning to a prompt screen.
     pub composer_draft: &'a mut Option<crate::bottom_pane::ChatComposerDraft>,
+    /// Current transcript verbosity preference.
+    pub verbosity: &'a mut Verbosity,
 }
 
 /// Context that must persist across rounds within a CodexPotter project.
@@ -354,7 +360,7 @@ pub async fn run_round_with_tui_options_and_queue(
     let file_search = FileSearchManager::new(file_search_dir, app_event_tx.clone());
     let prompt_history = crate::prompt_history_store::PromptHistoryStore::new();
 
-    let driver = AppServerEventProcessor::new(app_event_tx.clone());
+    let driver = AppServerEventProcessor::new(app_event_tx.clone(), *state.verbosity);
     if options.render_user_prompt {
         driver.emit_user_prompt(prompt.clone());
     }
@@ -397,6 +403,7 @@ pub async fn run_round_with_tui_options_and_queue(
         .await;
     *state.queued_user_messages = app.queued_user_messages;
     *state.composer_draft = app.bottom_pane.composer_mut().take_draft();
+    *state.verbosity = app.processor.verbosity;
     result
 }
 
@@ -410,6 +417,7 @@ struct AppServerEventProcessor {
     model_context_window: Option<i64>,
     thread_id: Option<codex_protocol::ThreadId>,
     cwd: PathBuf,
+    verbosity: Verbosity,
     last_rendered_width: Option<u16>,
     saw_agent_delta: bool,
     saw_plan_delta: bool,
@@ -434,7 +442,7 @@ struct PendingPotterProjectSucceeded {
 }
 
 impl AppServerEventProcessor {
-    fn new(app_event_tx: AppEventSender) -> Self {
+    fn new(app_event_tx: AppEventSender, verbosity: Verbosity) -> Self {
         Self {
             app_event_tx,
             stream: StreamController::new(None),
@@ -445,6 +453,7 @@ impl AppServerEventProcessor {
             model_context_window: None,
             thread_id: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            verbosity,
             last_rendered_width: None,
             saw_agent_delta: false,
             saw_plan_delta: false,
@@ -994,8 +1003,9 @@ impl RenderAppState {
         prompt_history: crate::prompt_history_store::PromptHistoryStore,
         file_search: FileSearchManager,
         should_pad_prompt_viewport: bool,
+        verbosity: Verbosity,
     ) -> Self {
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), verbosity);
         let mut app = Self::new(
             processor,
             app_event_tx,
@@ -1386,6 +1396,13 @@ impl RenderAppState {
                     self.bottom_pane.composer_mut().show_selection_view(params);
                     frame_requester.schedule_frame();
                 }
+                SlashCommand::Verbosity => {
+                    let params = crate::verbosity_picker::build_verbosity_picker_params(
+                        self.processor.verbosity,
+                    );
+                    self.bottom_pane.composer_mut().show_selection_view(params);
+                    frame_requester.schedule_frame();
+                }
             },
             InputResult::None => {}
         }
@@ -1484,6 +1501,22 @@ impl RenderAppState {
                             tui,
                             AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(
                                 format!("Failed to find CODEX_HOME: {err}"),
+                            ))),
+                        )?;
+                    }
+                }
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::VerbositySelected { verbosity } => {
+                match crate::potter_config::persist_potter_tui_verbosity(verbosity) {
+                    Ok(()) => {
+                        self.processor.verbosity = verbosity;
+                    }
+                    Err(err) => {
+                        self.handle_app_event(
+                            tui,
+                            AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(
+                                format!("Failed to save verbosity: {err}"),
                             ))),
                         )?;
                     }
@@ -1901,7 +1934,7 @@ mod tests {
     ) -> (AppServerEventProcessor, UnboundedReceiver<AppEvent>) {
         let (tx_raw, rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
-        let proc = AppServerEventProcessor::new(app_event_tx);
+        let proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
         proc.emit_user_prompt(prompt.to_string());
         (proc, rx)
     }
@@ -1910,7 +1943,10 @@ mod tests {
     -> (AppServerEventProcessor, UnboundedReceiver<AppEvent>) {
         let (tx_raw, rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
-        (AppServerEventProcessor::new(app_event_tx), rx)
+        (
+            AppServerEventProcessor::new(app_event_tx, Verbosity::default()),
+            rx,
+        )
     }
 
     #[tokio::test]
@@ -1978,7 +2014,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2100,7 +2136,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2187,7 +2223,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2292,7 +2328,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2348,7 +2384,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2435,7 +2471,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2492,7 +2528,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2535,7 +2571,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2585,7 +2621,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2632,7 +2668,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2692,7 +2728,7 @@ mod tests {
         let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -2763,6 +2799,7 @@ mod tests {
             crate::prompt_history_store::PromptHistoryStore::new(),
             file_search,
             true,
+            Verbosity::default(),
         );
 
         app.bottom_pane.set_task_running(false);
@@ -2825,6 +2862,7 @@ mod tests {
             crate::prompt_history_store::PromptHistoryStore::new(),
             file_search,
             true,
+            Verbosity::default(),
         );
 
         app.bottom_pane.set_task_running(false);
@@ -2873,6 +2911,7 @@ mod tests {
             crate::prompt_history_store::PromptHistoryStore::new(),
             file_search,
             true,
+            Verbosity::default(),
         );
 
         app.bottom_pane.set_task_running(false);
@@ -2926,7 +2965,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -3004,7 +3043,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -3088,7 +3127,7 @@ mod tests {
         let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone());
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         let (op_tx, _op_rx) = unbounded_channel::<Op>();
         let mut bottom_pane = BottomPane::new(BottomPaneParams {
             frame_requester: crate::tui::FrameRequester::test_dummy(),
@@ -3795,7 +3834,7 @@ mod tests {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let mut proc = AppServerEventProcessor::new(app_event_tx);
+        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
 
         let base = ExecCommandEndEvent {
             call_id: "unused".into(),
@@ -3946,7 +3985,7 @@ mod tests {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let mut proc = AppServerEventProcessor::new(app_event_tx);
+        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
 
         let base = ExecCommandEndEvent {
             call_id: "unused".into(),
@@ -4091,7 +4130,7 @@ mod tests {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let mut proc = AppServerEventProcessor::new(app_event_tx.clone());
+        let mut proc = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
         proc.handle_codex_event(Event {
             id: "session-start".into(),
             msg: EventMsg::PotterProjectStarted {
@@ -4221,7 +4260,7 @@ mod tests {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
 
-        let mut proc = AppServerEventProcessor::new(app_event_tx);
+        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
 
         let base = ExecCommandEndEvent {
             call_id: "unused".into(),
