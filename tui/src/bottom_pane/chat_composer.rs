@@ -1315,6 +1315,12 @@ impl ChatComposer {
                 kind: KeyEventKind::Press,
                 ..
             } if self.is_empty() => (InputResult::None, false),
+            // Cmd+Up / Cmd+Down is treated as text navigation, not history navigation.
+            KeyEvent {
+                code: KeyCode::Up | KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.handle_input_basic(key_event),
             // -------------------------------------------------------------
             // History navigation (Up / Down) – only when the composer is not
             // empty or when the cursor is at the correct position, to avoid
@@ -2103,6 +2109,41 @@ mod tests {
         assert_eq!(result, InputResult::None);
         assert!(needs_redraw);
         assert_eq!(composer.current_text(), "draft text");
+    }
+
+    #[test]
+    fn super_down_does_not_navigate_history_when_browsing() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        composer.set_text_content("draft text".to_string());
+        assert_eq!(composer.clear_for_ctrl_c(), Some("draft text".to_string()));
+        assert!(composer.is_empty());
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+        assert_eq!(composer.current_text(), "draft text");
+        assert_eq!(composer.textarea.cursor(), 0);
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+        assert_eq!(composer.current_text(), "draft text");
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
     }
 
     #[test]
