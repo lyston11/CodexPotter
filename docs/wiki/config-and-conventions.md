@@ -35,7 +35,7 @@ Everything under `.codexpotter/` is intended to be ignored by git.
 ## Model config resolution (for display)
 
 The TUI reads a subset of upstream Codex's config layering to determine the model label shown in
-the startup banner / status UI, including whether startup should append ` [fast]`.
+the startup banner, including whether startup should append ` [fast]`.
 
 Entry point: `tui/src/codex_config.rs` (`resolve_codex_model_config`).
 
@@ -65,6 +65,9 @@ flag are resolved from `profiles.<name>.*` first, then fall back to the top-leve
 
 - The first-screen startup banner is rendered before `thread/start` returns a session snapshot, so
   it cannot rely on app-server `SessionConfiguredEvent` / config snapshot for the initial render.
+- In this fork, `protocol::SessionConfiguredEvent` does not expose `service_tier`, so the prompt
+  screen cannot learn Fast state from app-server session events later either; layered config is the
+  only local source currently available to the TUI for this badge.
 - Upstream `/fast` persists the current selection via `service_tier`, while `fast_mode` is the
   feature gate that can still disable Fast entirely.
 - codex-potter therefore treats layered config as the startup-banner source of truth: when the
