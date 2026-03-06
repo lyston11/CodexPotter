@@ -172,6 +172,13 @@ mod tests {
     }
 
     #[test]
+    fn startup_banner_fast_snapshot() {
+        let dir = Path::new("/Users/example/repo");
+        let lines = build_startup_banner_lines(120, "0.0.1", "gpt-5.2 xhigh [fast]", dir);
+        assert_snapshot!("startup_banner_fast_snapshot", to_plain_text(&lines));
+    }
+
+    #[test]
     fn startup_banner_truncates_ascii_art_without_wrapping_and_keeps_version_visible() {
         let dir = Path::new("/Users/example/repo");
         let width: u16 = 30;

@@ -9,28 +9,42 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use toml_edit::value;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CodexConfig {
-    pub model: Option<String>,
-    pub reasoning_effort: Option<ReasoningEffort>,
-    pub profile: Option<String>,
-    pub profiles: HashMap<String, CodexProfileModelConfig>,
-    pub project_root_markers: Option<Vec<String>>,
-    pub tui_theme: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexServiceTier {
+    Fast,
+    Flex,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CodexProfileModelConfig {
-    pub model: Option<String>,
-    pub reasoning_effort: Option<ReasoningEffort>,
+struct CodexConfig {
+    model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<CodexServiceTier>,
+    profile: Option<String>,
+    profiles: HashMap<String, CodexProfileModelConfig>,
+    project_root_markers: Option<Vec<String>>,
+    tui_theme: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CodexProfileModelConfig {
+    model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<CodexServiceTier>,
+}
+
+/// Resolved model metadata for the startup banner after applying layered Codex config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCodexModelConfig {
+    /// Effective model name, including profile and project-layer overrides.
     pub model: String,
+    /// Effective reasoning effort for the selected model, if configured.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Whether the effective service tier enables Fast mode.
+    pub is_fast: bool,
 }
 
+/// Resolve the effective model metadata used by the startup banner from layered Codex config.
 pub fn resolve_codex_model_config(cwd: &Path) -> io::Result<ResolvedCodexModelConfig> {
     let raw = load_codex_config(cwd)?;
 
@@ -49,10 +63,12 @@ pub fn resolve_codex_model_config(cwd: &Path) -> io::Result<ResolvedCodexModelCo
         .or(raw.model)
         .unwrap_or_else(|| DEFAULT_FALLBACK_MODEL.to_string());
     let reasoning_effort = profile_config.reasoning_effort.or(raw.reasoning_effort);
+    let service_tier = profile_config.service_tier.or(raw.service_tier);
 
     Ok(ResolvedCodexModelConfig {
         model,
         reasoning_effort,
+        is_fast: matches!(service_tier, Some(CodexServiceTier::Fast)),
     })
 }
 
@@ -240,6 +256,9 @@ fn apply_config_layer_from_doc(config: &mut CodexConfig, doc: &DocumentMut) -> i
     if let Some(item) = doc.get("model_reasoning_effort") {
         config.reasoning_effort = Some(read_reasoning_effort(item, "model_reasoning_effort")?);
     }
+    if let Some(item) = doc.get("service_tier") {
+        config.service_tier = Some(read_service_tier(item, "service_tier")?);
+    }
     if let Some(item) = doc.get("profile") {
         config.profile = Some(read_string(item, "profile")?);
     }
@@ -284,6 +303,12 @@ fn apply_config_layer_from_doc(config: &mut CodexConfig, doc: &DocumentMut) -> i
                 profile.reasoning_effort = Some(read_reasoning_effort(
                     item,
                     &format!("profiles.{profile_name}.model_reasoning_effort"),
+                )?);
+            }
+            if let Some(item) = profile_table.get("service_tier") {
+                profile.service_tier = Some(read_service_tier(
+                    item,
+                    &format!("profiles.{profile_name}.service_tier"),
                 )?);
             }
             config.profiles.insert(profile_name.to_string(), profile);
@@ -406,6 +431,16 @@ fn read_reasoning_effort(item: &TomlItem, field: &str) -> io::Result<ReasoningEf
     })
 }
 
+fn read_service_tier(item: &TomlItem, field: &str) -> io::Result<CodexServiceTier> {
+    let raw = read_string(item, field)?;
+    parse_service_tier(&raw).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("config field `{field}` has invalid value `{raw}`"),
+        )
+    })
+}
+
 fn parse_reasoning_effort(value: &str) -> Option<ReasoningEffort> {
     match value {
         "none" => Some(ReasoningEffort::None),
@@ -418,9 +453,18 @@ fn parse_reasoning_effort(value: &str) -> Option<ReasoningEffort> {
     }
 }
 
+fn parse_service_tier(value: &str) -> Option<CodexServiceTier> {
+    match value {
+        "fast" => Some(CodexServiceTier::Fast),
+        "flex" => Some(CodexServiceTier::Flex),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
     use serial_test::serial;
 
     struct EnvVarGuard {
@@ -468,11 +512,13 @@ mod tests {
             r#"
 model = "gpt-5.2"
 model_reasoning_effort = "xhigh"
+service_tier = "flex"
 profile = "work"
 
 [profiles.work]
 model = "gpt-5.2-codex"
 model_reasoning_effort = "high"
+service_tier = "fast"
 "#,
         );
 
@@ -480,6 +526,7 @@ model_reasoning_effort = "high"
         let resolved = resolve_codex_model_config(cwd.path()).expect("resolve");
         assert_eq!(resolved.model, "gpt-5.2-codex");
         assert_eq!(resolved.reasoning_effort, Some(ReasoningEffort::High));
+        assert!(resolved.is_fast);
     }
 
     #[test]
@@ -492,6 +539,7 @@ model_reasoning_effort = "high"
             &codex_home.path().join("config.toml"),
             r#"
 model = "gpt-5.2"
+service_tier = "fast"
 "#,
         );
 
@@ -502,11 +550,36 @@ model = "gpt-5.2"
             &repo.path().join(".codex").join("config.toml"),
             r#"
 model = "gpt-5.2-codex"
+service_tier = "flex"
 "#,
         );
 
         let resolved = resolve_codex_model_config(repo.path()).expect("resolve");
         assert_eq!(resolved.model, "gpt-5.2-codex");
+        assert!(!resolved.is_fast);
+    }
+
+    #[test]
+    #[serial]
+    fn invalid_service_tier_is_rejected() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        write_config(
+            &codex_home.path().join("config.toml"),
+            r#"
+service_tier = "turbo"
+"#,
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let err = resolve_codex_model_config(cwd.path()).expect_err("expected error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("config field `service_tier` has invalid value `turbo`"),
+            "unexpected error: {err}",
+        );
     }
 
     #[test]

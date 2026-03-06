@@ -138,10 +138,13 @@ pub async fn prompt_user_with_tui(
     if show_startup_banner {
         let width = tui.terminal.last_known_screen_size.width.max(1);
         let codex_model = crate::codex_config::resolve_codex_model_config(&file_search_dir)?;
-        let model_label = match codex_model.reasoning_effort {
+        let mut model_label = match codex_model.reasoning_effort {
             Some(effort) => format!("{} {effort}", codex_model.model),
             None => codex_model.model,
         };
+        if codex_model.is_fast {
+            model_label.push_str(" [fast]");
+        }
         let banner_lines = crate::startup_banner::build_startup_banner_lines(
             width,
             crate::CODEX_POTTER_VERSION,
