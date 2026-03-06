@@ -44,6 +44,8 @@ use crate::app_server::potter::ProjectInterruptParams;
 use crate::app_server::potter::ProjectListEntry;
 use crate::app_server::potter::ProjectListParams;
 use crate::app_server::potter::ProjectListResponse;
+use crate::app_server::potter::ProjectResolveInterruptParams;
+use crate::app_server::potter::ProjectResolveInterruptResponse;
 use crate::app_server::potter::ProjectResumeParams;
 use crate::app_server::potter::ProjectResumeReplay;
 use crate::app_server::potter::ProjectResumeReplayRound;
@@ -53,6 +55,7 @@ use crate::app_server::potter::ProjectStartParams;
 use crate::app_server::potter::ProjectStartResponse;
 use crate::app_server::potter::ProjectStartRoundsParams;
 use crate::app_server::potter::ProjectStartRoundsResponse;
+use crate::app_server::potter::ResolveInterruptAction;
 use crate::app_server::potter::ResumePolicy;
 use crate::app_server::upstream_protocol::JSONRPCError;
 use crate::app_server::upstream_protocol::JSONRPCErrorError;
@@ -87,14 +90,29 @@ struct ResumedProject {
     index: crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
 }
 
+#[derive(Debug, Clone)]
+struct InterruptedProject {
+    project_id: String,
+    user_prompt_file: PathBuf,
+    rounds_run: u32,
+    plan: FreshProjectPlan,
+}
+
 struct ServerState {
     config: PotterAppServerConfig,
     running: Option<RunningProject>,
     resumed: Option<ResumedProject>,
+    interrupted: Option<InterruptedProject>,
 }
 
 enum InternalEvent {
     ProjectFinished { project_id: String },
+    ProjectInterrupted { project: Box<InterruptedProject> },
+}
+
+enum ProjectRunExit {
+    Completed,
+    Interrupted(Box<InterruptedProject>),
 }
 
 fn decode_jsonrpc_message_line(line: &str) -> anyhow::Result<Option<JSONRPCMessage>> {
@@ -141,6 +159,7 @@ async fn run_potter_app_server_inner(config: PotterAppServerConfig) -> anyhow::R
         config,
         running: None,
         resumed: None,
+        interrupted: None,
     };
 
     let stdin = tokio::io::stdin();
@@ -172,6 +191,33 @@ async fn run_potter_app_server_inner(config: PotterAppServerConfig) -> anyhow::R
                     {
                         state.running = None;
                     }
+                }
+                InternalEvent::ProjectInterrupted { project } => {
+                    let project = *project;
+                    if state
+                        .running
+                        .as_ref()
+                        .is_some_and(|running| running.project_id == project.project_id)
+                    {
+                        state.running = None;
+                    }
+                    state.resumed = None;
+                    state.interrupted = Some(project);
+
+                    let project = state
+                        .interrupted
+                        .as_ref()
+                        .expect("interrupted project just set");
+                    emit_potter_event(
+                        writer_tx.clone(),
+                        Event {
+                            id: "".to_string(),
+                            msg: EventMsg::PotterProjectInterrupted {
+                                project_id: project.project_id.clone(),
+                                user_prompt_file: project.user_prompt_file.clone(),
+                            },
+                        },
+                    );
                 }
             }
         }
@@ -252,6 +298,15 @@ async fn handle_request(
                 );
                 return Ok(());
             }
+            if state.interrupted.is_some() {
+                send_error(
+                    writer_tx,
+                    request_id,
+                    -32000,
+                    "a project is interrupted; resolve it first".to_string(),
+                );
+                return Ok(());
+            }
 
             match start_project(state, params, writer_tx, internal_tx).await {
                 Ok(response) => send_response(writer_tx, request_id, response),
@@ -265,6 +320,15 @@ async fn handle_request(
                     request_id,
                     -32000,
                     "a project is already running".to_string(),
+                );
+                return Ok(());
+            }
+            if state.interrupted.is_some() {
+                send_error(
+                    writer_tx,
+                    request_id,
+                    -32000,
+                    "a project is interrupted; resolve it first".to_string(),
                 );
                 return Ok(());
             }
@@ -284,6 +348,15 @@ async fn handle_request(
                 );
                 return Ok(());
             }
+            if state.interrupted.is_some() {
+                send_error(
+                    writer_tx,
+                    request_id,
+                    -32000,
+                    "a project is interrupted; resolve it first".to_string(),
+                );
+                return Ok(());
+            }
 
             match start_rounds(state, params, writer_tx, internal_tx).await {
                 Ok(response) => send_response(writer_tx, request_id, response),
@@ -293,6 +366,12 @@ async fn handle_request(
         PotterAppServerClientRequest::ProjectInterrupt { request_id, params } => {
             match interrupt_project(state, params) {
                 Ok(()) => send_response(writer_tx, request_id, serde_json::json!({})),
+                Err(err) => send_error(writer_tx, request_id, -32000, format!("{err:#}")),
+            }
+        }
+        PotterAppServerClientRequest::ProjectResolveInterrupt { request_id, params } => {
+            match resolve_interrupt_project(state, params, writer_tx, internal_tx) {
+                Ok(response) => send_response(writer_tx, request_id, response),
                 Err(err) => send_error(writer_tx, request_id, -32000, format!("{err:#}")),
             }
         }
@@ -397,6 +476,10 @@ async fn start_project(
             potter_rollout_path,
             rounds_total: rounds_total_u32,
             event_mode: mode,
+            project_started_at: Instant::now(),
+            round_start_index: 0,
+            emit_project_started_event: true,
+            initial_turn_prompt_override: None,
         },
     )?;
 
@@ -525,6 +608,7 @@ async fn start_rounds(
             rounds_total: rounds_total_u32,
             resume_policy,
             event_mode: mode,
+            project_started_at: Instant::now(),
         },
     )?;
 
@@ -576,6 +660,107 @@ fn interrupt_project(
     Ok(())
 }
 
+fn resolve_interrupt_project(
+    state: &mut ServerState,
+    params: ProjectResolveInterruptParams,
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    internal_tx: &UnboundedSender<InternalEvent>,
+) -> anyhow::Result<ProjectResolveInterruptResponse> {
+    let ProjectResolveInterruptParams {
+        project_id,
+        action,
+        turn_prompt_override,
+    } = params;
+
+    let interrupted = state
+        .interrupted
+        .as_ref()
+        .context("no interrupted project to resolve")?;
+
+    anyhow::ensure!(
+        interrupted.project_id == project_id,
+        "active interrupted project mismatch: interrupted={} requested={project_id}",
+        interrupted.project_id
+    );
+
+    match action {
+        ResolveInterruptAction::Stop => {
+            let interrupted = state
+                .interrupted
+                .take()
+                .context("take interrupted project after id match")?;
+
+            let InterruptedProject {
+                rounds_run,
+                user_prompt_file,
+                plan,
+                ..
+            } = interrupted;
+
+            let FreshProjectPlan {
+                workdir,
+                git_commit_start,
+                project_started_at,
+                ..
+            } = plan;
+
+            let git_commit_end = crate::workflow::project::resolve_git_commit(&workdir);
+            emit_potter_event(
+                writer_tx.clone(),
+                Event {
+                    id: "".to_string(),
+                    msg: EventMsg::PotterProjectCompleted {
+                        outcome: PotterProjectOutcome::Interrupted,
+                    },
+                },
+            );
+
+            Ok(ProjectResolveInterruptResponse {
+                summary: Some(crate::app_server::potter::InterruptedProjectSummary {
+                    rounds: rounds_run,
+                    duration: project_started_at.elapsed(),
+                    user_prompt_file,
+                    git_commit_start,
+                    git_commit_end,
+                }),
+            })
+        }
+        ResolveInterruptAction::Continue => {
+            let turn_prompt_override = turn_prompt_override
+                .as_ref()
+                .map(|prompt| prompt.trim())
+                .filter(|prompt| !prompt.is_empty())
+                .context("turn_prompt_override is required for continue")?
+                .to_string();
+
+            let interrupted = state
+                .interrupted
+                .take()
+                .context("take interrupted project after id match")?;
+
+            let mut plan = interrupted.plan;
+            anyhow::ensure!(
+                plan.round_start_index < plan.rounds_total,
+                "no rounds remaining to continue (round_start_index={} rounds_total={})",
+                plan.round_start_index,
+                plan.rounds_total
+            );
+            plan.initial_turn_prompt_override = Some(turn_prompt_override);
+            spawn_fresh_project(
+                &mut state.running,
+                &mut state.resumed,
+                state.config.clone(),
+                writer_tx.clone(),
+                internal_tx.clone(),
+                project_id,
+                plan,
+            )?;
+
+            Ok(ProjectResolveInterruptResponse { summary: None })
+        }
+    }
+}
+
 fn send_response<T>(writer_tx: &UnboundedSender<JSONRPCMessage>, request_id: RequestId, payload: T)
 where
     T: serde::Serialize,
@@ -611,6 +796,16 @@ fn send_error(
             data: None,
         },
         id: request_id,
+    }));
+}
+
+fn emit_potter_event(writer_tx: UnboundedSender<JSONRPCMessage>, event: Event) {
+    let Ok(params) = serde_json::to_value(event) else {
+        return;
+    };
+    let _ = writer_tx.send(JSONRPCMessage::Notification(JSONRPCNotification {
+        method: POTTER_EVENT_NOTIFICATION_METHOD.to_string(),
+        params: Some(params),
     }));
 }
 
@@ -918,6 +1113,10 @@ struct FreshProjectPlan {
     potter_rollout_path: PathBuf,
     rounds_total: u32,
     event_mode: PotterEventMode,
+    project_started_at: Instant,
+    round_start_index: u32,
+    emit_project_started_event: bool,
+    initial_turn_prompt_override: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -929,6 +1128,7 @@ struct ResumedProjectPlan {
     rounds_total: u32,
     resume_policy: ResumePolicy,
     event_mode: PotterEventMode,
+    project_started_at: Instant,
 }
 
 fn spawn_fresh_project(
@@ -946,12 +1146,22 @@ fn spawn_fresh_project(
     let (interrupt_tx, interrupt_rx) = watch::channel(false);
     let project_id_for_event = project_id.clone();
     let handle = tokio::task::spawn_local(async move {
-        if let Err(err) = run_fresh_project(config, writer_tx.clone(), plan, interrupt_rx).await {
-            eprintln!("potter app-server fresh project failed: {err:#}");
+        match run_fresh_project(config, writer_tx.clone(), plan, interrupt_rx).await {
+            Ok(ProjectRunExit::Completed) => {
+                let _ = internal_tx.send(InternalEvent::ProjectFinished {
+                    project_id: project_id_for_event,
+                });
+            }
+            Ok(ProjectRunExit::Interrupted(project)) => {
+                let _ = internal_tx.send(InternalEvent::ProjectInterrupted { project });
+            }
+            Err(err) => {
+                eprintln!("potter app-server fresh project failed: {err:#}");
+                let _ = internal_tx.send(InternalEvent::ProjectFinished {
+                    project_id: project_id_for_event,
+                });
+            }
         }
-        let _ = internal_tx.send(InternalEvent::ProjectFinished {
-            project_id: project_id_for_event,
-        });
     });
 
     *running = Some(RunningProject {
@@ -978,12 +1188,22 @@ fn spawn_resumed_project(
     let (interrupt_tx, interrupt_rx) = watch::channel(false);
     let project_id_for_event = project_id.clone();
     let handle = tokio::task::spawn_local(async move {
-        if let Err(err) = run_resumed_project(config, writer_tx.clone(), plan, interrupt_rx).await {
-            eprintln!("potter app-server resumed project failed: {err:#}");
+        match run_resumed_project(config, writer_tx.clone(), plan, interrupt_rx).await {
+            Ok(ProjectRunExit::Completed) => {
+                let _ = internal_tx.send(InternalEvent::ProjectFinished {
+                    project_id: project_id_for_event,
+                });
+            }
+            Ok(ProjectRunExit::Interrupted(project)) => {
+                let _ = internal_tx.send(InternalEvent::ProjectInterrupted { project });
+            }
+            Err(err) => {
+                eprintln!("potter app-server resumed project failed: {err:#}");
+                let _ = internal_tx.send(InternalEvent::ProjectFinished {
+                    project_id: project_id_for_event,
+                });
+            }
         }
-        let _ = internal_tx.send(InternalEvent::ProjectFinished {
-            project_id: project_id_for_event,
-        });
     });
 
     *running = Some(RunningProject {
@@ -1000,7 +1220,7 @@ async fn run_fresh_project(
     writer_tx: UnboundedSender<JSONRPCMessage>,
     plan: FreshProjectPlan,
     interrupt_rx: watch::Receiver<bool>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ProjectRunExit> {
     let FreshProjectPlan {
         workdir,
         user_message,
@@ -1010,9 +1230,12 @@ async fn run_fresh_project(
         potter_rollout_path,
         rounds_total,
         event_mode,
+        project_started_at,
+        round_start_index,
+        emit_project_started_event,
+        initial_turn_prompt_override,
     } = plan;
 
-    let project_started_at = Instant::now();
     let developer_prompt = crate::workflow::project::render_developer_prompt(&progress_file_rel);
     let turn_prompt = crate::workflow::project::fixed_prompt()
         .trim_end()
@@ -1031,19 +1254,26 @@ async fn run_fresh_project(
         workdir: workdir.clone(),
         progress_file_rel: progress_file_rel.clone(),
         user_prompt_file: progress_file_rel.clone(),
-        git_commit_start,
-        potter_rollout_path,
+        git_commit_start: git_commit_start.clone(),
+        potter_rollout_path: potter_rollout_path.clone(),
         project_started_at,
     };
 
+    let round_context_with_override = initial_turn_prompt_override.map(|turn_prompt| {
+        crate::workflow::round_runner::PotterRoundContext {
+            turn_prompt,
+            ..round_context.clone()
+        }
+    });
+
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
 
-    let mut rounds_run = 0u32;
+    let mut rounds_run = round_start_index;
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
 
-    for round_index in 0..rounds_total {
+    for round_index in round_start_index..rounds_total {
         let current_round = round_index.saturating_add(1);
-        let project_started = if round_index == 0 {
+        let project_started = if emit_project_started_event && round_index == 0 {
             Some(crate::workflow::round_runner::PotterProjectStartedInfo {
                 user_message: Some(user_message.clone()),
                 working_dir: workdir.clone(),
@@ -1054,11 +1284,19 @@ async fn run_fresh_project(
             None
         };
 
+        let round_context = if round_index == round_start_index {
+            round_context_with_override
+                .as_ref()
+                .unwrap_or(&round_context)
+        } else {
+            &round_context
+        };
+
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
-            &round_context,
+            round_context,
             crate::workflow::round_runner::PotterRoundOptions {
-                pad_before_first_cell: round_index != 0,
+                pad_before_first_cell: round_index != round_start_index,
                 project_started,
                 round_current: current_round,
                 round_total: rounds_total,
@@ -1089,6 +1327,31 @@ async fn run_fresh_project(
                     outcome = PotterProjectOutcome::BudgetExhausted;
                 }
             }
+            codex_tui::ExitReason::Interrupted => {
+                let continuation_plan = FreshProjectPlan {
+                    workdir: workdir.clone(),
+                    user_message: user_message.clone(),
+                    project_dir_rel: project_dir_rel.clone(),
+                    progress_file_rel: progress_file_rel.clone(),
+                    git_commit_start: git_commit_start.clone(),
+                    potter_rollout_path: potter_rollout_path.clone(),
+                    rounds_total,
+                    event_mode,
+                    project_started_at,
+                    round_start_index: rounds_run,
+                    emit_project_started_event: false,
+                    initial_turn_prompt_override: None,
+                };
+                return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
+                    project_id: workdir
+                        .join(&progress_file_rel)
+                        .to_string_lossy()
+                        .to_string(),
+                    user_prompt_file: progress_file_rel.clone(),
+                    rounds_run,
+                    plan: continuation_plan,
+                })));
+            }
             codex_tui::ExitReason::TaskFailed(message) => {
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 break;
@@ -1106,9 +1369,8 @@ async fn run_fresh_project(
         }
     }
 
-    let _ = rounds_run;
     ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-    Ok(())
+    Ok(ProjectRunExit::Completed)
 }
 
 async fn run_resumed_project(
@@ -1116,7 +1378,7 @@ async fn run_resumed_project(
     writer_tx: UnboundedSender<JSONRPCMessage>,
     plan: ResumedProjectPlan,
     interrupt_rx: watch::Receiver<bool>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ProjectRunExit> {
     let ResumedProjectPlan {
         resumed,
         baseline_rounds,
@@ -1125,9 +1387,10 @@ async fn run_resumed_project(
         rounds_total,
         resume_policy,
         event_mode,
+        project_started_at,
+        ..
     } = plan;
 
-    let project_started_at = Instant::now();
     let developer_prompt =
         crate::workflow::project::render_developer_prompt(&resumed.progress_file_rel);
     let turn_prompt = crate::workflow::project::fixed_prompt()
@@ -1189,7 +1452,7 @@ async fn run_resumed_project(
                 ui.emit_marker(EventMsg::PotterProjectCompleted {
                     outcome: PotterProjectOutcome::Fatal { message },
                 });
-                return Ok(());
+                return Ok(ProjectRunExit::Completed);
             }
         };
 
@@ -1217,7 +1480,7 @@ async fn run_resumed_project(
                 ui.synthesize_round_fatal_closure(&message);
                 outcome = PotterProjectOutcome::Fatal { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(());
+                return Ok(ProjectRunExit::Completed);
             }
         };
 
@@ -1228,25 +1491,32 @@ async fn run_resumed_project(
                 if round_result.stop_due_to_finite_incantatem {
                     outcome = PotterProjectOutcome::Succeeded;
                     ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                    return Ok(());
+                    return Ok(ProjectRunExit::Completed);
                 }
+            }
+            codex_tui::ExitReason::Interrupted => {
+                outcome = PotterProjectOutcome::Fatal {
+                    message: String::from("interrupted"),
+                };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::TaskFailed(message) => {
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(());
+                return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::Fatal(message) => {
                 outcome = PotterProjectOutcome::Fatal { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(());
+                return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::UserRequested => {
                 outcome = PotterProjectOutcome::Fatal {
                     message: String::from("user requested"),
                 };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(());
+                return Ok(ProjectRunExit::Completed);
             }
         }
 
@@ -1290,6 +1560,12 @@ async fn run_resumed_project(
                         break;
                     }
                 }
+                codex_tui::ExitReason::Interrupted => {
+                    outcome = PotterProjectOutcome::Fatal {
+                        message: String::from("interrupted"),
+                    };
+                    break;
+                }
                 codex_tui::ExitReason::TaskFailed(message) => {
                     outcome = PotterProjectOutcome::TaskFailed { message };
                     break;
@@ -1307,9 +1583,8 @@ async fn run_resumed_project(
             }
         }
 
-        let _ = rounds_run;
         ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-        return Ok(());
+        return Ok(ProjectRunExit::Completed);
     }
 
     // No unfinished round to continue (or policy says to start new rounds).
@@ -1352,6 +1627,12 @@ async fn run_resumed_project(
                     outcome = PotterProjectOutcome::BudgetExhausted;
                 }
             }
+            codex_tui::ExitReason::Interrupted => {
+                outcome = PotterProjectOutcome::Fatal {
+                    message: String::from("interrupted"),
+                };
+                break;
+            }
             codex_tui::ExitReason::TaskFailed(message) => {
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 break;
@@ -1370,7 +1651,7 @@ async fn run_resumed_project(
     }
 
     ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-    Ok(())
+    Ok(ProjectRunExit::Completed)
 }
 
 fn backend_event_mode_for_potter(mode: PotterEventMode) -> crate::app_server::AppServerEventMode {
@@ -1562,6 +1843,7 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
 fn exit_reason_from_outcome(outcome: &PotterRoundOutcome) -> codex_tui::ExitReason {
     match outcome {
         PotterRoundOutcome::Completed => codex_tui::ExitReason::Completed,
+        PotterRoundOutcome::Interrupted => codex_tui::ExitReason::Interrupted,
         PotterRoundOutcome::UserRequested => codex_tui::ExitReason::UserRequested,
         PotterRoundOutcome::TaskFailed { message } => {
             codex_tui::ExitReason::TaskFailed(message.clone())
@@ -1673,6 +1955,7 @@ mod tests {
             config,
             running: None,
             resumed: None,
+            interrupted: None,
         };
 
         let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
@@ -1765,6 +2048,7 @@ mod tests {
             rounds_total: 1,
             resume_policy: ResumePolicy::ContinueUnfinishedRound,
             event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
         };
 
         let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
@@ -1824,6 +2108,7 @@ mod tests {
                 interrupt_tx,
             }),
             resumed: None,
+            interrupted: None,
         };
 
         let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
@@ -1910,6 +2195,7 @@ mod tests {
                 interrupt_tx,
             }),
             resumed: None,
+            interrupted: None,
         };
 
         let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
@@ -1981,6 +2267,7 @@ mod tests {
                 interrupt_tx,
             }),
             resumed: None,
+            interrupted: None,
         };
 
         let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
@@ -2054,6 +2341,7 @@ mod tests {
                 interrupt_tx,
             }),
             resumed: None,
+            interrupted: None,
         };
 
         tokio::task::yield_now().await;
@@ -2065,6 +2353,164 @@ mod tests {
             "expected running state to be cleared for finished tasks; got {:?}",
             state.running
         );
+    }
+
+    #[test]
+    fn resolve_interrupt_continue_requires_turn_prompt_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+
+        let config = PotterAppServerConfig {
+            default_workdir: workdir.clone(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+        };
+
+        let plan = FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: "hello".to_string(),
+            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
+            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
+            git_commit_start: String::new(),
+            potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            rounds_total: 1,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            round_start_index: 0,
+            emit_project_started_event: true,
+            initial_turn_prompt_override: None,
+        };
+
+        let interrupted_project = InterruptedProject {
+            project_id: "project_1".to_string(),
+            user_prompt_file: plan.progress_file_rel.clone(),
+            rounds_run: 1,
+            plan,
+        };
+
+        let mut state = ServerState {
+            config,
+            running: None,
+            resumed: None,
+            interrupted: Some(interrupted_project),
+        };
+
+        let (writer_tx, _writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (internal_tx, _internal_rx) = unbounded_channel::<InternalEvent>();
+
+        let err = resolve_interrupt_project(
+            &mut state,
+            ProjectResolveInterruptParams {
+                project_id: "project_1".to_string(),
+                action: ResolveInterruptAction::Continue,
+                turn_prompt_override: None,
+            },
+            &writer_tx,
+            &internal_tx,
+        )
+        .expect_err("expected resolve_interrupt to fail without override");
+        assert!(
+            err.to_string()
+                .contains("turn_prompt_override is required for continue"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            state.interrupted.is_some(),
+            "expected interrupted state to remain on validation failure"
+        );
+    }
+
+    #[test]
+    fn resolve_interrupt_stop_returns_summary_and_emits_completed_marker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+
+        let expected_git_commit_end = crate::workflow::project::resolve_git_commit(&workdir);
+
+        let config = PotterAppServerConfig {
+            default_workdir: workdir.clone(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+        };
+
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md");
+
+        let plan = FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: "hello".to_string(),
+            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
+            progress_file_rel: progress_file_rel.clone(),
+            git_commit_start: String::from("start"),
+            potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            rounds_total: 3,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            round_start_index: 1,
+            emit_project_started_event: false,
+            initial_turn_prompt_override: None,
+        };
+
+        let interrupted_project = InterruptedProject {
+            project_id: "project_1".to_string(),
+            user_prompt_file: progress_file_rel.clone(),
+            rounds_run: 2,
+            plan,
+        };
+
+        let mut state = ServerState {
+            config,
+            running: None,
+            resumed: None,
+            interrupted: Some(interrupted_project),
+        };
+
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (internal_tx, _internal_rx) = unbounded_channel::<InternalEvent>();
+
+        let response = resolve_interrupt_project(
+            &mut state,
+            ProjectResolveInterruptParams {
+                project_id: "project_1".to_string(),
+                action: ResolveInterruptAction::Stop,
+                turn_prompt_override: None,
+            },
+            &writer_tx,
+            &internal_tx,
+        )
+        .expect("resolve_interrupt stop");
+
+        assert!(
+            state.interrupted.is_none(),
+            "expected interrupted state cleared"
+        );
+
+        let summary = response.summary.expect("summary");
+        assert_eq!(summary.rounds, 2);
+        assert_eq!(summary.user_prompt_file, progress_file_rel);
+        assert_eq!(summary.git_commit_start, "start");
+        assert_eq!(summary.git_commit_end, expected_git_commit_end);
+
+        let events = drain_potter_events(writer_rx);
+        let completed = events
+            .iter()
+            .find_map(|event| match &event.msg {
+                EventMsg::PotterProjectCompleted { outcome } => Some(outcome),
+                _ => None,
+            })
+            .expect("PotterProjectCompleted marker");
+        assert_eq!(*completed, PotterProjectOutcome::Interrupted);
     }
 
     fn drain_potter_events(mut writer_rx: UnboundedReceiver<JSONRPCMessage>) -> Vec<Event> {

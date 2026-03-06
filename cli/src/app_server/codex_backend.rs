@@ -841,14 +841,15 @@ fn handle_codex_event(
             EventMsg::TurnComplete(_) if turn_complete_counts_for_round_completion => {
                 Some(PotterRoundOutcome::Completed)
             }
-            EventMsg::TurnAborted(ev)
-                if !matches!(
-                    ev.reason,
-                    codex_protocol::protocol::TurnAbortReason::Replaced
-                ) =>
-            {
-                Some(PotterRoundOutcome::UserRequested)
-            }
+            EventMsg::TurnAborted(ev) => match ev.reason {
+                codex_protocol::protocol::TurnAbortReason::Interrupted => {
+                    Some(PotterRoundOutcome::Interrupted)
+                }
+                codex_protocol::protocol::TurnAbortReason::ReviewEnded => {
+                    Some(PotterRoundOutcome::UserRequested)
+                }
+                codex_protocol::protocol::TurnAbortReason::Replaced => None,
+            },
             EventMsg::Error(err) if should_forward && !error_is_recoverable => {
                 Some(PotterRoundOutcome::Fatal {
                     message: err.message.clone(),

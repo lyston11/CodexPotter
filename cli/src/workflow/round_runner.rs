@@ -340,7 +340,10 @@ async fn run_potter_round_inner(
     let exit_reason = exit_info.exit_reason;
     match &exit_reason {
         ExitReason::Completed => {}
-        ExitReason::UserRequested | ExitReason::TaskFailed(_) | ExitReason::Fatal(_) => {
+        ExitReason::Interrupted
+        | ExitReason::UserRequested
+        | ExitReason::TaskFailed(_)
+        | ExitReason::Fatal(_) => {
             backend.abort();
             forwarder.abort();
             let _ = backend.await;

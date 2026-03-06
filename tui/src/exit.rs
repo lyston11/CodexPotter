@@ -17,6 +17,8 @@ pub struct AppExitInfo {
 pub enum ExitReason {
     /// The run completed normally.
     Completed,
+    /// The run was interrupted (Esc).
+    Interrupted,
     /// The user interrupted or requested exit.
     UserRequested,
     /// The current task failed.

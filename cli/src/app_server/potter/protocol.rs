@@ -10,6 +10,7 @@
 //! tooling across `codex` and `codex-potter`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PotterRoundOutcome;
@@ -80,6 +81,14 @@ pub enum PotterAppServerClientRequest {
         #[serde(rename = "id")]
         request_id: RequestId,
         params: ProjectInterruptParams,
+    },
+
+    /// Resolve an interrupted project (stop or continue iterating).
+    #[serde(rename = "project/resolve_interrupt")]
+    ProjectResolveInterrupt {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        params: ProjectResolveInterruptParams,
     },
 }
 
@@ -258,4 +267,37 @@ pub struct ProjectStartRoundsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectInterruptParams {
     pub project_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveInterruptAction {
+    Stop,
+    Continue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectResolveInterruptParams {
+    pub project_id: String,
+    pub action: ResolveInterruptAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_prompt_override: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptedProjectSummary {
+    pub rounds: u32,
+    pub duration: Duration,
+    pub user_prompt_file: PathBuf,
+    pub git_commit_start: String,
+    pub git_commit_end: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectResolveInterruptResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<InterruptedProjectSummary>,
 }

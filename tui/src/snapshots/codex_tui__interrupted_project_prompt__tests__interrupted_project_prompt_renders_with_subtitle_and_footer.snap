@@ -1,0 +1,14 @@
+---
+source: tui/src/interrupted_project_prompt.rs
+expression: terminal.backend()
+---
+"                                                                "
+"                                                                "
+"  Current project is interrupted                                "
+"  .codexpotter/projects/2026/03/06/4/MAIN.md                    "
+"                                                                "
+"› 1. Stop iterate this project                                  "
+"  2. I made some changes, continue iterate                      "
+"                                                                "
+"  Want to change the goal? Just edit this project file.         "
+"  Press enter to confirm or esc to stop iterating               "

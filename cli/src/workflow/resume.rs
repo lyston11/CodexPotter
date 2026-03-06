@@ -72,7 +72,10 @@ impl ResumeClock for SystemResumeClock {
     }
 }
 
-trait ResumeAppServer: crate::workflow::project_render_loop::PotterEventSource {
+trait ResumeAppServer:
+    crate::workflow::project_render_loop::PotterEventSource
+    + crate::workflow::project_render_loop::PotterProjectController
+{
     fn project_start_rounds<'a>(
         &'a mut self,
         params: crate::app_server::potter::ProjectStartRoundsParams,
@@ -88,6 +91,17 @@ trait ResumeAppServer: crate::workflow::project_render_loop::PotterEventSource {
         &'a mut self,
         project_id: String,
     ) -> crate::workflow::round_runner::UiFuture<'a, ()>;
+
+    fn project_resolve_interrupt<'a>(
+        &'a mut self,
+        params: crate::app_server::potter::ProjectResolveInterruptParams,
+    ) -> crate::workflow::round_runner::UiFuture<
+        'a,
+        (
+            crate::app_server::potter::ProjectResolveInterruptResponse,
+            Vec<Event>,
+        ),
+    >;
 }
 
 impl ResumeAppServer for crate::app_server::potter::PotterAppServerClient {
@@ -122,6 +136,25 @@ impl ResumeAppServer for crate::app_server::potter::PotterAppServerClient {
             )
             .await?;
             Ok(())
+        })
+    }
+
+    fn project_resolve_interrupt<'a>(
+        &'a mut self,
+        params: crate::app_server::potter::ProjectResolveInterruptParams,
+    ) -> crate::workflow::round_runner::UiFuture<
+        'a,
+        (
+            crate::app_server::potter::ProjectResolveInterruptResponse,
+            Vec<Event>,
+        ),
+    > {
+        Box::pin(async move {
+            let mut buffered_events = Vec::new();
+            let response = self
+                .project_resolve_interrupt(params, &mut buffered_events)
+                .await?;
+            Ok((response, buffered_events))
         })
     }
 }
@@ -302,7 +335,7 @@ where
         .await?;
 
         match exit_reason {
-            ExitReason::Completed | ExitReason::TaskFailed(_) => {}
+            ExitReason::Completed | ExitReason::Interrupted | ExitReason::TaskFailed(_) => {}
             ExitReason::UserRequested => return Ok(ResumeExit::UserRequested),
             ExitReason::Fatal(_) => return Ok(ResumeExit::FatalExitRequested),
         }
@@ -380,6 +413,19 @@ where
     match exit {
         crate::workflow::project_render_loop::PotterProjectRenderExit::Completed { .. } => {
             Ok(ResumeExit::Completed)
+        }
+        crate::workflow::project_render_loop::PotterProjectRenderExit::Interrupted { .. } => {
+            let _ = app_server
+                .project_resolve_interrupt(
+                    crate::app_server::potter::ProjectResolveInterruptParams {
+                        project_id: project_id.clone(),
+                        action: crate::app_server::potter::ResolveInterruptAction::Stop,
+                        turn_prompt_override: None,
+                    },
+                )
+                .await
+                .context("project/resolve_interrupt(stop) via potter app-server")?;
+            Ok(ResumeExit::UserRequested)
         }
         crate::workflow::project_render_loop::PotterProjectRenderExit::UserRequested => {
             let _ = app_server.project_interrupt(project_id.clone()).await;
@@ -471,6 +517,7 @@ fn replay_round_exit_decision(
 ) -> ReplayRoundExitDecision {
     match exit_reason {
         ExitReason::Completed => ReplayRoundExitDecision::Continue,
+        ExitReason::Interrupted => ReplayRoundExitDecision::Continue,
         ExitReason::TaskFailed(_) => ReplayRoundExitDecision::Continue,
         ExitReason::Fatal(_) => match outcome {
             PotterRoundOutcome::Fatal { .. } => ReplayRoundExitDecision::Continue,
@@ -1045,6 +1092,9 @@ mod tests {
                             thread_id: None,
                             exit_reason: match outcome {
                                 PotterRoundOutcome::Completed => codex_tui::ExitReason::Completed,
+                                PotterRoundOutcome::Interrupted => {
+                                    codex_tui::ExitReason::Interrupted
+                                }
                                 PotterRoundOutcome::UserRequested => {
                                     codex_tui::ExitReason::UserRequested
                                 }
@@ -1121,6 +1171,15 @@ mod tests {
         }
     }
 
+    impl crate::workflow::project_render_loop::PotterProjectController for MockAppServer {
+        fn interrupt_project<'a>(
+            &'a mut self,
+            _project_id: String,
+        ) -> crate::workflow::round_runner::UiFuture<'a, Vec<Event>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
     impl ResumeAppServer for MockAppServer {
         fn project_start_rounds<'a>(
             &'a mut self,
@@ -1147,6 +1206,24 @@ mod tests {
             _project_id: String,
         ) -> crate::workflow::round_runner::UiFuture<'a, ()> {
             Box::pin(async { Ok(()) })
+        }
+
+        fn project_resolve_interrupt<'a>(
+            &'a mut self,
+            _params: crate::app_server::potter::ProjectResolveInterruptParams,
+        ) -> crate::workflow::round_runner::UiFuture<
+            'a,
+            (
+                crate::app_server::potter::ProjectResolveInterruptResponse,
+                Vec<Event>,
+            ),
+        > {
+            Box::pin(async {
+                Ok((
+                    crate::app_server::potter::ProjectResolveInterruptResponse { summary: None },
+                    Vec::new(),
+                ))
+            })
         }
     }
 

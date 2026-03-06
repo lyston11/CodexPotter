@@ -25,7 +25,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - `Tab` inserts a literal tab character (`\t`) into the composer.
 - Supports `$` skills picker.
 - Composer placeholder text is customized.
-- No `Esc`-driven UX (no backtrack priming; `Esc` only dismisses popups).
+- No Esc-driven rewind/backtrack UX; `Esc` interrupts running tasks and otherwise dismisses popups.
 - No steer mode (always queue).
 - No image pasting support.
 - Bottom pane prompt footer shows working dir + optional git branch, plus the ctrl+g editor hint.
@@ -47,7 +47,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Round prefix is added to shimmer lines.
 - Round prefix includes a dim total elapsed timer since the current project started.
 - Remaining context window is moved into the shimmer area.
-- No `esc to interrupt` message, since we interrupt using `Ctrl-C`.
+- No `esc to interrupt` message (even though `Esc` interrupts running tasks).
 
 ### Other differences
 

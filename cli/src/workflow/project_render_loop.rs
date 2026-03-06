@@ -12,6 +12,7 @@
 //!   that marker is treated as a fatal protocol error.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use codex_protocol::protocol::Event;
@@ -28,6 +29,15 @@ use crate::workflow::round_runner::UiFuture;
 pub trait PotterEventSource {
     /// Read the next event from the server stream.
     fn read_next_event<'a>(&'a mut self) -> UiFuture<'a, Option<Event>>;
+}
+
+/// Control plane for a running Potter project hosted by `codex-potter app-server`.
+pub trait PotterProjectController {
+    /// Request the active project to interrupt the current round.
+    ///
+    /// Returns any events that were emitted while awaiting the JSON-RPC response. Callers must
+    /// render these before reading from the live event stream to preserve event ordering.
+    fn interrupt_project<'a>(&'a mut self, project_id: String) -> UiFuture<'a, Vec<Event>>;
 }
 
 /// Options for rendering a running Potter project (multi-round) from an event stream.
@@ -49,6 +59,8 @@ pub struct PotterProjectRenderOptions {
 pub enum PotterProjectRenderExit {
     /// The project ended normally, and the completion marker was observed.
     Completed { outcome: PotterProjectOutcome },
+    /// The project was interrupted and is waiting for user action.
+    Interrupted { user_prompt_file: PathBuf },
     /// The user requested exit while a round UI was running.
     UserRequested,
     /// The UI requested a fatal exit.
@@ -65,7 +77,7 @@ pub async fn run_potter_project_render_loop<U, S>(
 ) -> anyhow::Result<PotterProjectRenderExit>
 where
     U: PotterRoundUi,
-    S: PotterEventSource,
+    S: PotterEventSource + PotterProjectController,
 {
     let PotterProjectRenderOptions {
         turn_prompt,
@@ -110,7 +122,6 @@ where
 
         let pad_before_first_cell = pad_before_first_cell || rendered_rounds != 0;
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
-        tokio::spawn(async move { while op_rx.recv().await.is_some() {} });
 
         let (event_tx, event_rx) = unbounded_channel::<Event>();
         let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
@@ -126,6 +137,7 @@ where
         }));
 
         let mut waiting_for_render_exit = false;
+        let mut interrupt_requested = false;
 
         loop {
             if waiting_for_render_exit {
@@ -135,6 +147,24 @@ where
                     ExitReason::UserRequested => return Ok(PotterProjectRenderExit::UserRequested),
                     ExitReason::Fatal(_) => {
                         return Ok(PotterProjectRenderExit::FatalExitRequested);
+                    }
+                    ExitReason::Interrupted => {
+                        match wait_for_project_interrupted_marker(
+                            project_id,
+                            event_source,
+                            &mut pending_events,
+                        )
+                        .await?
+                        {
+                            ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
+                                return Ok(PotterProjectRenderExit::Interrupted {
+                                    user_prompt_file,
+                                });
+                            }
+                            ProjectInterruptedMarkerOutcome::Completed { outcome } => {
+                                return Ok(PotterProjectRenderExit::Completed { outcome });
+                            }
+                        }
                     }
                     ExitReason::TaskFailed(_) | ExitReason::Completed => break,
                 }
@@ -148,12 +178,40 @@ where
             };
 
             tokio::select! {
+                Some(op) = op_rx.recv() => {
+                    if matches!(op, Op::Interrupt) && !interrupt_requested {
+                        match event_source.interrupt_project(project_id.to_string()).await {
+                            Ok(buffered_events) => {
+                                let mut buffered_events = VecDeque::from(buffered_events);
+                                pending_events.append(&mut buffered_events);
+                                interrupt_requested = true;
+                            }
+                            Err(err) => {
+                                let message = format!(
+                                    "failed to interrupt project via potter app-server (project_id={project_id}): {err:#}"
+                                );
+                                project_outcome = Some(PotterProjectOutcome::Fatal { message: message.clone() });
+                                let _ = fatal_exit_tx.send(message);
+                            }
+                        }
+                    }
+                }
                 exit_info = &mut render => {
                     let exit_info = exit_info?;
                     rendered_rounds = rendered_rounds.saturating_add(1);
                     match exit_info.exit_reason {
                         ExitReason::UserRequested => return Ok(PotterProjectRenderExit::UserRequested),
                         ExitReason::Fatal(_) => return Ok(PotterProjectRenderExit::FatalExitRequested),
+                        ExitReason::Interrupted => {
+                            match wait_for_project_interrupted_marker(project_id, event_source, &mut pending_events).await? {
+                                ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
+                                    return Ok(PotterProjectRenderExit::Interrupted { user_prompt_file });
+                                }
+                                ProjectInterruptedMarkerOutcome::Completed { outcome } => {
+                                    return Ok(PotterProjectRenderExit::Completed { outcome });
+                                }
+                            }
+                        }
                         ExitReason::TaskFailed(_) | ExitReason::Completed => break,
                     }
                 }
@@ -183,6 +241,48 @@ where
                     }
                 }
             }
+        }
+    }
+}
+
+enum ProjectInterruptedMarkerOutcome {
+    Interrupted { user_prompt_file: PathBuf },
+    Completed { outcome: PotterProjectOutcome },
+}
+
+async fn wait_for_project_interrupted_marker<S>(
+    project_id: &str,
+    event_source: &mut S,
+    pending_events: &mut VecDeque<Event>,
+) -> anyhow::Result<ProjectInterruptedMarkerOutcome>
+where
+    S: PotterEventSource,
+{
+    loop {
+        let event = if let Some(event) = pending_events.pop_front() {
+            event
+        } else {
+            event_source
+                .read_next_event()
+                .await?
+                .context("read potter app-server event while awaiting PotterProjectInterrupted")?
+        };
+
+        match event.msg {
+            EventMsg::PotterProjectInterrupted {
+                project_id: interrupted_project_id,
+                user_prompt_file,
+            } => {
+                anyhow::ensure!(
+                    interrupted_project_id == project_id,
+                    "unexpected PotterProjectInterrupted marker project_id: expected={project_id} actual={interrupted_project_id}"
+                );
+                return Ok(ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file });
+            }
+            EventMsg::PotterProjectCompleted { outcome } => {
+                return Ok(ProjectInterruptedMarkerOutcome::Completed { outcome });
+            }
+            _ => {}
         }
     }
 }
@@ -235,5 +335,145 @@ where
         }
 
         pending_events.push_back(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use codex_protocol::protocol::PotterRoundOutcome;
+    use codex_protocol::protocol::TokenUsage;
+    use pretty_assertions::assert_eq;
+
+    #[derive(Default)]
+    struct InterruptingUi {
+        interrupt_sent: bool,
+    }
+
+    impl PotterRoundUi for InterruptingUi {
+        fn set_project_started_at(&mut self, _started_at: std::time::Instant) {}
+
+        fn render_round<'a>(
+            &'a mut self,
+            params: codex_tui::RenderRoundParams,
+        ) -> UiFuture<'a, codex_tui::AppExitInfo> {
+            self.interrupt_sent = true;
+            Box::pin(async move {
+                let codex_tui::RenderRoundParams {
+                    codex_op_tx,
+                    mut codex_event_rx,
+                    ..
+                } = params;
+
+                codex_op_tx
+                    .send(Op::Interrupt)
+                    .map_err(|_| anyhow::anyhow!("op channel closed"))?;
+
+                while let Some(event) = codex_event_rx.recv().await {
+                    if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                        return Ok(codex_tui::AppExitInfo {
+                            token_usage: TokenUsage::default(),
+                            thread_id: None,
+                            exit_reason: match outcome {
+                                PotterRoundOutcome::Completed => codex_tui::ExitReason::Completed,
+                                PotterRoundOutcome::Interrupted => {
+                                    codex_tui::ExitReason::Interrupted
+                                }
+                                PotterRoundOutcome::UserRequested => {
+                                    codex_tui::ExitReason::UserRequested
+                                }
+                                PotterRoundOutcome::TaskFailed { message } => {
+                                    codex_tui::ExitReason::TaskFailed(message.clone())
+                                }
+                                PotterRoundOutcome::Fatal { message } => {
+                                    codex_tui::ExitReason::Fatal(message.clone())
+                                }
+                            },
+                        });
+                    }
+                }
+
+                Ok(codex_tui::AppExitInfo {
+                    token_usage: TokenUsage::default(),
+                    thread_id: None,
+                    exit_reason: codex_tui::ExitReason::Fatal(
+                        "event stream closed unexpectedly".to_string(),
+                    ),
+                })
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct MockEventSource {
+        interrupt_calls: Vec<String>,
+    }
+
+    impl PotterEventSource for MockEventSource {
+        fn read_next_event<'a>(&'a mut self) -> UiFuture<'a, Option<Event>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    impl PotterProjectController for MockEventSource {
+        fn interrupt_project<'a>(&'a mut self, project_id: String) -> UiFuture<'a, Vec<Event>> {
+            self.interrupt_calls.push(project_id.clone());
+            Box::pin(async move {
+                Ok(vec![
+                    Event {
+                        id: "round-finished".to_string(),
+                        msg: EventMsg::PotterRoundFinished {
+                            outcome: PotterRoundOutcome::Interrupted,
+                        },
+                    },
+                    Event {
+                        id: "project-interrupted".to_string(),
+                        msg: EventMsg::PotterProjectInterrupted {
+                            project_id,
+                            user_prompt_file: PathBuf::from(
+                                ".codexpotter/projects/2026/03/06/4/MAIN.md",
+                            ),
+                        },
+                    },
+                ])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupt_op_exits_with_interrupted_marker() {
+        let mut ui = InterruptingUi::default();
+        let mut source = MockEventSource::default();
+
+        let exit = run_potter_project_render_loop(
+            &mut ui,
+            &mut source,
+            "project_1",
+            PotterProjectRenderOptions {
+                turn_prompt: String::from("Continue"),
+                prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None),
+                pad_before_first_cell: false,
+                initial_status_header_prefix: None,
+            },
+            vec![Event {
+                id: "round-start".to_string(),
+                msg: EventMsg::PotterRoundStarted {
+                    current: 1,
+                    total: 2,
+                },
+            }],
+        )
+        .await
+        .expect("render loop");
+
+        assert!(ui.interrupt_sent, "expected UI to send Op::Interrupt");
+        assert_eq!(source.interrupt_calls, vec![String::from("project_1")]);
+        assert_eq!(
+            exit,
+            PotterProjectRenderExit::Interrupted {
+                user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/06/4/MAIN.md"),
+            }
+        );
     }
 }

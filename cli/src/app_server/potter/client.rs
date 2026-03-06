@@ -35,6 +35,8 @@ use super::protocol::PotterAppServerClientRequest;
 use super::protocol::ProjectInterruptParams;
 use super::protocol::ProjectListParams;
 use super::protocol::ProjectListResponse;
+use super::protocol::ProjectResolveInterruptParams;
+use super::protocol::ProjectResolveInterruptResponse;
 use super::protocol::ProjectResumeParams;
 use super::protocol::ProjectResumeResponse;
 use super::protocol::ProjectStartParams;
@@ -201,6 +203,20 @@ impl PotterAppServerClient {
         Ok(())
     }
 
+    pub async fn project_resolve_interrupt(
+        &mut self,
+        params: ProjectResolveInterruptParams,
+        buffered_events: &mut Vec<Event>,
+    ) -> anyhow::Result<ProjectResolveInterruptResponse> {
+        let request_id = self.next_request_id();
+        self.send_request(
+            request_id.clone(),
+            PotterAppServerClientRequest::ProjectResolveInterrupt { request_id, params },
+            buffered_events,
+        )
+        .await
+    }
+
     pub async fn read_next_event(&mut self) -> anyhow::Result<Option<Event>> {
         loop {
             let Some(line) = self
@@ -361,6 +377,24 @@ impl crate::workflow::project_render_loop::PotterEventSource for PotterAppServer
         &'a mut self,
     ) -> crate::workflow::round_runner::UiFuture<'a, Option<Event>> {
         Box::pin(PotterAppServerClient::read_next_event(self))
+    }
+}
+
+impl crate::workflow::project_render_loop::PotterProjectController for PotterAppServerClient {
+    fn interrupt_project<'a>(
+        &'a mut self,
+        project_id: String,
+    ) -> crate::workflow::round_runner::UiFuture<'a, Vec<Event>> {
+        Box::pin(async move {
+            let mut buffered_events = Vec::new();
+            PotterAppServerClient::project_interrupt(
+                self,
+                ProjectInterruptParams { project_id },
+                &mut buffered_events,
+            )
+            .await?;
+            Ok(buffered_events)
+        })
     }
 }
 

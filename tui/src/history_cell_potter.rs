@@ -55,8 +55,9 @@ pub fn new_potter_project_succeeded(
     user_prompt_file: PathBuf,
     git_commit_start: String,
     git_commit_end: String,
-) -> PotterProjectSucceededCell {
-    PotterProjectSucceededCell {
+) -> PotterProjectSummaryCell {
+    PotterProjectSummaryCell {
+        outcome: PotterProjectSummaryOutcome::Succeeded,
         rounds,
         duration,
         user_prompt_file,
@@ -66,8 +67,33 @@ pub fn new_potter_project_succeeded(
 }
 
 #[derive(Debug)]
-/// History cell rendered at the end of a successful CodexPotter project.
-pub struct PotterProjectSucceededCell {
+enum PotterProjectSummaryOutcome {
+    Succeeded,
+    Interrupted,
+}
+
+/// Render the final multi-round summary block shown when a project is interrupted.
+pub fn new_potter_project_interrupted(
+    rounds: u32,
+    duration: Duration,
+    user_prompt_file: PathBuf,
+    git_commit_start: String,
+    git_commit_end: String,
+) -> PotterProjectSummaryCell {
+    PotterProjectSummaryCell {
+        outcome: PotterProjectSummaryOutcome::Interrupted,
+        rounds,
+        duration,
+        user_prompt_file,
+        git_commit_start,
+        git_commit_end,
+    }
+}
+
+#[derive(Debug)]
+/// History cell rendered at the end of a CodexPotter project.
+pub struct PotterProjectSummaryCell {
+    outcome: PotterProjectSummaryOutcome,
     rounds: u32,
     duration: Duration,
     user_prompt_file: PathBuf,
@@ -75,7 +101,7 @@ pub struct PotterProjectSucceededCell {
     git_commit_end: String,
 }
 
-impl HistoryCell for PotterProjectSucceededCell {
+impl HistoryCell for PotterProjectSummaryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let elapsed = crate::status_indicator_widget::fmt_elapsed_compact(self.duration.as_secs());
         let rounds = self.rounds;
@@ -92,8 +118,12 @@ impl HistoryCell for PotterProjectSucceededCell {
             format!("{rounds} rounds").bold(),
             " in ".into(),
             elapsed.bold(),
-            Span::styled(" ─", separator_style),
         ];
+        if matches!(self.outcome, PotterProjectSummaryOutcome::Interrupted) {
+            header_spans.push(" ".into());
+            header_spans.push("(Interrupted)".cyan().bold());
+        }
+        header_spans.push(Span::styled(" ─", separator_style));
         let header_width = header_spans
             .iter()
             .map(|span| span.content.as_ref().width())

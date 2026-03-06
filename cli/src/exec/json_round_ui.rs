@@ -263,6 +263,7 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecJsonRoundUi<
 fn exit_reason_from_outcome(outcome: &PotterRoundOutcome) -> ExitReason {
     match outcome {
         PotterRoundOutcome::Completed => ExitReason::Completed,
+        PotterRoundOutcome::Interrupted => ExitReason::Interrupted,
         PotterRoundOutcome::UserRequested => ExitReason::UserRequested,
         PotterRoundOutcome::TaskFailed { message } => ExitReason::TaskFailed(message.clone()),
         PotterRoundOutcome::Fatal { message } => ExitReason::Fatal(message.clone()),

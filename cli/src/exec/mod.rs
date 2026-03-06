@@ -397,6 +397,10 @@ fn exec_project_outcome(
         PotterProjectOutcome::Succeeded => {
             (crate::exec::PotterProjectCompletedOutcome::Succeeded, None)
         }
+        PotterProjectOutcome::Interrupted => (
+            crate::exec::PotterProjectCompletedOutcome::Fatal,
+            Some(String::from("interrupted")),
+        ),
         PotterProjectOutcome::BudgetExhausted => (
             crate::exec::PotterProjectCompletedOutcome::BudgetExhausted,
             None,

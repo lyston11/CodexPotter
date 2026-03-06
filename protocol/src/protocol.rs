@@ -201,6 +201,18 @@ pub enum EventMsg {
         outcome: PotterProjectOutcome,
     },
 
+    /// `codex-potter` project is interrupted and waiting for user action (outside of the
+    /// app-server protocol).
+    ///
+    /// This marker is emitted when the current round finishes due to a user interrupt (Esc),
+    /// and CodexPotter pauses the project until the caller resolves the interruption.
+    PotterProjectInterrupted {
+        /// Unique identifier for the active project within the server process.
+        project_id: String,
+        /// User prompt file for this CodexPotter project (e.g. `.codexpotter/projects/.../MAIN.md`).
+        user_prompt_file: PathBuf,
+    },
+
     WebSearchEnd(WebSearchEndEvent),
 
     /// Notification that the server is about to execute a command.
@@ -263,18 +275,30 @@ pub enum EventMsg {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PotterRoundOutcome {
     Completed,
+    /// The round was interrupted by the user (Esc).
+    Interrupted,
     UserRequested,
-    TaskFailed { message: String },
-    Fatal { message: String },
+    TaskFailed {
+        message: String,
+    },
+    Fatal {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PotterProjectOutcome {
     Succeeded,
+    /// The project was stopped by the user after an interrupt (Esc).
+    Interrupted,
     BudgetExhausted,
-    TaskFailed { message: String },
-    Fatal { message: String },
+    TaskFailed {
+        message: String,
+    },
+    Fatal {
+        message: String,
+    },
 }
 
 /// Codex errors that we expose to clients.

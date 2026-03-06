@@ -8,7 +8,7 @@
 //! - The header may include an optional round prefix with a total timer (e.g.
 //!   `Round 2/10 (4m 13s) · Working`).
 //! - Remaining context is rendered in the status line while a task is running.
-//! - We do not show an "esc to interrupt" hint; interruption uses <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+//! - We do not show an "esc to interrupt" hint (even though <kbd>Esc</kbd> interrupts running tasks).
 
 use std::time::Duration;
 use std::time::Instant;

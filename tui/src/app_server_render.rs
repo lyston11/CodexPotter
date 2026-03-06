@@ -681,7 +681,7 @@ impl AppServerEventProcessor {
                     )));
                 }
             }
-            EventMsg::TurnAborted(_) => {
+            EventMsg::TurnAborted(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 if let Some(cell) = self.stream.finalize() {
@@ -689,6 +689,14 @@ impl AppServerEventProcessor {
                 }
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
+
+                if ev.reason == codex_protocol::protocol::TurnAbortReason::Interrupted {
+                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(String::from(
+                            "Conversation interrupted - tell the model what to do differently.",
+                        )),
+                    )));
+                }
             }
             EventMsg::Warning(ev) => {
                 self.flush_pending_exploring_cell();
@@ -1339,6 +1347,21 @@ impl RenderAppState {
             return;
         }
 
+        if matches!(key_event.code, crossterm::event::KeyCode::Esc)
+            && key_event.modifiers == crossterm::event::KeyModifiers::NONE
+            && self.codex_op_tx.is_some()
+            && self.bottom_pane.is_task_running()
+            && !self.bottom_pane.composer().popup_active()
+        {
+            if !is_press {
+                return;
+            }
+
+            self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+            frame_requester.schedule_frame();
+            return;
+        }
+
         let (result, needs_redraw) = self.bottom_pane.composer_mut().handle_key_event(key_event);
         if needs_redraw {
             frame_requester.schedule_frame();
@@ -1754,6 +1777,9 @@ impl RenderAppState {
                 self.exit_reason = match outcome {
                     codex_protocol::protocol::PotterRoundOutcome::Completed => {
                         ExitReason::Completed
+                    }
+                    codex_protocol::protocol::PotterRoundOutcome::Interrupted => {
+                        ExitReason::Interrupted
                     }
                     codex_protocol::protocol::PotterRoundOutcome::UserRequested => {
                         ExitReason::UserRequested

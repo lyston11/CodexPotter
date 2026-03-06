@@ -1119,6 +1119,10 @@ fn potter_round_completed_from_outcome(
             outcome: PotterRoundCompletedOutcome::Completed,
             message: None,
         },
+        codex_protocol::protocol::PotterRoundOutcome::Interrupted => PotterRoundCompletedEvent {
+            outcome: PotterRoundCompletedOutcome::Fatal,
+            message: Some(String::from("interrupted")),
+        },
         codex_protocol::protocol::PotterRoundOutcome::TaskFailed { message } => {
             PotterRoundCompletedEvent {
                 outcome: PotterRoundCompletedOutcome::TaskFailed,

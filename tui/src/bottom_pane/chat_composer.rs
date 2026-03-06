@@ -15,7 +15,7 @@
 //!
 //! - Supports a `/` command picker popup (subset: `/theme`, `/verbosity`, `/exit`, `/mention`).
 //! - No `?` shortcuts overlay (`?` is inserted literally).
-//! - `Esc` only dismisses popups; there is no Esc-driven rewind/backtrack UX.
+//! - No Esc-driven rewind/backtrack UX (`Esc` dismisses popups; task interrupt is handled by the round renderer).
 //! - No steer mode: <kbd>Enter</kbd> queues the message instead of submitting immediately.
 //! - The skills picker is driven by `$`-mentions.
 //! - No image pasting support (text-only paste).
@@ -343,6 +343,10 @@ impl ChatComposer {
 
     pub fn selection_popup_visible(&self) -> bool {
         matches!(&self.active_popup, ActivePopup::Selection(_))
+    }
+
+    pub fn popup_active(&self) -> bool {
+        !matches!(&self.active_popup, ActivePopup::None)
     }
 
     /// Enable or disable paste-burst handling.

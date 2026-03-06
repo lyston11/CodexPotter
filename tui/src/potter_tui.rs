@@ -2,12 +2,14 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::Op;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::AppExitInfo;
 use crate::bottom_pane::PromptFooterContext;
+use crate::history_cell::HistoryCell;
 use crate::tui;
 use crate::tui::Tui;
 use crate::verbosity::Verbosity;
@@ -173,6 +175,54 @@ impl CodexPotterTui {
         self.reset_event_stream_after_prompt();
 
         result
+    }
+
+    /// Prompt the user for how to resolve an interrupted CodexPotter project.
+    ///
+    /// Returns `None` when the prompt is cancelled (Esc/Ctrl+C).
+    pub async fn prompt_interrupted_project_action(
+        &mut self,
+        progress_file_rel: PathBuf,
+    ) -> anyhow::Result<Option<crate::InterruptedProjectAction>> {
+        let result = crate::interrupted_project_prompt::prompt_interrupted_project_action(
+            &mut self.tui,
+            progress_file_rel,
+        )
+        .await;
+
+        self.reset_event_stream_after_prompt();
+
+        result
+    }
+
+    /// Insert a summary block for an interrupted CodexPotter project into the transcript.
+    pub fn insert_interrupted_project_summary(
+        &mut self,
+        rounds: u32,
+        duration: Duration,
+        user_prompt_file: PathBuf,
+        git_commit_start: String,
+        git_commit_end: String,
+    ) {
+        let width = self.tui.terminal.last_known_screen_size.width.max(1);
+        let mut lines = crate::history_cell_potter::new_potter_project_interrupted(
+            rounds,
+            duration,
+            user_prompt_file,
+            git_commit_start,
+            git_commit_end,
+        )
+        .display_lines(width);
+
+        if lines.is_empty() {
+            return;
+        }
+
+        if self.has_rendered_round {
+            lines.insert(0, ratatui::text::Line::from(""));
+        }
+
+        self.tui.insert_history_lines(lines);
     }
 
     /// Prompt the user to select a resumable CodexPotter project to resume.

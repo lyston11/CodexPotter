@@ -3,7 +3,7 @@
 //! # Divergences from upstream Codex TUI
 //!
 //! `codex-potter` customizes footer hint content and does not show the upstream "esc to interrupt"
-//! hint (we interrupt using `Ctrl-C`).
+//! hint (even though <kbd>Esc</kbd> interrupts running tasks).
 //!
 //! The footer is pure rendering: it formats `FooterProps` into `Line`s without mutating any state.
 //! It intentionally does not decide *which* footer content should be shown; that is owned by the
