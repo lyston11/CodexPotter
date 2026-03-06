@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
@@ -431,6 +432,9 @@ struct AppServerEventProcessor {
     /// Divergence (codex-potter): coalesce consecutive successful non-shell `Ran` items into one
     /// history cell.
     pending_success_ran_cell: Option<ExecCell>,
+    /// Divergence (codex-potter): coalesce consecutive successful patch applications into one
+    /// compact `Edited ...` summary when `Verbosity::Minimal`.
+    pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
     pending_potter_project_succeeded: Option<PendingPotterProjectSucceeded>,
 }
 
@@ -465,6 +469,7 @@ impl AppServerEventProcessor {
             current_elapsed_secs: None,
             pending_exploring_cell: None,
             pending_success_ran_cell: None,
+            pending_compact_patch_changes: Vec::new(),
             pending_potter_project_succeeded: None,
         }
     }
@@ -472,6 +477,7 @@ impl AppServerEventProcessor {
     fn handle_retryable_stream_error(&mut self) {
         self.flush_pending_exploring_cell();
         self.flush_pending_success_ran_cell();
+        self.flush_pending_compact_patch_changes();
         if let Some(cell) = self.stream.finalize() {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
@@ -538,6 +544,7 @@ impl AppServerEventProcessor {
     }
 
     fn handle_codex_event(&mut self, event: Event) {
+        self.flush_pending_compact_patch_changes_if_needed(&event.msg);
         match event.msg {
             EventMsg::SessionConfigured(cfg) => {
                 self.thread_id = Some(cfg.session_id);
@@ -795,23 +802,29 @@ impl AppServerEventProcessor {
                     self.flush_pending_exploring_cell();
                     self.flush_pending_success_ran_cell();
                     self.needs_final_message_separator = true;
-                    self.app_event_tx
-                        .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                    if self.verbosity != Verbosity::Minimal {
+                        self.app_event_tx
+                            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                    }
                 }
                 self.had_work_activity = true;
             }
             EventMsg::PatchApplyEnd(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
-                self.needs_final_message_separator = true;
-                if ev.success {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_patch_event(ev.changes, &self.cwd, self.verbosity),
-                    )));
+                if ev.success && self.verbosity == Verbosity::Minimal {
+                    self.pending_compact_patch_changes.push(ev.changes);
                 } else {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_patch_apply_failure(ev.stderr),
-                    )));
+                    self.needs_final_message_separator = true;
+                    if ev.success {
+                        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                            history_cell::new_patch_event(ev.changes, &self.cwd, self.verbosity),
+                        )));
+                    } else {
+                        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                            history_cell::new_patch_apply_failure(ev.stderr),
+                        )));
+                    }
                 }
                 self.had_work_activity = true;
             }
@@ -884,6 +897,32 @@ impl AppServerEventProcessor {
         }
         self.app_event_tx
             .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+    }
+
+    fn flush_pending_compact_patch_changes_if_needed(&mut self, msg: &EventMsg) {
+        if self.pending_compact_patch_changes.is_empty() {
+            return;
+        }
+
+        if self.verbosity == Verbosity::Minimal
+            && matches!(msg, EventMsg::PatchApplyEnd(ev) if ev.success)
+        {
+            return;
+        }
+
+        self.flush_pending_compact_patch_changes();
+    }
+
+    fn flush_pending_compact_patch_changes(&mut self) {
+        if self.pending_compact_patch_changes.is_empty() {
+            return;
+        }
+
+        let change_sets = std::mem::take(&mut self.pending_compact_patch_changes);
+        self.needs_final_message_separator = true;
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+            history_cell::new_coalesced_compact_patch_event(change_sets, &self.cwd),
+        )));
     }
 
     fn flush_pending_success_ran_cell(&mut self) {
@@ -3717,6 +3756,16 @@ mod tests {
                 changes,
             }),
         });
+
+        // In `Verbosity::Minimal` patch events may be coalesced, so flush the pending compact cell
+        // by delivering a non-patch event.
+        proc.handle_codex_event(Event {
+            id: "token-count".into(),
+            msg: EventMsg::TokenCount(TokenCountEvent {
+                info: None,
+                rate_limits: None,
+            }),
+        });
         drain_render_history_events(
             &mut rx,
             &mut terminal,
@@ -4590,6 +4639,112 @@ mod tests {
         let [separator, agent_message] = events.as_slice() else {
             panic!("expected separator, then agent message");
         };
+        assert!(
+            separator
+                .first()
+                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
+            "expected a final message separator"
+        );
+        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
+    }
+
+    #[test]
+    fn round_renderer_minimal_hides_failed_ran_cells() {
+        let width: u16 = 80;
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
+
+        proc.handle_codex_event(Event {
+            id: "ran-failed".into(),
+            msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "ran-failed".into(),
+                process_id: None,
+                turn_id: "turn-1".into(),
+                command: vec!["bash".into(), "-lc".into(), "false".into()],
+                cwd: PathBuf::from("project"),
+                parsed_cmd: Vec::new(),
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: String::new(),
+                stderr: "nope".into(),
+                aggregated_output: String::new(),
+                exit_code: 1,
+                duration: std::time::Duration::from_millis(1),
+                formatted_output: String::new(),
+            }),
+        });
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "ok".into(),
+                phase: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, width);
+        let [separator, agent_message] = events.as_slice() else {
+            panic!("expected separator, then agent message");
+        };
+        assert!(
+            separator
+                .first()
+                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
+            "expected a final message separator"
+        );
+        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
+    }
+
+    #[test]
+    fn round_renderer_minimal_coalesces_consecutive_patch_cells() {
+        let width: u16 = 80;
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
+
+        for (id, patch) in [
+            ("patch-1", diffy::create_patch("a\n", "b\n").to_string()),
+            ("patch-2", diffy::create_patch("b\n", "c\n").to_string()),
+        ] {
+            let mut changes: HashMap<PathBuf, codex_protocol::protocol::FileChange> =
+                HashMap::new();
+            changes.insert(
+                PathBuf::from("file.txt"),
+                codex_protocol::protocol::FileChange::Update {
+                    unified_diff: patch,
+                    move_path: None,
+                },
+            );
+
+            proc.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                    call_id: id.into(),
+                    turn_id: "turn-1".into(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    success: true,
+                    changes,
+                }),
+            });
+        }
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "ok".into(),
+                phase: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, width);
+        let [patch, separator, agent_message] = events.as_slice() else {
+            panic!("expected patch, separator, then agent message");
+        };
+        pretty_assertions::assert_eq!(patch, &vec!["• Edited file.txt (+2 -2)".to_string()]);
         assert!(
             separator
                 .first()

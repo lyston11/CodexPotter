@@ -39,7 +39,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Successful `Ran` items suppress output preview and adjacent ones are collapsed into one.
 - `Explored` items are more aggressively collapsed to avoid duplicates.
 - `/verbosity` controls interim transcript detail:
-  - `Minimal` dims `commentary` agent messages, hides coalesced successful `Ran` items and all `Explored` items, and renders `Edited` items as a file list only.
+  - `Minimal` dims `commentary` agent messages, hides all `Ran` and `Explored` items, coalesces consecutive `Edited` items, and renders `Edited` items as a file list only.
   - `Simple` keeps the existing interim transcript output.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success).
 

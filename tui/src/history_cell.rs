@@ -532,6 +532,159 @@ pub fn new_patch_event(
     }
 }
 
+/// Create a compact patch summary cell that folds multiple patch-apply events into a single
+/// transcript item.
+///
+/// This is used by the `Verbosity::Minimal` renderer to avoid repeating many one-line `Edited ...`
+/// items when an agent applies several small patches consecutively.
+pub fn new_coalesced_compact_patch_event(
+    change_sets: Vec<HashMap<PathBuf, FileChange>>,
+    cwd: &Path,
+) -> PlainHistoryCell {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Verb {
+        Added,
+        Deleted,
+        Edited,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Summary {
+        verb: Verb,
+        move_path: Option<PathBuf>,
+        added: usize,
+        removed: usize,
+    }
+
+    fn merge_verb(existing: Verb, next: Verb) -> Verb {
+        match (existing, next) {
+            (Verb::Deleted, _) | (_, Verb::Deleted) => Verb::Deleted,
+            (Verb::Added, _) | (_, Verb::Added) => Verb::Added,
+            _ => Verb::Edited,
+        }
+    }
+
+    fn add_remove_counts_from_unified_diff(diff: &str) -> (usize, usize) {
+        let Ok(patch) = diffy::Patch::from_str(diff) else {
+            return (0, 0);
+        };
+
+        patch
+            .hunks()
+            .iter()
+            .flat_map(diffy::Hunk::lines)
+            .fold((0, 0), |(added, removed), line| match line {
+                diffy::Line::Insert(_) => (added + 1, removed),
+                diffy::Line::Delete(_) => (added, removed + 1),
+                diffy::Line::Context(_) => (added, removed),
+            })
+    }
+
+    fn render_line_count_summary(added: usize, removed: usize) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        spans.push("(".into());
+        spans.push(format!("+{added}").green());
+        spans.push(" ".into());
+        spans.push(format!("-{removed}").red());
+        spans.push(")".into());
+        spans
+    }
+
+    let mut merged: HashMap<PathBuf, Summary> = HashMap::new();
+
+    for changes in change_sets {
+        for (path, change) in changes {
+            let verb = match &change {
+                FileChange::Add { .. } => Verb::Added,
+                FileChange::Delete { .. } => Verb::Deleted,
+                FileChange::Update { .. } => Verb::Edited,
+            };
+            let (added, removed) = match &change {
+                FileChange::Add { content } => (content.lines().count(), 0),
+                FileChange::Delete { content } => (0, content.lines().count()),
+                FileChange::Update { unified_diff, .. } => {
+                    add_remove_counts_from_unified_diff(unified_diff)
+                }
+            };
+            let move_path = match &change {
+                FileChange::Update {
+                    move_path: Some(new_path),
+                    ..
+                } => Some(new_path.clone()),
+                _ => None,
+            };
+
+            let entry = merged.entry(path).or_insert_with(|| Summary {
+                verb,
+                move_path: None,
+                added: 0,
+                removed: 0,
+            });
+            entry.verb = merge_verb(entry.verb, verb);
+            if move_path.is_some() {
+                entry.move_path = move_path;
+            }
+            entry.added = entry.added.saturating_add(added);
+            entry.removed = entry.removed.saturating_add(removed);
+        }
+    }
+
+    if merged.is_empty() {
+        return PlainHistoryCell::new(Vec::new());
+    }
+
+    let mut rows: Vec<(PathBuf, Summary)> = merged.into_iter().collect();
+    rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let file_count = rows.len();
+    let noun = if file_count == 1 { "file" } else { "files" };
+
+    let total_added: usize = rows.iter().map(|(_, s)| s.added).sum();
+    let total_removed: usize = rows.iter().map(|(_, s)| s.removed).sum();
+
+    let render_path = |path: &Path, move_path: Option<&PathBuf>| -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        spans.push(display_path_for(path, cwd).into());
+        if let Some(move_path) = move_path {
+            spans.push(format!(" → {}", display_path_for(move_path, cwd)).into());
+        }
+        spans
+    };
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut header_spans: Vec<Span<'static>> = vec!["• ".dim()];
+    if let [(path, summary)] = &rows[..] {
+        let verb = match summary.verb {
+            Verb::Added => "Added",
+            Verb::Deleted => "Deleted",
+            Verb::Edited => "Edited",
+        };
+        header_spans.push(verb.bold());
+        header_spans.push(" ".into());
+        header_spans.extend(render_path(path, summary.move_path.as_ref()));
+        header_spans.push(" ".into());
+        header_spans.extend(render_line_count_summary(summary.added, summary.removed));
+    } else {
+        header_spans.push("Edited".bold());
+        header_spans.push(format!(" {file_count} {noun} ").into());
+        header_spans.extend(render_line_count_summary(total_added, total_removed));
+    }
+    out.push(Line::from(header_spans));
+
+    if file_count > 1 {
+        for (idx, (path, summary)) in rows.into_iter().enumerate() {
+            let prefix = if idx == 0 { "  └ " } else { "    " };
+            let mut file_spans: Vec<Span<'static>> = vec![prefix.dim()];
+            file_spans.extend(render_path(&path, summary.move_path.as_ref()));
+            file_spans.push(" ".into());
+            file_spans.extend(render_line_count_summary(summary.added, summary.removed));
+            out.push(Line::from(file_spans));
+        }
+    }
+
+    PlainHistoryCell::new(out)
+}
+
 pub fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
