@@ -40,6 +40,7 @@ mod shimmer;
 mod skills_discovery;
 mod slash_command;
 mod startup_banner;
+mod startup_setup;
 mod status_indicator_widget;
 mod streaming;
 mod style;
@@ -56,6 +57,7 @@ mod update_prompt;
 mod updates;
 mod verbosity;
 mod verbosity_picker;
+mod verbosity_prompt;
 mod version;
 mod wrapping;
 
@@ -76,3 +78,4 @@ pub use update_action::UpdateAction;
 pub use version::CODEX_POTTER_VERSION;
 
 pub use markdown_render::render_markdown_text;
+pub use startup_setup::StartupSetupStep;

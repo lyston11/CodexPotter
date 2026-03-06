@@ -39,6 +39,7 @@ pub struct CodexPotterTui {
     check_for_update_on_startup: bool,
     startup_warnings: Vec<String>,
     verbosity: Verbosity,
+    needs_startup_verbosity_prompt: bool,
 }
 
 impl CodexPotterTui {
@@ -54,14 +55,15 @@ impl CodexPotterTui {
         {
             startup_warnings.push(warning);
         }
-        let verbosity = match crate::potter_config::load_potter_tui_verbosity() {
-            Ok(Some(verbosity)) => verbosity,
-            Ok(None) => Verbosity::default(),
-            Err(err) => {
-                startup_warnings.push(format!("Failed to load TUI verbosity: {err}"));
-                Verbosity::default()
-            }
-        };
+        let (verbosity, needs_startup_verbosity_prompt) =
+            match crate::potter_config::load_potter_tui_verbosity() {
+                Ok(Some(verbosity)) => (verbosity, false),
+                Ok(None) => (Verbosity::default(), true),
+                Err(err) => {
+                    startup_warnings.push(format!("Failed to load TUI verbosity: {err}"));
+                    (Verbosity::default(), false)
+                }
+            };
         Ok(Self {
             tui: Tui::new(terminal),
             has_rendered_round: false,
@@ -71,6 +73,7 @@ impl CodexPotterTui {
             check_for_update_on_startup: true,
             startup_warnings,
             verbosity,
+            needs_startup_verbosity_prompt,
         })
     }
 
@@ -114,10 +117,12 @@ impl CodexPotterTui {
     pub async fn prompt_global_gitignore(
         &mut self,
         global_gitignore_path_display: String,
+        setup_step: Option<crate::StartupSetupStep>,
     ) -> anyhow::Result<crate::GlobalGitignorePromptOutcome> {
         let result = crate::global_gitignore_prompt::run_global_gitignore_prompt_with_tui(
             &mut self.tui,
             global_gitignore_path_display,
+            setup_step,
         )
         .await;
 
@@ -126,6 +131,39 @@ impl CodexPotterTui {
         self.reset_event_stream_after_prompt();
 
         result
+    }
+
+    pub fn should_prompt_startup_verbosity(&self) -> bool {
+        self.needs_startup_verbosity_prompt
+    }
+
+    pub async fn prompt_startup_verbosity(
+        &mut self,
+        setup_step: Option<crate::StartupSetupStep>,
+    ) -> anyhow::Result<()> {
+        let result = crate::verbosity_prompt::run_startup_verbosity_prompt_with_tui(
+            &mut self.tui,
+            setup_step,
+        )
+        .await;
+
+        // Drop and recreate the underlying crossterm EventStream so any buffered input from the
+        // prompt can't leak into the next screen (e.g. the composer).
+        self.reset_event_stream_after_prompt();
+
+        let Some(verbosity) = result? else {
+            return Ok(());
+        };
+
+        self.verbosity = verbosity;
+        match crate::potter_config::persist_potter_tui_verbosity(verbosity) {
+            Ok(()) => self.needs_startup_verbosity_prompt = false,
+            Err(err) => self
+                .startup_warnings
+                .push(format!("Failed to persist TUI verbosity: {err}")),
+        }
+
+        Ok(())
     }
 
     /// Collect the user's initial prompt via the legacy composer.

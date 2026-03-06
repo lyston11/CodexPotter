@@ -1,10 +1,10 @@
-//! Global gitignore recommendation prompt.
+//! Startup verbosity onboarding prompt.
 //!
 //! # Divergence from upstream Codex TUI
 //!
-//! `codex-potter` may prompt the user on startup to add `.codexpotter/` to their global gitignore
-//! so CodexPotter state files are ignored by default. Upstream Codex TUI does not show this
-//! prompt. See `tui/AGENTS.md`.
+//! `codex-potter` prompts the user to pick a default verbosity level on startup when no
+//! `[tui].verbosity` is configured yet. Upstream Codex TUI does not show this prompt. See
+//! `tui/AGENTS.md`.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -29,61 +29,23 @@ use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableExt as _;
-use crate::tui;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
+use crate::verbosity::Verbosity;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
-/// The user's selection in the global gitignore prompt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GlobalGitignorePromptOutcome {
-    /// Write `.codexpotter/` to the global gitignore.
-    AddToGlobalGitignore,
-    /// Do nothing.
-    No,
-    /// Do nothing and persist a config flag so we don't prompt again next time.
-    NoDontAskAgain,
-}
-
-/// When the global gitignore does not ignore `.codexpotter/`, show a
-/// recommendation prompt and return the user's selection.
-pub async fn run_global_gitignore_prompt(
-    global_gitignore_path_display: String,
-    setup_step: Option<StartupSetupStep>,
-) -> anyhow::Result<GlobalGitignorePromptOutcome> {
-    let mut terminal = tui::init()?;
-    terminal.clear()?;
-    let mut tui = Tui::new(terminal);
-
-    let result =
-        run_global_gitignore_prompt_with_tui(&mut tui, global_gitignore_path_display, setup_step)
-            .await;
-
-    // Ensure the crossterm EventStream is dropped before restoring terminal modes. Otherwise it may
-    // keep reading from stdin and steal cursor-position query responses from the next TUI init.
-    tui.pause_events_and_flush_input();
-
-    // Always attempt to restore the terminal, even if the prompt loop fails.
-    let _ = tui::restore();
-    result
-}
-
-/// Run the prompt using an existing [`Tui`] session.
+/// Prompt the user to pick a verbosity level for interim transcript items.
 ///
-/// This avoids tearing down and re-initializing the terminal between prompts, which can race with
-/// crossterm's stdin reader and break subsequent cursor-position queries.
-pub async fn run_global_gitignore_prompt_with_tui(
+/// Returns:
+/// - `Ok(Some(verbosity))` when the user selected an option
+/// - `Ok(None)` when the prompt was cancelled (Esc / Ctrl+C)
+pub async fn run_startup_verbosity_prompt_with_tui(
     tui: &mut Tui,
-    global_gitignore_path_display: String,
     setup_step: Option<StartupSetupStep>,
-) -> anyhow::Result<GlobalGitignorePromptOutcome> {
-    let mut screen = GlobalGitignorePromptScreen::new(
-        tui.frame_requester(),
-        global_gitignore_path_display,
-        setup_step,
-    );
+) -> anyhow::Result<Option<Verbosity>> {
+    let mut screen = VerbosityPromptScreen::new(tui.frame_requester(), setup_step);
     tui.draw(u16::MAX, |frame| {
         frame.render_widget_ref(&screen, frame.area());
     })?;
@@ -106,62 +68,65 @@ pub async fn run_global_gitignore_prompt_with_tui(
         }
     }
 
-    // Keep behavior consistent with other prompts: clear before returning so the next UI (composer)
+    // Keep behavior consistent with other prompts: clear before returning so the next screen
     // starts cleanly.
     tui.terminal.clear()?;
 
-    Ok(match screen.selection().unwrap_or(GitignoreSelection::No) {
-        GitignoreSelection::Yes => GlobalGitignorePromptOutcome::AddToGlobalGitignore,
-        GitignoreSelection::No => GlobalGitignorePromptOutcome::No,
-        GitignoreSelection::DontAskAgain => GlobalGitignorePromptOutcome::NoDontAskAgain,
+    Ok(match screen.outcome() {
+        Some(VerbosityPromptOutcome::Selected(selection)) => Some(selection.verbosity()),
+        Some(VerbosityPromptOutcome::Cancelled) | None => None,
     })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GitignoreSelection {
-    Yes,
-    No,
-    DontAskAgain,
+enum VerbositySelection {
+    Minimal,
+    Simple,
 }
 
-impl GitignoreSelection {
+impl VerbositySelection {
+    fn verbosity(self) -> Verbosity {
+        match self {
+            VerbositySelection::Minimal => Verbosity::Minimal,
+            VerbositySelection::Simple => Verbosity::Simple,
+        }
+    }
+
     fn next(self) -> Self {
         match self {
-            GitignoreSelection::Yes => GitignoreSelection::No,
-            GitignoreSelection::No => GitignoreSelection::DontAskAgain,
-            GitignoreSelection::DontAskAgain => GitignoreSelection::Yes,
+            VerbositySelection::Minimal => VerbositySelection::Simple,
+            VerbositySelection::Simple => VerbositySelection::Minimal,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            GitignoreSelection::Yes => GitignoreSelection::DontAskAgain,
-            GitignoreSelection::No => GitignoreSelection::Yes,
-            GitignoreSelection::DontAskAgain => GitignoreSelection::No,
+            VerbositySelection::Minimal => VerbositySelection::Simple,
+            VerbositySelection::Simple => VerbositySelection::Minimal,
         }
     }
 }
 
-struct GlobalGitignorePromptScreen {
-    request_frame: FrameRequester,
-    global_gitignore_path_display: String,
-    setup_step: Option<StartupSetupStep>,
-    highlighted: GitignoreSelection,
-    selection: Option<GitignoreSelection>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VerbosityPromptOutcome {
+    Selected(VerbositySelection),
+    Cancelled,
 }
 
-impl GlobalGitignorePromptScreen {
-    fn new(
-        request_frame: FrameRequester,
-        global_gitignore_path_display: String,
-        setup_step: Option<StartupSetupStep>,
-    ) -> Self {
+struct VerbosityPromptScreen {
+    request_frame: FrameRequester,
+    setup_step: Option<StartupSetupStep>,
+    highlighted: VerbositySelection,
+    outcome: Option<VerbosityPromptOutcome>,
+}
+
+impl VerbosityPromptScreen {
+    fn new(request_frame: FrameRequester, setup_step: Option<StartupSetupStep>) -> Self {
         Self {
             request_frame,
-            global_gitignore_path_display,
             setup_step,
-            highlighted: GitignoreSelection::Yes,
-            selection: None,
+            highlighted: VerbositySelection::Minimal,
+            outcome: None,
         }
     }
 
@@ -172,45 +137,49 @@ impl GlobalGitignorePromptScreen {
         if key_event.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('d'))
         {
-            self.select(GitignoreSelection::No);
+            self.cancel();
             return;
         }
 
         match key_event.code {
             KeyCode::Up | KeyCode::Char('k') => self.set_highlight(self.highlighted.prev()),
             KeyCode::Down | KeyCode::Char('j') => self.set_highlight(self.highlighted.next()),
-            KeyCode::Char('1') => self.select(GitignoreSelection::Yes),
-            KeyCode::Char('2') => self.select(GitignoreSelection::No),
-            KeyCode::Char('3') => self.select(GitignoreSelection::DontAskAgain),
+            KeyCode::Char('1') => self.select(VerbositySelection::Minimal),
+            KeyCode::Char('2') => self.select(VerbositySelection::Simple),
             KeyCode::Enter => self.select(self.highlighted),
-            KeyCode::Esc => self.select(GitignoreSelection::No),
+            KeyCode::Esc => self.cancel(),
             _ => {}
         }
     }
 
-    fn set_highlight(&mut self, highlight: GitignoreSelection) {
+    fn set_highlight(&mut self, highlight: VerbositySelection) {
         if self.highlighted != highlight {
             self.highlighted = highlight;
             self.request_frame.schedule_frame();
         }
     }
 
-    fn select(&mut self, selection: GitignoreSelection) {
+    fn select(&mut self, selection: VerbositySelection) {
         self.highlighted = selection;
-        self.selection = Some(selection);
+        self.outcome = Some(VerbosityPromptOutcome::Selected(selection));
+        self.request_frame.schedule_frame();
+    }
+
+    fn cancel(&mut self) {
+        self.outcome = Some(VerbosityPromptOutcome::Cancelled);
         self.request_frame.schedule_frame();
     }
 
     fn is_done(&self) -> bool {
-        self.selection.is_some()
+        self.outcome.is_some()
     }
 
-    fn selection(&self) -> Option<GitignoreSelection> {
-        self.selection
+    fn outcome(&self) -> Option<VerbosityPromptOutcome> {
+        self.outcome
     }
 }
 
-impl WidgetRef for &GlobalGitignorePromptScreen {
+impl WidgetRef for &VerbosityPromptScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
 
@@ -224,39 +193,33 @@ impl WidgetRef for &GlobalGitignorePromptScreen {
         } else {
             column.push("");
         }
+
         column.push(
-            Line::from(vec![
-                Span::from("Add "),
-                Span::from(".codexpotter/").cyan(),
-                Span::from(" to your global gitignore file "),
-                Span::from(self.global_gitignore_path_display.clone()).cyan(),
-                Span::from("?"),
-            ])
-            .inset(Insets::tlbr(0, 2, 0, 0)),
+            Line::from("Select a verbosity mode for interim transcript items:")
+                .inset(Insets::tlbr(0, 2, 0, 0)),
         );
         column.push("");
         column.push(
-            Line::from(
-                "This keeps your CodexPotter projects private and prevents accidental commits.",
-            )
-            .dim()
-            .inset(Insets::tlbr(0, 2, 0, 0)),
+            Line::from("You can change this later via /verbosity.")
+                .dim()
+                .inset(Insets::tlbr(0, 2, 0, 0)),
+        );
+        column.push(
+            Line::from("Minimal is the default and keeps output compact.")
+                .dim()
+                .inset(Insets::tlbr(0, 2, 0, 0)),
         );
         column.push("");
+
         column.push(selection_option_row(
             0,
-            "Yes, add to global gitignore".to_string(),
-            self.highlighted == GitignoreSelection::Yes,
+            format!("Minimal (default) — {}", Verbosity::Minimal.description()),
+            self.highlighted == VerbositySelection::Minimal,
         ));
         column.push(selection_option_row(
             1,
-            "No".to_string(),
-            self.highlighted == GitignoreSelection::No,
-        ));
-        column.push(selection_option_row(
-            2,
-            "No, don't ask me again".to_string(),
-            self.highlighted == GitignoreSelection::DontAskAgain,
+            format!("Simple — {}", Verbosity::Simple.description()),
+            self.highlighted == VerbositySelection::Simple,
         ));
         column.push("");
         column.push(
@@ -341,14 +304,13 @@ mod tests {
     use ratatui::Terminal;
 
     #[test]
-    fn global_gitignore_prompt_initial_snapshot() {
-        let backend = VT100Backend::new(80, 12);
+    fn startup_verbosity_prompt_initial_vt100() {
+        let backend = VT100Backend::new(80, 14);
         let mut terminal = Terminal::new(backend).expect("create terminal");
 
-        let screen = GlobalGitignorePromptScreen::new(
+        let screen = VerbosityPromptScreen::new(
             FrameRequester::test_dummy(),
-            "~/.config/git/ignore".to_string(),
-            None,
+            Some(StartupSetupStep::new(2, 2)),
         );
 
         terminal
@@ -358,30 +320,7 @@ mod tests {
             .expect("draw");
 
         assert_snapshot!(
-            "global_gitignore_prompt_initial_vt100",
-            terminal.backend().vt100().screen().contents()
-        );
-    }
-
-    #[test]
-    fn global_gitignore_prompt_setup_1_of_2_snapshot() {
-        let backend = VT100Backend::new(80, 12);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
-
-        let screen = GlobalGitignorePromptScreen::new(
-            FrameRequester::test_dummy(),
-            "~/.config/git/ignore".to_string(),
-            Some(StartupSetupStep::new(1, 2)),
-        );
-
-        terminal
-            .draw(|frame| {
-                WidgetRef::render_ref(&&screen, frame.area(), frame.buffer_mut());
-            })
-            .expect("draw");
-
-        assert_snapshot!(
-            "global_gitignore_prompt_setup_1_of_2_vt100",
+            "startup_verbosity_prompt_initial_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }

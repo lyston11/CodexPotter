@@ -1,0 +1,14 @@
+---
+source: tui/src/verbosity_prompt.rs
+expression: terminal.backend().vt100().screen().contents()
+---
+  Setup 2/2                                                                     
+  Select a verbosity mode for interim transcript items:
+
+  You can change this later via /verbosity.                                     
+  Minimal is the default and keeps output compact.                              
+
+  › 1. Minimal (default) — Dim commentary and hide tool chatter
+    2. Simple — Show interim items normally
+
+  Press enter to continue

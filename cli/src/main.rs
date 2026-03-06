@@ -173,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let workdir = resolve_workdir_or_exec_json_exit();
+        maybe_apply_default_global_gitignore(&workdir);
         let codex_bin = resolve_codex_bin_or_exec_json_exit(&cli.codex_bin);
 
         let exit_code = crate::exec::run_exec_json(
@@ -192,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
     let codex_bin = resolve_codex_bin_or_exit(&cli.codex_bin);
 
     if matches!(cli.command, Some(CliCommand::AppServer)) {
+        maybe_apply_default_global_gitignore(&workdir);
         let codex_compat_home = match crate::codex_compat::ensure_default_codex_compat_home() {
             Ok(home) => home,
             Err(err) => {
@@ -232,8 +234,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let global_gitignore_prompt_plan = prepare_global_gitignore_prompt(&workdir);
+    let should_prompt_startup_verbosity = ui.should_prompt_startup_verbosity();
+    let total_setup_steps = usize::from(global_gitignore_prompt_plan.is_some())
+        + usize::from(should_prompt_startup_verbosity);
+
+    let mut setup_step_index = 1;
     if let Some(plan) = global_gitignore_prompt_plan {
-        maybe_prompt_global_gitignore(&mut ui, &workdir, plan).await;
+        let setup_step = if total_setup_steps > 1 {
+            Some(codex_tui::StartupSetupStep::new(
+                setup_step_index,
+                total_setup_steps,
+            ))
+        } else {
+            None
+        };
+        maybe_prompt_global_gitignore(&mut ui, &workdir, plan, setup_step).await;
+        setup_step_index += 1;
+    }
+
+    if should_prompt_startup_verbosity {
+        let setup_step = if total_setup_steps > 1 {
+            Some(codex_tui::StartupSetupStep::new(
+                setup_step_index,
+                total_setup_steps,
+            ))
+        } else {
+            None
+        };
+        maybe_prompt_startup_verbosity(&mut ui, setup_step).await;
     }
 
     let mut project_queue_workdir = workdir.clone();
@@ -470,6 +498,33 @@ fn ansi_cyan(text: &str) -> String {
     format!("\u{1b}[36m{text}\u{1b}[0m")
 }
 
+fn maybe_apply_default_global_gitignore(workdir: &std::path::Path) {
+    let status = match crate::global_gitignore::detect_global_gitignore(workdir) {
+        Ok(status) => status,
+        Err(err) => {
+            eprintln!("warning: failed to resolve global gitignore: {err}");
+            return;
+        }
+    };
+
+    if status.has_codexpotter_ignore {
+        return;
+    }
+
+    match crate::global_gitignore::ensure_codexpotter_ignored(workdir, &status.path) {
+        Ok(()) => eprintln!(
+            "{} added {} to global gitignore {}",
+            ansi_bold("Notice:"),
+            ansi_cyan(crate::global_gitignore::CODEXPOTTER_GITIGNORE_ENTRY),
+            ansi_cyan(&status.path_display)
+        ),
+        Err(err) => eprintln!(
+            "warning: failed to update global gitignore {}: {err}",
+            status.path_display
+        ),
+    }
+}
+
 struct GlobalGitignorePromptPlan {
     config_store: crate::config::ConfigStore,
     status: crate::global_gitignore::GlobalGitignoreStatus,
@@ -510,9 +565,10 @@ async fn maybe_prompt_global_gitignore(
     ui: &mut codex_tui::CodexPotterTui,
     workdir: &std::path::Path,
     plan: GlobalGitignorePromptPlan,
+    setup_step: Option<codex_tui::StartupSetupStep>,
 ) {
     let outcome = match ui
-        .prompt_global_gitignore(plan.status.path_display.clone())
+        .prompt_global_gitignore(plan.status.path_display.clone(), setup_step)
         .await
     {
         Ok(outcome) => outcome,
@@ -537,6 +593,16 @@ async fn maybe_prompt_global_gitignore(
                 eprintln!("warning: failed to persist config: {err}");
             }
         }
+    }
+}
+
+async fn maybe_prompt_startup_verbosity(
+    ui: &mut codex_tui::CodexPotterTui,
+    setup_step: Option<codex_tui::StartupSetupStep>,
+) {
+    if let Err(err) = ui.prompt_startup_verbosity(setup_step).await {
+        eprintln!("warning: startup verbosity prompt failed: {err}");
+        let _ = ui.clear();
     }
 }
 

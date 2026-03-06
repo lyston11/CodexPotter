@@ -56,6 +56,10 @@ Behavior related
 
 - A customized banner on startup; the first-screen model label appends `[fast]` when layered Codex config resolves `service_tier = "fast"` and `features.fast_mode` remains enabled
 - Additionally shows gitignore startup hint
+- Startup onboarding prompts:
+  - Suggest adding `.codexpotter/` to the global gitignore.
+  - If no `[tui].verbosity` is configured yet, prompt for a default verbosity level.
+  - When both prompts are shown, they render `Setup 1/2` and `Setup 2/2` markers.
 - Multi-agent collab is transcript-only: no agent thread picker UI (no per-agent transcript view).
 - Resume picker UI exists for `codex-potter resume` (no path); it uses a `User Request` column (CodexPotter projects) instead of upstream `Conversation`.
 - Auto retry on errors (successful recoveries are transient-only; unrecoverable errors are surfaced).
