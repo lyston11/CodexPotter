@@ -695,6 +695,12 @@ impl ChatComposer {
         };
 
         match key_event {
+            // Cmd+Up / Cmd+Down is treated as text navigation, not popup navigation.
+            super_nav @ KeyEvent {
+                code: KeyCode::Up | KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.handle_input_basic(super_nav),
             KeyEvent {
                 code: KeyCode::Up, ..
             }
@@ -872,6 +878,12 @@ impl ChatComposer {
         };
 
         match key_event {
+            // Cmd+Up / Cmd+Down is treated as text navigation, not popup navigation.
+            super_nav @ KeyEvent {
+                code: KeyCode::Up | KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.handle_input_basic(super_nav),
             KeyEvent {
                 code: KeyCode::Up, ..
             }
@@ -939,6 +951,12 @@ impl ChatComposer {
         let mut close_popup = false;
 
         let result = match key_event {
+            // Cmd+Up / Cmd+Down is treated as text navigation, not popup navigation.
+            super_nav @ KeyEvent {
+                code: KeyCode::Up | KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.handle_input_basic(super_nav),
             KeyEvent {
                 code: KeyCode::Up, ..
             }
@@ -2007,6 +2025,7 @@ impl Renderable for ChatComposer {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
 
     use crate::app_event::AppEvent;
     use crate::app_event_sender::AppEventSender;
@@ -2144,6 +2163,183 @@ mod tests {
         assert!(needs_redraw);
         assert_eq!(composer.current_text(), "draft text");
         assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+    }
+
+    #[test]
+    fn super_down_in_slash_popup_does_not_move_popup_selection() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        composer.set_text_content("/".to_string());
+        assert!(matches!(composer.active_popup, ActivePopup::Command(_)));
+
+        let ActivePopup::Command(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::Command");
+        };
+        let selected_before = popup
+            .selected_item()
+            .expect("selected command")
+            .command()
+            .to_string();
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+
+        let ActivePopup::Command(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::Command");
+        };
+        let selected_after_down = popup
+            .selected_item()
+            .expect("selected command")
+            .command()
+            .to_string();
+        assert_ne!(selected_after_down, selected_before);
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+
+        let ActivePopup::Command(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::Command");
+        };
+        let selected_after_super = popup
+            .selected_item()
+            .expect("selected command")
+            .command()
+            .to_string();
+        assert_eq!(selected_after_super, selected_after_down);
+    }
+
+    #[test]
+    fn super_down_in_file_popup_does_not_move_popup_selection() {
+        use codex_file_search::FileMatch;
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        composer.set_text_content("@a".to_string());
+        assert!(matches!(composer.active_popup, ActivePopup::File(_)));
+
+        composer.on_file_search_result(
+            "a".to_string(),
+            vec![
+                FileMatch {
+                    score: 10,
+                    path: "foo.rs".to_string(),
+                    indices: None,
+                },
+                FileMatch {
+                    score: 9,
+                    path: "bar.rs".to_string(),
+                    indices: None,
+                },
+            ],
+        );
+
+        let ActivePopup::File(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::File");
+        };
+        let selected_before = popup.selected_match().expect("selected match").to_string();
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+
+        let ActivePopup::File(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::File");
+        };
+        let selected_after = popup.selected_match().expect("selected match").to_string();
+        assert_eq!(selected_after, selected_before);
+    }
+
+    #[test]
+    fn super_down_in_skill_popup_does_not_move_popup_selection() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+        composer.skills = vec![
+            crate::skills_discovery::SkillMetadata {
+                name: "skill-a".to_string(),
+                description: "Skill A".to_string(),
+                short_description: None,
+                interface: None,
+                path: std::path::PathBuf::from("/tmp/skill-a/SKILL.md"),
+                scope: crate::skills_discovery::SkillScope::User,
+            },
+            crate::skills_discovery::SkillMetadata {
+                name: "skill-b".to_string(),
+                description: "Skill B".to_string(),
+                short_description: None,
+                interface: None,
+                path: std::path::PathBuf::from("/tmp/skill-b/SKILL.md"),
+                scope: crate::skills_discovery::SkillScope::User,
+            },
+        ];
+
+        composer.set_text_content("$".to_string());
+        assert!(matches!(composer.active_popup, ActivePopup::Skill(_)));
+
+        let ActivePopup::Skill(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::Skill");
+        };
+        let selected_before = popup
+            .selected_mention()
+            .expect("selected mention")
+            .insert_text
+            .clone();
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+
+        let ActivePopup::Skill(popup) = &composer.active_popup else {
+            panic!("expected ActivePopup::Skill");
+        };
+        let selected_after = popup
+            .selected_mention()
+            .expect("selected mention")
+            .insert_text
+            .clone();
+        assert_eq!(selected_after, selected_before);
     }
 
     #[test]
