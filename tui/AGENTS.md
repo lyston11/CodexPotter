@@ -23,6 +23,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Slash command picker exists but only supports `/theme`, `/verbosity`, `/exit`, `/mention`.
 - No `?` shortcuts overlay (treat `?` as a literal character).
 - `Tab` inserts a literal tab character (`\t`) into the composer.
+- `Cmd+↑` / `Cmd+↓` jumps cursor to the beginning/end of the entire buffer.
 - Supports `$` skills picker.
 - Composer placeholder text is customized.
 - No Esc-driven rewind/backtrack UX; `Esc` interrupts running tasks and otherwise dismisses popups.

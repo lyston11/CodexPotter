@@ -243,6 +243,10 @@ impl TextArea {
         self.end_of_line(self.cursor_pos)
     }
 
+    /// Handle a single keyboard event and update the buffer/cursor.
+    ///
+    /// Divergence from upstream codex: `SUPER+Up` / `SUPER+Down` jumps to the beginning/end of
+    /// the entire buffer.
     pub fn input(&mut self, event: KeyEvent) {
         match event {
             // Some terminals (or configurations) send Control key chords as
@@ -436,6 +440,21 @@ impl TextArea {
                 ..
             } => {
                 self.set_cursor(self.end_of_next_word());
+            }
+            // Cmd+Up / Cmd+Down: jump to beginning/end of the entire buffer.
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => {
+                self.set_cursor(0);
+            }
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => {
+                self.set_cursor(self.text.len());
             }
             KeyEvent {
                 code: KeyCode::Up, ..
@@ -1638,6 +1657,19 @@ mod tests {
         // ^F (U+0006) should move right
         t.input(KeyEvent::new(KeyCode::Char('\u{0006}'), KeyModifiers::NONE));
         assert_eq!(t.cursor(), 2);
+    }
+
+    #[test]
+    fn super_up_down_jump_to_beginning_and_end_of_buffer() {
+        let mut t = ta_with("hello\nworld");
+        t.set_cursor(7);
+
+        t.input(KeyEvent::new(KeyCode::Up, KeyModifiers::SUPER));
+        assert_eq!(t.cursor(), 0);
+
+        t.set_cursor(2);
+        t.input(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
+        assert_eq!(t.cursor(), t.text().len());
     }
 
     #[test]
