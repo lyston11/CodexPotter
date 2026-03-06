@@ -309,7 +309,16 @@ async fn main() -> anyhow::Result<()> {
             .context("resume project")?;
             match resume_exit {
                 crate::workflow::resume::ResumeExit::Completed => {}
-                crate::workflow::resume::ResumeExit::UserRequested => return Ok(()),
+                crate::workflow::resume::ResumeExit::UserRequested => {
+                    let queued_prompts = ui
+                        .take_queued_user_prompts()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let _ = potter_app_server.shutdown().await;
+                    drop(ui);
+                    print_queued_prompts_note(&queued_prompts);
+                    return Ok(());
+                }
                 crate::workflow::resume::ResumeExit::FatalExitRequested => {
                     // `std::process::exit` skips destructors, so explicitly drop the UI to restore
                     // terminal state before exiting.
@@ -333,9 +342,14 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    let mut queued_prompts_on_exit: Vec<String> = Vec::new();
     match project_queue_exit {
         crate::workflow::project_runner::ProjectQueueExit::Completed => {}
         crate::workflow::project_runner::ProjectQueueExit::UserRequestedExit { project_dir } => {
+            queued_prompts_on_exit = ui
+                .take_queued_user_prompts()
+                .into_iter()
+                .collect::<Vec<_>>();
             resume_note_project_path = Some(
                 derive_resume_project_path_from_project_dir(&project_dir)
                     .unwrap_or_else(|| project_dir.to_string_lossy().to_string()),
@@ -352,6 +366,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = potter_app_server.shutdown().await;
 
     drop(ui);
+    print_queued_prompts_note(&queued_prompts_on_exit);
     if let Some(project_path) = resume_note_project_path {
         print_resume_note(&project_path);
     }
@@ -407,6 +422,43 @@ fn print_resume_note(project_path: &str) {
     let command = format!("codex-potter resume {project_path}");
     println!("{} To continue this project, run:", ansi_bold("Note:"));
     println!("  {}", ansi_cyan(&command));
+}
+
+fn print_queued_prompts_note(queued_prompts: &[String]) {
+    let Some(note) = render_queued_prompts_note(queued_prompts) else {
+        return;
+    };
+
+    print!("{note}");
+}
+
+fn render_queued_prompts_note(queued_prompts: &[String]) -> Option<String> {
+    if queued_prompts.is_empty() {
+        return None;
+    }
+
+    let count = queued_prompts.len();
+    let prompt_label = if count == 1 { "prompt" } else { "prompts" };
+    let verb = if count == 1 { "was" } else { "were" };
+
+    let mut note = String::new();
+    note.push('\n');
+    note.push_str(&format!(
+        "{} You have {count} queued {prompt_label} that {verb} not run before exit:\n",
+        ansi_bold("Warning:")
+    ));
+
+    for (idx, prompt) in queued_prompts.iter().enumerate() {
+        let index = idx + 1;
+        note.push_str(&format!("--- queued prompt {index}/{count} ---\n"));
+        note.push_str(prompt);
+        if !prompt.ends_with('\n') {
+            note.push('\n');
+        }
+        note.push_str(&format!("--- end queued prompt {index}/{count} ---\n"));
+    }
+
+    Some(note)
 }
 
 fn ansi_bold(text: &str) -> String {
@@ -587,5 +639,28 @@ mod tests {
             derive_resume_project_path_from_project_dir(project_dir),
             None
         );
+    }
+
+    #[test]
+    fn render_queued_prompts_note_returns_none_when_empty() {
+        assert_eq!(render_queued_prompts_note(&[]), None);
+    }
+
+    #[test]
+    fn render_queued_prompts_note_preserves_prompt_whitespace() {
+        let prompts = vec![
+            String::from("  alpha\n\n  beta\n\n"),
+            String::from("no trailing newline"),
+        ];
+
+        let output = render_queued_prompts_note(&prompts).expect("note");
+        let expected = format!(
+            "\n{} You have 2 queued prompts that were not run before exit:\n--- queued prompt 1/2 ---\n{}--- end queued prompt 1/2 ---\n--- queued prompt 2/2 ---\n{}\n--- end queued prompt 2/2 ---\n",
+            ansi_bold("Warning:"),
+            prompts[0],
+            prompts[1],
+        );
+
+        assert_eq!(output, expected);
     }
 }

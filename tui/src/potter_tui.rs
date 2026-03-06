@@ -203,6 +203,14 @@ impl CodexPotterTui {
         self.queued_user_prompts.pop_front()
     }
 
+    /// Take all prompts queued via the bottom composer while tasks were running.
+    ///
+    /// This is primarily intended for exit paths so the caller can surface any queued prompts
+    /// before the process terminates and the in-memory queue is lost.
+    pub fn take_queued_user_prompts(&mut self) -> VecDeque<String> {
+        std::mem::take(&mut self.queued_user_prompts)
+    }
+
     /// Render a single Potter round until the control plane signals the round
     /// finished (`EventMsg::PotterRoundFinished`) or the user interrupts.
     pub async fn render_round(&mut self, params: RenderRoundParams) -> anyhow::Result<AppExitInfo> {
