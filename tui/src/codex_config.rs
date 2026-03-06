@@ -20,6 +20,7 @@ struct CodexConfig {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<CodexServiceTier>,
+    fast_mode_enabled: Option<bool>,
     profile: Option<String>,
     profiles: HashMap<String, CodexProfileModelConfig>,
     project_root_markers: Option<Vec<String>>,
@@ -31,6 +32,7 @@ struct CodexProfileModelConfig {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<CodexServiceTier>,
+    fast_mode_enabled: Option<bool>,
 }
 
 /// Resolved model metadata for the startup banner after applying layered Codex config.
@@ -40,7 +42,7 @@ pub struct ResolvedCodexModelConfig {
     pub model: String,
     /// Effective reasoning effort for the selected model, if configured.
     pub reasoning_effort: Option<ReasoningEffort>,
-    /// Whether the effective service tier enables Fast mode.
+    /// Whether Fast mode is effectively enabled for startup banner display.
     pub is_fast: bool,
 }
 
@@ -64,11 +66,15 @@ pub fn resolve_codex_model_config(cwd: &Path) -> io::Result<ResolvedCodexModelCo
         .unwrap_or_else(|| DEFAULT_FALLBACK_MODEL.to_string());
     let reasoning_effort = profile_config.reasoning_effort.or(raw.reasoning_effort);
     let service_tier = profile_config.service_tier.or(raw.service_tier);
+    let fast_mode_enabled = profile_config
+        .fast_mode_enabled
+        .or(raw.fast_mode_enabled)
+        .unwrap_or(true);
 
     Ok(ResolvedCodexModelConfig {
         model,
         reasoning_effort,
-        is_fast: matches!(service_tier, Some(CodexServiceTier::Fast)),
+        is_fast: fast_mode_enabled && matches!(service_tier, Some(CodexServiceTier::Fast)),
     })
 }
 
@@ -259,6 +265,17 @@ fn apply_config_layer_from_doc(config: &mut CodexConfig, doc: &DocumentMut) -> i
     if let Some(item) = doc.get("service_tier") {
         config.service_tier = Some(read_service_tier(item, "service_tier")?);
     }
+    if let Some(item) = doc.get("features") {
+        let features = item.as_table().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "config field `features` must be a table",
+            )
+        })?;
+        if let Some(fast_mode) = features.get("fast_mode") {
+            config.fast_mode_enabled = Some(read_bool(fast_mode, "features.fast_mode")?);
+        }
+    }
     if let Some(item) = doc.get("profile") {
         config.profile = Some(read_string(item, "profile")?);
     }
@@ -311,6 +328,20 @@ fn apply_config_layer_from_doc(config: &mut CodexConfig, doc: &DocumentMut) -> i
                     &format!("profiles.{profile_name}.service_tier"),
                 )?);
             }
+            if let Some(item) = profile_table.get("features") {
+                let features = item.as_table().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("config field `profiles.{profile_name}.features` must be a table"),
+                    )
+                })?;
+                if let Some(fast_mode) = features.get("fast_mode") {
+                    profile.fast_mode_enabled = Some(read_bool(
+                        fast_mode,
+                        &format!("profiles.{profile_name}.features.fast_mode"),
+                    )?);
+                }
+            }
             config.profiles.insert(profile_name.to_string(), profile);
         }
     }
@@ -326,6 +357,17 @@ fn read_string(item: &TomlItem, field: &str) -> io::Result<String> {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("config field `{field}` must be a string"),
+            )
+        })
+}
+
+fn read_bool(item: &TomlItem, field: &str) -> io::Result<bool> {
+    item.as_value()
+        .and_then(toml_edit::Value::as_bool)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("config field `{field}` must be a boolean"),
             )
         })
 }
@@ -557,6 +599,68 @@ service_tier = "flex"
         let resolved = resolve_codex_model_config(repo.path()).expect("resolve");
         assert_eq!(resolved.model, "gpt-5.2-codex");
         assert!(!resolved.is_fast);
+    }
+
+    #[test]
+    #[serial]
+    fn fast_banner_is_hidden_when_fast_feature_is_disabled() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        write_config(
+            &codex_home.path().join("config.toml"),
+            r#"
+model = "gpt-5.2"
+service_tier = "fast"
+
+[features]
+fast_mode = false
+"#,
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let resolved = resolve_codex_model_config(cwd.path()).expect("resolve");
+        assert_eq!(
+            resolved,
+            ResolvedCodexModelConfig {
+                model: "gpt-5.2".to_string(),
+                reasoning_effort: None,
+                is_fast: false,
+            }
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn profile_fast_feature_override_is_applied() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        write_config(
+            &codex_home.path().join("config.toml"),
+            r#"
+model = "gpt-5.2"
+service_tier = "fast"
+profile = "work"
+
+[features]
+fast_mode = false
+
+[profiles.work.features]
+fast_mode = true
+"#,
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let resolved = resolve_codex_model_config(cwd.path()).expect("resolve");
+        assert_eq!(
+            resolved,
+            ResolvedCodexModelConfig {
+                model: "gpt-5.2".to_string(),
+                reasoning_effort: None,
+                is_fast: true,
+            }
+        );
     }
 
     #[test]

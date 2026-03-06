@@ -57,18 +57,19 @@ Project root is discovered by walking parents until a configured marker matches
 
 ### Profile selection
 
-If `profile = "..."` is set, model, reasoning effort, and service tier are resolved from
-`profiles.<name>.*` first, then fall back to the top-level `model`, `model_reasoning_effort`, and
-`service_tier`.
+If `profile = "..."` is set, model, reasoning effort, service tier, and the `fast_mode` feature
+flag are resolved from `profiles.<name>.*` first, then fall back to the top-level `model`,
+`model_reasoning_effort`, `service_tier`, and `[features].fast_mode`.
 
 ### Fast startup banner state
 
 - The first-screen startup banner is rendered before `thread/start` returns a session snapshot, so
   it cannot rely on app-server `SessionConfiguredEvent` / config snapshot for the initial render.
-- Upstream `/fast` persists the current selection via `service_tier`, while `fast_mode` is only the
-  feature gate for exposing the Fast UI / command.
+- Upstream `/fast` persists the current selection via `service_tier`, while `fast_mode` is the
+  feature gate that can still disable Fast entirely.
 - codex-potter therefore treats layered config as the startup-banner source of truth: when the
-  effective `service_tier` resolves to `fast`, the existing model label is rendered as
+  effective `service_tier` resolves to `fast` and layered config does not disable
+  `[features].fast_mode` (default: enabled), the existing model label is rendered as
   `<model> <reasoning> [fast]`.
 
 ## Sandbox and approvals (app-server bridge)
