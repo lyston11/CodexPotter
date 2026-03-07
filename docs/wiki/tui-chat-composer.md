@@ -70,14 +70,14 @@ History navigation is only activated when it is unlikely the user is trying to m
 
 - If the input is empty: Up/Down navigates history.
 - If the input is non-empty: Up/Down navigates history **only** when:
-  - Cursor is at column 0, and
+  - Cursor is at a buffer boundary (start or end), and
   - The current text matches the last history-filled value.
 
-When a history entry is recalled, the composer replaces the entire content and resets the cursor to
-column 0.
+When a history entry is recalled, the composer replaces the entire content and moves the cursor to
+the end of the buffer (shell-like editing).
 
-If the user edits the recalled text or moves the cursor away from column 0, further Up/Down behave
-as normal cursor movement until the input is empty again.
+If the user edits the recalled text or moves the cursor away from the start/end boundary, further
+Up/Down behave as normal cursor movement until the input is empty again.
 
 ### Persistence (`codex-potter`)
 
@@ -98,6 +98,7 @@ The composer provides `clear_for_ctrl_c()`:
 - If the input is empty: returns `None` (caller decides whether to exit/cancel).
 - If the input is non-empty:
   - Captures the current text
+  - Captures placeholder element ranges + pending paste payloads (so large pastes can be restored)
   - Clears the composer
   - Resets history navigation state
   - Records the captured text into prompt history (so it can be recalled immediately via Up)
