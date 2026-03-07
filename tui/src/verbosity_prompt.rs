@@ -7,26 +7,14 @@
 //! `tui/AGENTS.md`.
 
 use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::prelude::Widget as _;
-use ratatui::style::Stylize as _;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::Clear;
-use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
 
 use crate::StartupSetupStep;
-use crate::render::Insets;
-use crate::render::renderable::ColumnRenderable;
+use crate::bottom_pane::ListSelectionView;
 use crate::render::renderable::Renderable;
-use crate::render::renderable::RenderableExt as _;
-use crate::selection_list::selection_option_row;
-use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use crate::verbosity::Verbosity;
@@ -43,25 +31,56 @@ pub async fn run_startup_verbosity_prompt_with_tui(
     tui: &mut Tui,
     setup_step: Option<StartupSetupStep>,
 ) -> anyhow::Result<Option<Verbosity>> {
-    let mut screen = VerbosityPromptScreen::new(tui.frame_requester(), setup_step);
-    tui.draw(u16::MAX, |frame| {
-        frame.render_widget_ref(&screen, frame.area());
-    })?;
+    let params = crate::verbosity_picker::build_startup_verbosity_picker_params(setup_step);
+
+    let (app_event_tx, _app_event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let app_event_tx = crate::app_event_sender::AppEventSender::new(app_event_tx);
+    let mut view = ListSelectionView::new(params, app_event_tx);
+
+    let render_view = |tui: &mut Tui, view: &ListSelectionView| -> anyhow::Result<()> {
+        let width = tui.terminal.last_known_screen_size.width.max(1);
+        let height = view.desired_height(width).saturating_add(1);
+        tui.draw(height, |frame| {
+            let area = frame.area();
+            ratatui::widgets::Clear.render(area, frame.buffer_mut());
+            let view_area = ratatui::layout::Rect::new(
+                area.x,
+                area.y.saturating_add(1),
+                area.width,
+                area.height.saturating_sub(1),
+            );
+            view.render(view_area, frame.buffer_mut());
+        })?;
+        Ok(())
+    };
+
+    render_view(tui, &view)?;
 
     let events = tui.event_stream();
     tokio::pin!(events);
 
-    while !screen.is_done() {
+    while !view.is_complete() {
         let Some(event) = events.next().await else {
             break;
         };
         match event {
-            TuiEvent::Key(key_event) => screen.handle_key(key_event),
+            TuiEvent::Key(key_event) => {
+                if key_event.kind == KeyEventKind::Release {
+                    continue;
+                }
+                if key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('d'))
+                    && key_event.kind == KeyEventKind::Press
+                {
+                    view.cancel();
+                } else {
+                    view.handle_key_event(key_event);
+                }
+                tui.frame_requester().schedule_frame();
+            }
             TuiEvent::Paste(_) => {}
             TuiEvent::Draw => {
-                tui.draw(u16::MAX, |frame| {
-                    frame.render_widget_ref(&screen, frame.area());
-                })?;
+                render_view(tui, &view)?;
             }
         }
     }
@@ -70,189 +89,49 @@ pub async fn run_startup_verbosity_prompt_with_tui(
     // starts cleanly.
     tui.terminal.clear()?;
 
-    Ok(match screen.outcome() {
-        Some(VerbosityPromptOutcome::Selected(selection)) => Some(selection.verbosity()),
-        Some(VerbosityPromptOutcome::Cancelled) | None => None,
-    })
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VerbositySelection {
-    Minimal,
-    Simple,
-}
-
-impl VerbositySelection {
-    fn verbosity(self) -> Verbosity {
-        match self {
-            VerbositySelection::Minimal => Verbosity::Minimal,
-            VerbositySelection::Simple => Verbosity::Simple,
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            VerbositySelection::Minimal => VerbositySelection::Simple,
-            VerbositySelection::Simple => VerbositySelection::Minimal,
-        }
-    }
-
-    fn prev(self) -> Self {
-        match self {
-            VerbositySelection::Minimal => VerbositySelection::Simple,
-            VerbositySelection::Simple => VerbositySelection::Minimal,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VerbosityPromptOutcome {
-    Selected(VerbositySelection),
-    Cancelled,
-}
-
-struct VerbosityPromptScreen {
-    request_frame: FrameRequester,
-    setup_step: Option<StartupSetupStep>,
-    highlighted: VerbositySelection,
-    outcome: Option<VerbosityPromptOutcome>,
-}
-
-impl VerbosityPromptScreen {
-    fn new(request_frame: FrameRequester, setup_step: Option<StartupSetupStep>) -> Self {
-        Self {
-            request_frame,
-            setup_step,
-            highlighted: VerbositySelection::Minimal,
-            outcome: None,
-        }
-    }
-
-    fn handle_key(&mut self, key_event: KeyEvent) {
-        if key_event.kind == KeyEventKind::Release {
-            return;
-        }
-        if key_event.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('d'))
-        {
-            self.cancel();
-            return;
-        }
-
-        match key_event.code {
-            KeyCode::Up | KeyCode::Char('k') => self.set_highlight(self.highlighted.prev()),
-            KeyCode::Down | KeyCode::Char('j') => self.set_highlight(self.highlighted.next()),
-            KeyCode::Char('1') => self.select(VerbositySelection::Minimal),
-            KeyCode::Char('2') => self.select(VerbositySelection::Simple),
-            KeyCode::Enter => self.select(self.highlighted),
-            KeyCode::Esc => self.cancel(),
-            _ => {}
-        }
-    }
-
-    fn set_highlight(&mut self, highlight: VerbositySelection) {
-        if self.highlighted != highlight {
-            self.highlighted = highlight;
-            self.request_frame.schedule_frame();
-        }
-    }
-
-    fn select(&mut self, selection: VerbositySelection) {
-        self.highlighted = selection;
-        self.outcome = Some(VerbosityPromptOutcome::Selected(selection));
-        self.request_frame.schedule_frame();
-    }
-
-    fn cancel(&mut self) {
-        self.outcome = Some(VerbosityPromptOutcome::Cancelled);
-        self.request_frame.schedule_frame();
-    }
-
-    fn is_done(&self) -> bool {
-        self.outcome.is_some()
-    }
-
-    fn outcome(&self) -> Option<VerbosityPromptOutcome> {
-        self.outcome
-    }
-}
-
-impl WidgetRef for &VerbosityPromptScreen {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        Clear.render(area, buf);
-
-        let mut column = ColumnRenderable::new();
-        if let Some(step) = self.setup_step.filter(|step| step.should_render()) {
-            column.push(
-                Line::from(step.label())
-                    .dim()
-                    .inset(Insets::tlbr(0, 2, 0, 0)),
-            );
-        } else {
-            column.push("");
-        }
-
-        column.push(
-            Line::from("Select a verbosity mode for interim transcript items:")
-                .inset(Insets::tlbr(0, 2, 0, 0)),
-        );
-        column.push("");
-        column.push(
-            Line::from("You can change this later via /verbosity.")
-                .dim()
-                .inset(Insets::tlbr(0, 2, 0, 0)),
-        );
-        column.push(
-            Line::from("Minimal is the default and keeps output compact.")
-                .dim()
-                .inset(Insets::tlbr(0, 2, 0, 0)),
-        );
-        column.push("");
-
-        column.push(selection_option_row(
-            0,
-            format!("Minimal (default) — {}", Verbosity::Minimal.description()),
-            self.highlighted == VerbositySelection::Minimal,
-        ));
-        column.push(selection_option_row(
-            1,
-            format!("Simple — {}", Verbosity::Simple.description()),
-            self.highlighted == VerbositySelection::Simple,
-        ));
-        column.push("");
-        column.push(
-            Line::from(vec![
-                Span::from("Press ").dim(),
-                crate::key_hint::plain(KeyCode::Enter).into(),
-                Span::from(" to continue").dim(),
-            ])
-            .inset(Insets::tlbr(0, 2, 0, 0)),
-        );
-
-        column.render(area, buf);
-    }
+    let modes = [Verbosity::Minimal, Verbosity::Simple];
+    Ok(view
+        .take_last_selected_index()
+        .and_then(|idx| modes.get(idx).copied()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_event_sender::AppEventSender;
+    use crate::render::renderable::Renderable;
     use crate::test_backend::VT100Backend;
     use insta::assert_snapshot;
     use ratatui::Terminal;
+    use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
     fn startup_verbosity_prompt_initial_vt100() {
-        let backend = VT100Backend::new(80, 14);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
+        let width: u16 = 100;
 
-        let screen = VerbosityPromptScreen::new(
-            FrameRequester::test_dummy(),
-            Some(StartupSetupStep::new(2, 2)),
-        );
+        let params = crate::verbosity_picker::build_startup_verbosity_picker_params(Some(
+            StartupSetupStep::new(2, 2),
+        ));
+
+        let (app_event_tx, _app_event_rx) = unbounded_channel();
+        let app_event_tx = AppEventSender::new(app_event_tx);
+        let view = ListSelectionView::new(params, app_event_tx);
+
+        let height = view.desired_height(width).saturating_add(1);
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
 
         terminal
             .draw(|frame| {
-                WidgetRef::render_ref(&&screen, frame.area(), frame.buffer_mut());
+                let area = frame.area();
+                ratatui::widgets::Clear.render(area, frame.buffer_mut());
+                let view_area = ratatui::layout::Rect::new(
+                    area.x,
+                    area.y.saturating_add(1),
+                    area.width,
+                    area.height.saturating_sub(1),
+                );
+                view.render(view_area, frame.buffer_mut());
             })
             .expect("draw");
 

@@ -1,20 +1,33 @@
 //! Builds the `/verbosity` picker dialog for the TUI.
 
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
+use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::FileChange;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+use crate::StartupSetupStep;
 use crate::app_event::AppEvent;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::SideContentWidth;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+use crate::exec_cell::CommandOutput;
+use crate::exec_cell::ExecCell;
+use crate::history_cell;
+use crate::history_cell::HistoryCell as _;
+use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::verbosity::Verbosity;
 
@@ -26,6 +39,15 @@ const WIDE_PREVIEW_LEFT_INSET: u16 = 2;
 
 /// Minimum frame padding used for vertically centered wide preview.
 const PREVIEW_FRAME_PADDING: u16 = 1;
+
+/// Narrow stacked preview uses a fixed compact layout.
+const NARROW_PREVIEW_HEIGHT: u16 = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewDensity {
+    Full,
+    Compact,
+}
 
 struct VerbosityPreviewWideRenderable {
     selected: Arc<Mutex<Verbosity>>,
@@ -45,70 +67,196 @@ fn centered_offset(available: u16, content: u16, min_frame: u16) -> u16 {
     frame + free.saturating_sub(frame.saturating_mul(2)) / 2
 }
 
-fn preview_lines(verbosity: Verbosity, compact: bool) -> Vec<Line<'static>> {
-    match (verbosity, compact) {
-        (Verbosity::Minimal, false) => vec![
-            Line::from("我先对上 rollout 与渲染链路，再实现 /verbosity。".dim()),
-            Line::from(""),
-            vec!["• ".dim(), "Edited".bold(), " 2 files (+22 -0)".dim()].into(),
-            vec!["  └ ".dim(), "protocol/src/models.rs (+19 -0)".dim()].into(),
-            vec!["    ".into(), "protocol/src/protocol.rs (+3 -0)".dim()].into(),
-            Line::from(""),
-            Line::from("Ran/Explored are hidden in Minimal mode.".dim().italic()),
-            Line::from(""),
-            Line::from("最终结论文本保持正常显示。"),
-        ],
-        (Verbosity::Minimal, true) => vec![
-            Line::from("commentary is dimmed".dim().italic()),
-            vec!["• ".dim(), "Edited".bold(), " 2 files (+22 -0)".dim()].into(),
-            vec!["  └ ".dim(), "protocol/src/models.rs (+19 -0)".dim()].into(),
-            vec!["    ".into(), "protocol/src/protocol.rs (+3 -0)".dim()].into(),
-        ],
-        (Verbosity::Simple, false) => vec![
-            Line::from("我先对上 rollout 与渲染链路，再实现 /verbosity。"),
-            Line::from(""),
-            vec!["• ".dim(), "Explored".bold()].into(),
-            vec!["  └ ".dim(), "tui/src/app_server_render.rs".dim()].into(),
-            Line::from(""),
-            vec!["• ".dim(), "Ran".bold()].into(),
-            vec!["  └ ".dim(), "rg -n \"verbosity\" -S tui/src".dim()].into(),
-            Line::from(""),
-            vec!["• ".dim(), "Edited".bold(), " 2 files (+22 -0)".dim()].into(),
-            vec!["  └ ".dim(), "protocol/src/models.rs (+19 -0)".dim()].into(),
-            vec!["     ".into(), "5".dim()].into(),
-            vec!["     ".into(), "6 +use serde::Deserialize;".dim()].into(),
-        ],
-        (Verbosity::Simple, true) => vec![
-            Line::from("commentary is normal".dim().italic()),
-            vec!["• ".dim(), "Ran".bold()].into(),
-            vec!["  └ ".dim(), "rg -n \"verbosity\" -S tui/src".dim()].into(),
-            vec!["• ".dim(), "Edited".bold(), " 2 files (+22 -0)".dim()].into(),
-        ],
+fn dim_lines(lines: &mut [Line<'static>]) {
+    for line in lines.iter_mut() {
+        line.style = line.style.add_modifier(Modifier::DIM);
+        for span in line.spans.iter_mut() {
+            span.style = span.style.add_modifier(Modifier::DIM);
+        }
     }
+}
+
+fn preview_commentary_cell(verbosity: Verbosity) -> history_cell::AgentMessageCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    crate::markdown::append_markdown(
+        "I'll first align the rollout and rendering pipeline, then implement `/verbosity`.",
+        None,
+        &mut lines,
+    );
+    if verbosity == Verbosity::Minimal {
+        dim_lines(&mut lines);
+    }
+    history_cell::AgentMessageCell::new(lines, true)
+}
+
+fn preview_final_answer_cell() -> history_cell::AgentMessageCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    crate::markdown::append_markdown("Final answer text stays fully visible.", None, &mut lines);
+    history_cell::AgentMessageCell::new(lines, true)
+}
+
+fn preview_patch_changes() -> HashMap<PathBuf, FileChange> {
+    let mut changes = HashMap::new();
+    changes.insert(
+        PathBuf::from("protocol/src/models.rs"),
+        FileChange::Update {
+            unified_diff: [
+                "--- a/protocol/src/models.rs",
+                "+++ b/protocol/src/models.rs",
+                "@@ -3,1 +3,2 @@",
+                "-use serde::Serialize;",
+                "+use serde::Deserialize;",
+                "+use serde::Serialize;",
+                "",
+            ]
+            .join("\n"),
+            move_path: None,
+        },
+    );
+    changes.insert(
+        PathBuf::from("protocol/src/protocol.rs"),
+        FileChange::Update {
+            unified_diff: [
+                "--- a/protocol/src/protocol.rs",
+                "+++ b/protocol/src/protocol.rs",
+                "@@ -10,1 +10,2 @@",
+                " pub struct Foo;",
+                "+pub struct Bar;",
+                "",
+            ]
+            .join("\n"),
+            move_path: None,
+        },
+    );
+    changes
+}
+
+fn preview_ran_cell() -> ExecCell {
+    let call_id = String::from("preview-ran");
+    let command = vec![
+        "rg".to_string(),
+        "-n".to_string(),
+        "verbosity".to_string(),
+        "-S".to_string(),
+        "tui/src".to_string(),
+    ];
+    let mut cell = crate::exec_cell::new_active_exec_command(
+        call_id.clone(),
+        command,
+        Vec::new(),
+        ExecCommandSource::Agent,
+        None,
+        false,
+    );
+    cell.complete_call(
+        &call_id,
+        CommandOutput {
+            exit_code: 0,
+            aggregated_output: String::new(),
+            formatted_output: String::new(),
+        },
+        Duration::from_millis(120),
+    );
+    cell
+}
+
+fn append_preview_cell(
+    out: &mut Vec<Line<'static>>,
+    cell: &dyn history_cell::HistoryCell,
+    width: u16,
+    with_gap: bool,
+) {
+    let mut lines = cell.display_lines(width);
+    if lines.is_empty() {
+        return;
+    }
+    if with_gap && !out.is_empty() {
+        out.push(Line::from(""));
+    }
+    out.append(&mut lines);
+}
+
+fn build_preview_lines(
+    verbosity: Verbosity,
+    density: PreviewDensity,
+    width: u16,
+) -> Vec<Line<'static>> {
+    match density {
+        PreviewDensity::Full => build_full_preview_lines(verbosity, width),
+        PreviewDensity::Compact => build_compact_preview_lines(verbosity, width),
+    }
+}
+
+fn build_full_preview_lines(verbosity: Verbosity, width: u16) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    let commentary = preview_commentary_cell(verbosity);
+    append_preview_cell(&mut out, &commentary, width, true);
+
+    if verbosity == Verbosity::Simple {
+        let ran = preview_ran_cell();
+        append_preview_cell(&mut out, &ran, width, true);
+    }
+
+    let changes = preview_patch_changes();
+    let cwd = Path::new(".");
+    let patch = history_cell::new_patch_event(changes, cwd, verbosity);
+    append_preview_cell(&mut out, &patch, width, true);
+
+    let final_answer = preview_final_answer_cell();
+    append_preview_cell(&mut out, &final_answer, width, true);
+
+    out
+}
+
+fn build_compact_preview_lines(verbosity: Verbosity, width: u16) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let changes = preview_patch_changes();
+    let cwd = Path::new(".");
+    let patch_compact = history_cell::new_patch_event(changes, cwd, Verbosity::Minimal);
+    let patch_lines = patch_compact.display_lines(width);
+
+    match verbosity {
+        Verbosity::Minimal => {
+            let header = Line::from("commentary is dimmed".dim().italic());
+            let line1 = patch_lines.first().cloned().unwrap_or_else(|| "".into());
+            let line2 = patch_lines.get(1).cloned().unwrap_or_else(|| "".into());
+            let line3 = patch_lines.get(2).cloned().unwrap_or_else(|| "".into());
+            vec![header, line1, line2, line3]
+        }
+        Verbosity::Simple => {
+            let header = Line::from("commentary is normal".dim().italic());
+            let ran = preview_ran_cell();
+            let ran_line = ran
+                .display_lines(width)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "".into());
+            let line1 = patch_lines.first().cloned().unwrap_or_else(|| "".into());
+            let line2 = patch_lines.get(1).cloned().unwrap_or_else(|| "".into());
+            vec![header, ran_line, line1, line2]
+        }
+    }
+}
+
+fn preview_required_height(width: u16, density: PreviewDensity) -> u16 {
+    let minimal = build_preview_lines(Verbosity::Minimal, density, width);
+    let simple = build_preview_lines(Verbosity::Simple, density, width);
+    u16::try_from(minimal.len().max(simple.len())).unwrap_or(u16::MAX)
 }
 
 fn render_preview(
     area: Rect,
     buf: &mut Buffer,
     verbosity: Verbosity,
-    compact: bool,
+    density: PreviewDensity,
     left_inset: u16,
+    center_vertically: bool,
 ) {
     if area.is_empty() {
         return;
     }
-
-    let mut lines = preview_lines(verbosity, compact);
-    if lines.is_empty() {
-        return;
-    }
-
-    let content_height = (lines.len() as u16).min(area.height);
-    let top_pad = if compact {
-        0
-    } else {
-        centered_offset(area.height, content_height, PREVIEW_FRAME_PADDING)
-    };
 
     let left_pad = left_inset.min(area.width.saturating_sub(1));
     let render_area = Rect::new(
@@ -117,6 +265,18 @@ fn render_preview(
         area.width.saturating_sub(left_pad),
         area.height,
     );
+
+    let mut lines = build_preview_lines(verbosity, density, render_area.width);
+    if lines.is_empty() {
+        return;
+    }
+
+    let content_height = (lines.len() as u16).min(area.height);
+    let top_pad = if center_vertically {
+        centered_offset(area.height, content_height, PREVIEW_FRAME_PADDING)
+    } else {
+        0
+    };
 
     if top_pad > 0 {
         let mut padded = Vec::with_capacity(lines.len() + top_pad as usize);
@@ -129,8 +289,9 @@ fn render_preview(
 }
 
 impl Renderable for VerbosityPreviewWideRenderable {
-    fn desired_height(&self, _width: u16) -> u16 {
-        u16::MAX
+    fn desired_height(&self, width: u16) -> u16 {
+        let effective_width = width.saturating_sub(WIDE_PREVIEW_LEFT_INSET).max(1);
+        preview_required_height(effective_width, PreviewDensity::Full)
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -138,13 +299,20 @@ impl Renderable for VerbosityPreviewWideRenderable {
             Ok(guard) => *guard,
             Err(poisoned) => *poisoned.into_inner(),
         };
-        render_preview(area, buf, verbosity, false, WIDE_PREVIEW_LEFT_INSET);
+        render_preview(
+            area,
+            buf,
+            verbosity,
+            PreviewDensity::Full,
+            WIDE_PREVIEW_LEFT_INSET,
+            true,
+        );
     }
 }
 
 impl Renderable for VerbosityPreviewNarrowRenderable {
     fn desired_height(&self, _width: u16) -> u16 {
-        4
+        NARROW_PREVIEW_HEIGHT
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -152,13 +320,29 @@ impl Renderable for VerbosityPreviewNarrowRenderable {
             Ok(guard) => *guard,
             Err(poisoned) => *poisoned.into_inner(),
         };
-        render_preview(area, buf, verbosity, true, 0);
+        render_preview(area, buf, verbosity, PreviewDensity::Compact, 0, false);
     }
 }
 
-/// Builds [`SelectionViewParams`] for the `/verbosity` picker dialog.
-pub fn build_verbosity_picker_params(current: Verbosity) -> SelectionViewParams {
-    let selected_mode = Arc::new(Mutex::new(current));
+fn startup_picker_header(setup_step: Option<StartupSetupStep>) -> Box<dyn Renderable> {
+    let Some(step) = setup_step.filter(|step| step.should_render()) else {
+        return Box::new(());
+    };
+
+    let mut column = ColumnRenderable::new();
+    column.push(Line::from(step.label()).dim());
+    column.push("");
+    Box::new(column)
+}
+
+fn build_verbosity_picker_params_impl(
+    current: Option<Verbosity>,
+    initial: Verbosity,
+    header: Box<dyn Renderable>,
+    footer_note: Option<Line<'static>>,
+    include_actions: bool,
+) -> SelectionViewParams {
+    let selected_mode = Arc::new(Mutex::new(initial));
     let selected_for_preview = selected_mode.clone();
 
     let modes = [Verbosity::Minimal, Verbosity::Simple];
@@ -166,27 +350,33 @@ pub fn build_verbosity_picker_params(current: Verbosity) -> SelectionViewParams 
         .iter()
         .copied()
         .map(|verbosity| {
-            let is_current = verbosity == current;
             let verbosity_for_action = verbosity;
+            let is_current = current.is_some_and(|cur| cur == verbosity);
+            let actions = if include_actions {
+                vec![
+                    Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+                        tx.send(AppEvent::VerbositySelected {
+                            verbosity: verbosity_for_action,
+                        });
+                    }) as _,
+                ]
+            } else {
+                Vec::new()
+            };
+
             SelectionItem {
                 name: verbosity.label().to_string(),
                 description: Some(verbosity.description().to_string()),
                 is_current,
                 is_default: verbosity == Verbosity::default(),
                 dismiss_on_select: true,
-                actions: vec![Box::new(
-                    move |tx: &crate::app_event_sender::AppEventSender| {
-                        tx.send(AppEvent::VerbositySelected {
-                            verbosity: verbosity_for_action,
-                        });
-                    },
-                )],
+                actions,
                 ..Default::default()
             }
         })
         .collect();
 
-    let initial_selected_idx = Some(match current {
+    let initial_selected_idx = Some(match initial {
         Verbosity::Minimal => 0,
         Verbosity::Simple => 1,
     });
@@ -206,20 +396,44 @@ pub fn build_verbosity_picker_params(current: Verbosity) -> SelectionViewParams 
     SelectionViewParams {
         title: Some("Select Verbosity".to_string()),
         subtitle: Some("Choose how interim transcript items are shown".to_string()),
+        footer_note,
         footer_hint: Some(standard_popup_hint_line()),
         items,
+        header,
         initial_selected_idx,
         side_content: Box::new(VerbosityPreviewWideRenderable {
             selected: selected_mode.clone(),
         }),
         side_content_width: SideContentWidth::Half,
         side_content_min_width: WIDE_PREVIEW_MIN_WIDTH,
+        fit_popup_height_to_side_content: true,
         stacked_side_content: Some(Box::new(VerbosityPreviewNarrowRenderable {
             selected: selected_mode,
         })),
+        preserve_side_content_bg: true,
         on_selection_changed,
         ..Default::default()
     }
+}
+
+/// Builds [`SelectionViewParams`] for the `/verbosity` picker dialog.
+pub fn build_verbosity_picker_params(current: Verbosity) -> SelectionViewParams {
+    build_verbosity_picker_params_impl(Some(current), current, Box::new(()), None, true)
+}
+
+/// Builds [`SelectionViewParams`] for the startup verbosity onboarding prompt.
+///
+/// This prompt is a codex-potter-specific divergence from upstream Codex TUI.
+pub fn build_startup_verbosity_picker_params(
+    setup_step: Option<StartupSetupStep>,
+) -> SelectionViewParams {
+    build_verbosity_picker_params_impl(
+        None,
+        Verbosity::Minimal,
+        startup_picker_header(setup_step),
+        Some(Line::from("You can change this later via /verbosity.").dim()),
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -227,12 +441,18 @@ mod tests {
     use super::*;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
+    use ratatui::style::Color;
     use unicode_width::UnicodeWidthStr;
 
-    fn render_lines(renderable: &dyn Renderable, width: u16, height: u16) -> Vec<String> {
+    fn render_buffer(renderable: &dyn Renderable, width: u16, height: u16) -> Buffer {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         renderable.render(area, &mut buf);
+        buf
+    }
+
+    fn render_lines(renderable: &dyn Renderable, width: u16, height: u16) -> Vec<String> {
+        let buf = render_buffer(renderable, width, height);
         (0..height)
             .map(|row| {
                 let mut line = String::new();
@@ -259,14 +479,18 @@ mod tests {
         let params = build_verbosity_picker_params(Verbosity::default());
         assert_eq!(params.side_content_width, SideContentWidth::Half);
         assert_eq!(params.side_content_min_width, WIDE_PREVIEW_MIN_WIDTH);
+        assert!(params.fit_popup_height_to_side_content);
         assert!(params.stacked_side_content.is_some());
+        assert!(params.preserve_side_content_bg);
     }
 
     #[test]
     fn verbosity_picker_wide_preview_snapshot_minimal() {
         let selected = Arc::new(Mutex::new(Verbosity::Minimal));
         let renderable = VerbosityPreviewWideRenderable { selected };
-        let lines = render_lines(&renderable, 64, 12).join("\n");
+        let width: u16 = 72;
+        let height = renderable.desired_height(width);
+        let lines = render_lines(&renderable, width, height).join("\n");
         assert_snapshot!("verbosity_picker_wide_preview_minimal", lines);
     }
 
@@ -274,7 +498,48 @@ mod tests {
     fn verbosity_picker_narrow_preview_snapshot_simple() {
         let selected = Arc::new(Mutex::new(Verbosity::Simple));
         let renderable = VerbosityPreviewNarrowRenderable { selected };
-        let lines = render_lines(&renderable, 64, 4).join("\n");
+        let width: u16 = 72;
+        let height = renderable.desired_height(width);
+        let lines = render_lines(&renderable, width, height).join("\n");
         assert_snapshot!("verbosity_picker_narrow_preview_simple", lines);
+    }
+
+    #[test]
+    fn wide_preview_height_matches_the_tallest_mode_for_the_width() {
+        let selected = Arc::new(Mutex::new(Verbosity::Minimal));
+        let renderable = VerbosityPreviewWideRenderable { selected };
+        let width: u16 = 72;
+
+        let expected = preview_required_height(
+            width.saturating_sub(WIDE_PREVIEW_LEFT_INSET).max(1),
+            PreviewDensity::Full,
+        );
+        assert_eq!(renderable.desired_height(width), expected);
+    }
+
+    #[test]
+    fn wide_preview_includes_added_and_removed_color_spans() {
+        let selected = Arc::new(Mutex::new(Verbosity::Simple));
+        let renderable = VerbosityPreviewWideRenderable { selected };
+        let width: u16 = 80;
+        let height = renderable.desired_height(width);
+        let buf = render_buffer(&renderable, width, height);
+
+        let mut saw_green = false;
+        let mut saw_red = false;
+        for y in 0..height {
+            for x in 0..width {
+                let cell = &buf[(x, y)];
+                if cell.style().fg == Some(Color::Green) {
+                    saw_green = true;
+                }
+                if cell.style().fg == Some(Color::Red) {
+                    saw_red = true;
+                }
+            }
+        }
+
+        assert!(saw_green, "expected +added spans to render in green");
+        assert!(saw_red, "expected -removed spans to render in red");
     }
 }

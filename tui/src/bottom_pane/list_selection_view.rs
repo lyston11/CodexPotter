@@ -124,6 +124,10 @@ pub struct SelectionViewParams {
     /// Minimum side panel width required before side-by-side layout activates.
     pub side_content_min_width: u16,
 
+    /// When true and side-by-side layout is active, expand the popup height so the
+    /// side content can render at its full desired height without being truncated.
+    pub fit_popup_height_to_side_content: bool,
+
     /// Optional fallback content rendered when side-by-side does not fit.
     /// When absent, `side_content` is reused.
     pub stacked_side_content: Option<Box<dyn Renderable>>,
@@ -155,6 +159,7 @@ impl Default for SelectionViewParams {
             side_content: Box::new(()),
             side_content_width: SideContentWidth::default(),
             side_content_min_width: 0,
+            fit_popup_height_to_side_content: false,
             stacked_side_content: None,
             preserve_side_content_bg: false,
             on_selection_changed: None,
@@ -180,6 +185,7 @@ pub struct ListSelectionView {
     side_content: Box<dyn Renderable>,
     side_content_width: SideContentWidth,
     side_content_min_width: u16,
+    fit_popup_height_to_side_content: bool,
     stacked_side_content: Option<Box<dyn Renderable>>,
     preserve_side_content_bg: bool,
     on_selection_changed: OnSelectionChangedCallback,
@@ -219,6 +225,7 @@ impl ListSelectionView {
             side_content: params.side_content,
             side_content_width: params.side_content_width,
             side_content_min_width: params.side_content_min_width,
+            fit_popup_height_to_side_content: params.fit_popup_height_to_side_content,
             stacked_side_content: params.stacked_side_content,
             preserve_side_content_bg: params.preserve_side_content_bg,
             on_selection_changed: params.on_selection_changed,
@@ -633,10 +640,24 @@ impl Renderable for ListSelectionView {
             effective_rows_width.saturating_add(1),
         );
 
-        let mut height = self.header.desired_height(inner_width);
+        let header_height = self.header.desired_height(inner_width);
+        let mut height = header_height;
         height = height.saturating_add(rows_height + 3);
         if self.is_searchable {
             height = height.saturating_add(1);
+        }
+
+        if let Some(sw) = side_w
+            && self.fit_popup_height_to_side_content
+        {
+            let list_content_height = header_height
+                .saturating_add(1) // header/list gap line
+                .saturating_add(u16::from(self.is_searchable))
+                .saturating_add(rows_height);
+            let side_content_height = self.side_content.desired_height(sw);
+            if side_content_height != u16::MAX && side_content_height > list_content_height {
+                height = height.saturating_add(side_content_height - list_content_height);
+            }
         }
 
         if side_w.is_none() {
@@ -842,9 +863,20 @@ impl Renderable for ListSelectionView {
 mod tests {
     use super::*;
     use crate::app_event_sender::AppEventSender;
+    use pretty_assertions::assert_eq;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use tokio::sync::mpsc::unbounded_channel;
+
+    struct FixedHeightRenderable(u16);
+
+    impl Renderable for FixedHeightRenderable {
+        fn desired_height(&self, _width: u16) -> u16 {
+            self.0
+        }
+
+        fn render(&self, _area: Rect, _buf: &mut Buffer) {}
+    }
 
     #[test]
     fn action_picker_popup_snapshot() {
@@ -871,5 +903,54 @@ mod tests {
             .draw(|f| view.render(f.area(), f.buffer_mut()))
             .expect("draw");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn fit_popup_height_to_side_content_expands_side_by_side_popup() {
+        let (app_event_tx, _app_event_rx) = unbounded_channel();
+        let app_event_tx = AppEventSender::new(app_event_tx);
+
+        let view = ListSelectionView::new(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Option A".to_string(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                side_content: Box::new(FixedHeightRenderable(12)),
+                side_content_width: SideContentWidth::Fixed(40),
+                side_content_min_width: 10,
+                fit_popup_height_to_side_content: true,
+                ..Default::default()
+            },
+            app_event_tx,
+        );
+
+        let width = 100;
+        assert_eq!(view.desired_height(width), 14);
+    }
+
+    #[test]
+    fn side_by_side_ignores_side_content_height_by_default() {
+        let (app_event_tx, _app_event_rx) = unbounded_channel();
+        let app_event_tx = AppEventSender::new(app_event_tx);
+
+        let view = ListSelectionView::new(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Option A".to_string(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                side_content: Box::new(FixedHeightRenderable(12)),
+                side_content_width: SideContentWidth::Fixed(40),
+                side_content_min_width: 10,
+                ..Default::default()
+            },
+            app_event_tx,
+        );
+
+        let width = 100;
+        assert_eq!(view.desired_height(width), 4);
     }
 }
