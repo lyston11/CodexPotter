@@ -60,11 +60,11 @@ This repo uses snapshot tests (via `insta`), especially in `tui`, to validate re
 - Run tests to generate any updated snapshots:
   - `cargo test -p codex-tui`
 - Check what’s pending:
-  - `cargo insta pending-snapshots -p codex-tui`
+  - `cargo insta pending-snapshots --manifest-path tui/Cargo.toml`
 - Review changes by reading the generated `*.snap.new` files directly in the repo, or preview a specific file:
-  - `cargo insta show -p codex-tui path/to/file.snap.new`
+  - `cargo insta show --manifest-path tui/Cargo.toml path/to/file.snap.new`
 - Only if you intend to accept all new snapshots in this crate, run:
-  - `cargo insta accept -p codex-tui`
+  - `cargo insta accept --manifest-path tui/Cargo.toml`
 
 If you don’t have the tool:
 

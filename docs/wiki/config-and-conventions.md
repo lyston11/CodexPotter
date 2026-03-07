@@ -117,9 +117,9 @@ The TUI relies on snapshot tests for rendered output.
 Workflow:
 
 - run tests to generate new snapshots: `cargo test -p codex-tui`
-- list pending snapshots: `cargo insta pending-snapshots -p codex-tui`
-- inspect a specific file: `cargo insta show -p codex-tui path/to/file.snap.new`
-- accept all pending snapshots for the crate (only if intended): `cargo insta accept -p codex-tui`
+- list pending snapshots: `cargo insta pending-snapshots --manifest-path tui/Cargo.toml`
+- inspect a specific file: `cargo insta show --manifest-path tui/Cargo.toml path/to/file.snap.new`
+- accept all pending snapshots for the crate (only if intended): `cargo insta accept --manifest-path tui/Cargo.toml`
 
 If you don't have the tool:
 
