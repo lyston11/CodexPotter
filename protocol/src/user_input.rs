@@ -49,6 +49,16 @@ impl TextElement {
             placeholder,
         }
     }
+
+    /// Returns the placeholder for this element.
+    ///
+    /// If an explicit placeholder was provided, returns it. Otherwise, falls back to the slice in
+    /// `text` referenced by `byte_range`.
+    pub fn placeholder<'a>(&'a self, text: &'a str) -> Option<&'a str> {
+        self.placeholder
+            .as_deref()
+            .or_else(|| text.get(self.byte_range.start..self.byte_range.end))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

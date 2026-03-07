@@ -39,11 +39,12 @@
 //! To avoid hijacking normal cursor movement, these keys only trigger history navigation when:
 //!
 //! - The input is empty, **or**
-//! - The cursor is at column 0 and the current text matches the last history-filled entry.
+//! - The cursor is at a buffer boundary (start or end) and the current text matches the last
+//!   history-filled entry.
 //!
-//! After recalling an entry, the cursor is reset to column 0. If the user edits the recalled text
-//! (or moves the cursor away from column 0), subsequent <kbd>↑</kbd>/<kbd>↓</kbd> revert to normal
-//! cursor movement.
+//! After recalling an entry, the cursor moves to the end of the buffer (shell-like editing). If
+//! the user edits the recalled text (or moves the cursor away from the start/end boundary),
+//! subsequent <kbd>↑</kbd>/<kbd>↓</kbd> revert to normal cursor movement.
 //!
 //! In `codex-potter`, prompt history is persisted to `~/.codexpotter/history.jsonl` (last 500
 //! entries).
@@ -126,6 +127,8 @@ use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::style::user_message_style;
 use codex_file_search::FileMatch;
+use codex_protocol::user_input::ByteRange;
+use codex_protocol::user_input::TextElement;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -138,6 +141,7 @@ use crate::ui_consts::LIVE_PREFIX_COLS;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -384,7 +388,6 @@ impl ChatComposer {
     /// single source of truth.
     pub fn apply_external_edit(&mut self, text: String) {
         self.pending_pastes.clear();
-        self.large_paste_counters.clear();
 
         self.textarea.set_text_clearing_elements(&text);
         self.textarea.set_cursor(text.len());
@@ -786,7 +789,6 @@ impl ChatComposer {
             } => {
                 if let Some(cmd) = popup.selected_item() {
                     self.pending_pastes.clear();
-                    self.large_paste_counters.clear();
                     self.textarea.set_text_clearing_elements("");
                     self.active_popup = ActivePopup::None;
                     return (InputResult::Command(cmd), true);
@@ -1265,19 +1267,87 @@ impl ChatComposer {
         self.textarea.set_cursor(new_cursor);
     }
 
+    /// Expand large-paste placeholders using element ranges and rebuild other element spans.
+    fn expand_pending_pastes(
+        text: &str,
+        mut elements: Vec<TextElement>,
+        pending_pastes: &[(String, String)],
+    ) -> (String, Vec<TextElement>) {
+        if pending_pastes.is_empty() || elements.is_empty() {
+            return (text.to_string(), elements);
+        }
+
+        // Stage 1: index pending paste payloads by placeholder for deterministic replacements.
+        let mut pending_by_placeholder: HashMap<&str, VecDeque<&str>> = HashMap::new();
+        for (placeholder, actual) in pending_pastes {
+            pending_by_placeholder
+                .entry(placeholder.as_str())
+                .or_default()
+                .push_back(actual.as_str());
+        }
+
+        // Stage 2: walk elements in order and rebuild text/spans in a single pass.
+        elements.sort_by_key(|elem| elem.byte_range.start);
+
+        let mut rebuilt = String::with_capacity(text.len());
+        let mut rebuilt_elements = Vec::with_capacity(elements.len());
+        let mut cursor = 0usize;
+
+        for elem in elements {
+            let start = elem.byte_range.start.min(text.len());
+            let end = elem.byte_range.end.min(text.len());
+            if start > end {
+                continue;
+            }
+            if start > cursor {
+                rebuilt.push_str(&text[cursor..start]);
+            }
+            let elem_text = &text[start..end];
+            let placeholder = elem.placeholder(text).map(str::to_string);
+            let replacement = placeholder
+                .as_deref()
+                .and_then(|ph| pending_by_placeholder.get_mut(ph))
+                .and_then(VecDeque::pop_front);
+            if let Some(actual) = replacement {
+                // Stage 3: inline actual paste payloads and drop their placeholder elements.
+                rebuilt.push_str(actual);
+            } else {
+                // Stage 4: keep non-paste elements, updating their byte ranges for the new text.
+                let new_start = rebuilt.len();
+                rebuilt.push_str(elem_text);
+                let new_end = rebuilt.len();
+                let placeholder = placeholder.or_else(|| Some(elem_text.to_string()));
+                rebuilt_elements.push(TextElement::new(
+                    ByteRange {
+                        start: new_start,
+                        end: new_end,
+                    },
+                    placeholder,
+                ));
+            }
+            cursor = end;
+        }
+
+        // Stage 5: append any trailing text that followed the last element.
+        if cursor < text.len() {
+            rebuilt.push_str(&text[cursor..]);
+        }
+
+        (rebuilt, rebuilt_elements)
+    }
+
     /// Prepare text for submission/queuing. Returns None if submission should be suppressed.
     fn prepare_submission_text(&mut self) -> Option<String> {
         let mut text = self.textarea.text().to_string();
+        let text_elements = self.textarea.text_elements();
         let input_starts_with_space = text.starts_with(' ');
         self.textarea.set_text_clearing_elements("");
 
         // Replace any placeholder pastes in the text before submission.
         if !self.pending_pastes.is_empty() {
-            for (placeholder, actual) in &self.pending_pastes {
-                if text.contains(placeholder) {
-                    text = text.replace(placeholder, actual);
-                }
-            }
+            let (expanded, _expanded_elements) =
+                Self::expand_pending_pastes(&text, text_elements, &self.pending_pastes);
+            text = expanded;
             self.pending_pastes.clear();
         }
 
@@ -1632,7 +1702,6 @@ impl ChatComposer {
             && let Some(cmd) = slash_commands::find_builtin_command(name)
         {
             self.pending_pastes.clear();
-            self.large_paste_counters.clear();
             self.textarea.set_text_clearing_elements("");
             self.active_popup = ActivePopup::None;
             return Some(InputResult::Command(cmd));
@@ -3410,6 +3479,37 @@ End of payload.";
         }
     }
 
+    /// Behavior: when multiple large pastes share the same base placeholder label (same char
+    /// count), submission expands each placeholder to its correct payload.
+    #[test]
+    fn submitting_duplicate_length_pastes_expands_both() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        let paste = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        composer.handle_paste(paste.clone());
+        composer.handle_paste(paste.clone());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match result {
+            InputResult::Queued(text) => assert_eq!(text, format!("{paste}{paste}")),
+            _ => panic!("expected Queued"),
+        }
+        assert!(composer.pending_pastes.is_empty());
+    }
+
     #[test]
     fn test_placeholder_deletion() {
         use crossterm::event::KeyCode;
@@ -3767,7 +3867,7 @@ End of payload.";
 
         assert_eq!(composer.current_text(), "Edited text".to_string());
         assert!(composer.pending_pastes.is_empty());
-        assert!(composer.large_paste_counters.is_empty());
+        assert!(!composer.large_paste_counters.is_empty());
         assert_eq!(composer.textarea.cursor(), composer.current_text().len());
     }
 

@@ -123,8 +123,9 @@ impl ChatComposerHistory {
         }
 
         // Textarea is not empty – only navigate when text matches the last recalled history entry
-        // and the cursor is at a line boundary. This keeps shell-like Up/Down recall working
-        // while still allowing normal multiline cursor movement from interior positions.
+        // and the cursor is at a buffer boundary (start or end). This keeps shell-like Up/Down
+        // recall working while still allowing normal multiline cursor movement from interior
+        // positions.
         if cursor != 0 && cursor != text.len() {
             return false;
         }
