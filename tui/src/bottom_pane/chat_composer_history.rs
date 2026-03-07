@@ -12,6 +12,7 @@ pub struct HistoryEntry {
     pub text: String,
     pub text_elements: Vec<TextElement>,
     pub local_image_paths: Vec<PathBuf>,
+    pub pending_pastes: Vec<(String, String)>,
 }
 
 impl HistoryEntry {
@@ -20,6 +21,7 @@ impl HistoryEntry {
             text: String::new(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
+            pending_pastes: Vec::new(),
         }
     }
 
@@ -29,6 +31,7 @@ impl HistoryEntry {
             text: decoded.text,
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
+            pending_pastes: Vec::new(),
         }
     }
 }
@@ -84,7 +87,10 @@ impl ChatComposerHistory {
     /// Record a message submitted by the user in the current session so it can
     /// be recalled later.
     pub fn record_local_submission(&mut self, entry: HistoryEntry) {
-        if entry.text.is_empty() && entry.local_image_paths.is_empty() {
+        if entry.text.is_empty()
+            && entry.local_image_paths.is_empty()
+            && entry.pending_pastes.is_empty()
+        {
             return;
         }
 
@@ -116,10 +122,10 @@ impl ChatComposerHistory {
             return true;
         }
 
-        // Textarea is not empty – only navigate when cursor is at start and
-        // text matches last recalled history entry so regular editing is not
-        // hijacked.
-        if cursor != 0 {
+        // Textarea is not empty – only navigate when text matches the last recalled history entry
+        // and the cursor is at a line boundary. This keeps shell-like Up/Down recall working
+        // while still allowing normal multiline cursor movement from interior positions.
+        if cursor != 0 && cursor != text.len() {
             return false;
         }
 
@@ -351,5 +357,20 @@ mod tests {
             Some(HistoryEntry::from_text("command3".to_string())),
             history.navigate_up(&tx)
         );
+    }
+
+    #[test]
+    fn non_empty_text_navigates_at_boundaries_only() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+
+        let mut history = ChatComposerHistory::new();
+        history.record_local_submission(HistoryEntry::from_text("hello".to_string()));
+        history.navigate_up(&tx);
+
+        assert!(history.should_handle_navigation("hello", 0));
+        assert!(history.should_handle_navigation("hello", "hello".len()));
+        assert!(!history.should_handle_navigation("hello", 1));
+        assert!(!history.should_handle_navigation("other", 0));
     }
 }

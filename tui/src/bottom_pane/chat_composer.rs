@@ -558,7 +558,7 @@ impl ChatComposer {
         let Some(entry) = self.history.on_entry_response(log_id, offset, entry) else {
             return false;
         };
-        self.set_text_content(entry.text);
+        self.apply_history_entry(entry);
         true
     }
 
@@ -572,15 +572,42 @@ impl ChatComposer {
         self.sync_popups();
     }
 
+    fn apply_history_entry(&mut self, entry: HistoryEntry) {
+        let HistoryEntry {
+            text,
+            text_elements,
+            pending_pastes,
+            ..
+        } = entry;
+
+        // Clear any existing content and placeholders first.
+        self.textarea.set_text_clearing_elements("");
+        self.pending_pastes.clear();
+
+        self.textarea.set_text_with_elements(&text, &text_elements);
+        self.pending_pastes = pending_pastes;
+        self.pending_pastes
+            .retain(|(placeholder, _)| self.textarea.text().contains(placeholder));
+        self.textarea.set_cursor(self.textarea.text().len());
+        self.sync_popups();
+    }
+
     pub fn clear_for_ctrl_c(&mut self) -> Option<String> {
         if self.is_empty() {
             return None;
         }
         let previous = self.textarea.text().to_string();
+        let text_elements = self.textarea.text_elements();
+        let mut pending_pastes = std::mem::take(&mut self.pending_pastes);
+        pending_pastes.retain(|(placeholder, _)| previous.contains(placeholder));
         self.set_text_content(String::new());
         self.history.reset_navigation();
-        self.history
-            .record_local_submission(HistoryEntry::from_text(previous.clone()));
+        self.history.record_local_submission(HistoryEntry {
+            text: previous.clone(),
+            text_elements,
+            local_image_paths: Vec::new(),
+            pending_pastes,
+        });
         Some(previous)
     }
 
@@ -1365,9 +1392,9 @@ impl ChatComposer {
                         _ => unreachable!(),
                     };
                     if let Some(entry) = replace_entry {
-                        self.set_text_content(entry.text);
+                        self.apply_history_entry(entry);
+                        return (InputResult::None, true);
                     }
-                    return (InputResult::None, true);
                 }
                 self.handle_input_basic(key_event)
             }
@@ -2167,6 +2194,53 @@ mod tests {
     }
 
     #[test]
+    fn clear_for_ctrl_c_preserves_large_paste_placeholder_and_payload() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        let large = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+        composer.handle_paste(large.clone());
+        let placeholder = format!("[Pasted Content {} chars]", large.chars().count());
+        assert_eq!(composer.textarea.text(), placeholder);
+        assert_eq!(
+            composer.pending_pastes,
+            vec![(placeholder.clone(), large.clone())]
+        );
+
+        composer.clear_for_ctrl_c();
+        assert!(composer.is_empty());
+
+        let (result, needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert!(needs_redraw);
+        assert_eq!(composer.textarea.text(), placeholder);
+        assert_eq!(
+            composer.textarea.element_payloads(),
+            vec![placeholder.clone()]
+        );
+        assert_eq!(composer.pending_pastes, vec![(placeholder, large.clone())]);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match result {
+            InputResult::Queued(text) => assert_eq!(text, large),
+            _ => panic!("expected Queued"),
+        }
+    }
+
+    #[test]
     fn super_down_does_not_navigate_history_when_browsing() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -2191,7 +2265,7 @@ mod tests {
         assert_eq!(result, InputResult::None);
         assert!(needs_redraw);
         assert_eq!(composer.current_text(), "draft text");
-        assert_eq!(composer.textarea.cursor(), 0);
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
 
         let (result, needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
