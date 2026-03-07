@@ -479,7 +479,7 @@ impl AppServerEventProcessor {
         self.flush_pending_success_ran_cell();
         self.flush_pending_compact_patch_changes();
         if let Some(cell) = self.stream.finalize() {
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+            self.emit_history_cell(cell);
         }
         self.flush_plan_stream();
         self.adaptive_chunking.reset();
@@ -495,6 +495,11 @@ impl AppServerEventProcessor {
         )));
     }
 
+    fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
+        self.flush_pending_compact_patch_changes();
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+    }
+
     fn on_commit_tick(&mut self) {
         self.run_commit_tick_with_scope(CommitTickScope::AnyMode);
     }
@@ -508,7 +513,7 @@ impl AppServerEventProcessor {
             Instant::now(),
         );
         for cell in outcome.cells {
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+            self.emit_history_cell(cell);
         }
 
         if outcome.has_controller && outcome.all_idle {
@@ -528,12 +533,16 @@ impl AppServerEventProcessor {
     }
 
     fn maybe_emit_final_message_separator(&mut self) {
+        // In `Verbosity::Minimal` successful patch applications are buffered and rendered as a
+        // coalesced compact summary. Flush here so work activity is committed to the transcript
+        // before deciding whether to insert a final-message separator.
+        self.flush_pending_compact_patch_changes();
         if self.needs_final_message_separator && self.had_work_activity {
             let elapsed_seconds = self
                 .current_elapsed_secs
                 .map(|current| self.worked_elapsed_from(current));
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                history_cell::FinalMessageSeparator::new(elapsed_seconds),
+            self.emit_history_cell(Box::new(history_cell::FinalMessageSeparator::new(
+                elapsed_seconds,
             )));
             self.needs_final_message_separator = false;
             self.had_work_activity = false;
@@ -544,7 +553,6 @@ impl AppServerEventProcessor {
     }
 
     fn handle_codex_event(&mut self, event: Event) {
-        self.flush_pending_compact_patch_changes_if_needed(&event.msg);
         match event.msg {
             EventMsg::SessionConfigured(cfg) => {
                 self.thread_id = Some(cfg.session_id);
@@ -561,17 +569,17 @@ impl AppServerEventProcessor {
                     self.emit_user_prompt(message);
                 }
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                self.emit_history_cell(Box::new(
                     crate::history_cell_potter::new_potter_project_hint(user_prompt_file),
-                )));
+                ));
             }
             EventMsg::PotterRoundStarted { current, total } => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                self.emit_history_cell(Box::new(
                     crate::history_cell_potter::new_potter_round_started(current, total),
-                )));
+                ));
             }
             EventMsg::PotterProjectSucceeded {
                 rounds,
@@ -594,7 +602,7 @@ impl AppServerEventProcessor {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 if let Some(done) = self.pending_potter_project_succeeded.take() {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                    self.emit_history_cell(Box::new(
                         crate::history_cell_potter::new_potter_project_succeeded(
                             done.rounds,
                             done.duration,
@@ -602,8 +610,9 @@ impl AppServerEventProcessor {
                             done.git_commit_start,
                             done.git_commit_end,
                         ),
-                    )));
+                    ));
                 }
+                self.flush_pending_compact_patch_changes();
             }
             EventMsg::TokenCount(ev) => {
                 if let Some(info) = ev.info {
@@ -672,12 +681,12 @@ impl AppServerEventProcessor {
                 self.flush_pending_success_ran_cell();
                 // Flush any remaining agent markdown buffer.
                 if let Some(cell) = self.stream.finalize() {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+                    self.emit_history_cell(cell);
                 }
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 if let Some(done) = self.pending_potter_project_succeeded.take() {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                    self.emit_history_cell(Box::new(
                         crate::history_cell_potter::new_potter_project_succeeded(
                             done.rounds,
                             done.duration,
@@ -685,33 +694,31 @@ impl AppServerEventProcessor {
                             done.git_commit_start,
                             done.git_commit_end,
                         ),
-                    )));
+                    ));
                 }
+                self.flush_pending_compact_patch_changes();
             }
             EventMsg::TurnAborted(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 if let Some(cell) = self.stream.finalize() {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+                    self.emit_history_cell(cell);
                 }
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
 
                 if ev.reason == codex_protocol::protocol::TurnAbortReason::Interrupted {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_error_event(String::from(
-                            "Conversation interrupted - tell the model what to do differently.",
-                        )),
-                    )));
+                    self.emit_history_cell(Box::new(history_cell::new_error_event(String::from(
+                        "Conversation interrupted - tell the model what to do differently.",
+                    ))));
                 }
+                self.flush_pending_compact_patch_changes();
             }
             EventMsg::Warning(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    history_cell::new_warning_event(ev.message),
-                )));
+                self.emit_history_cell(Box::new(history_cell::new_warning_event(ev.message)));
             }
             EventMsg::ContextCompacted(_) => {
                 self.flush_pending_exploring_cell();
@@ -722,33 +729,29 @@ impl AppServerEventProcessor {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    history_cell::new_deprecation_notice(ev.summary, ev.details),
+                self.emit_history_cell(Box::new(history_cell::new_deprecation_notice(
+                    ev.summary, ev.details,
                 )));
             }
             EventMsg::PlanUpdate(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    history_cell::new_plan_update(ev),
-                )));
+                self.emit_history_cell(Box::new(history_cell::new_plan_update(ev)));
             }
             EventMsg::WebSearchEnd(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    history_cell::new_web_search_call(ev.query),
-                )));
+                self.emit_history_cell(Box::new(history_cell::new_web_search_call(ev.query)));
                 self.had_work_activity = true;
             }
             EventMsg::ViewImageToolCall(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    history_cell::new_view_image_tool_call(ev.path, &self.cwd),
+                self.emit_history_cell(Box::new(history_cell::new_view_image_tool_call(
+                    ev.path, &self.cwd,
                 )));
             }
             EventMsg::ExecCommandEnd(ev) => {
@@ -756,7 +759,7 @@ impl AppServerEventProcessor {
                 // before rendering the tool result, so transcript ordering matches the semantic
                 // "agent explains -> tool runs -> agent continues" flow.
                 if let Some(cell) = self.stream.finalize() {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+                    self.emit_history_cell(cell);
                 }
                 self.flush_plan_stream();
 
@@ -803,8 +806,7 @@ impl AppServerEventProcessor {
                     self.flush_pending_success_ran_cell();
                     self.needs_final_message_separator = true;
                     if self.verbosity != Verbosity::Minimal {
-                        self.app_event_tx
-                            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                        self.emit_history_cell(Box::new(cell));
                     }
                 }
                 self.had_work_activity = true;
@@ -817,12 +819,14 @@ impl AppServerEventProcessor {
                 } else {
                     self.needs_final_message_separator = true;
                     if ev.success {
-                        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                            history_cell::new_patch_event(ev.changes, &self.cwd, self.verbosity),
+                        self.emit_history_cell(Box::new(history_cell::new_patch_event(
+                            ev.changes,
+                            &self.cwd,
+                            self.verbosity,
                         )));
                     } else {
-                        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                            history_cell::new_patch_apply_failure(ev.stderr),
+                        self.emit_history_cell(Box::new(history_cell::new_patch_apply_failure(
+                            ev.stderr,
                         )));
                     }
                 }
@@ -856,16 +860,14 @@ impl AppServerEventProcessor {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 if let Some(cell) = self.stream.finalize() {
-                    self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+                    self.emit_history_cell(cell);
                 }
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 self.saw_agent_delta = false;
                 self.saw_plan_delta = false;
                 self.needs_final_message_separator = true;
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    history_cell::new_error_event(ev.message),
-                )));
+                self.emit_history_cell(Box::new(history_cell::new_error_event(ev.message)));
             }
             _ => {}
         }
@@ -876,14 +878,13 @@ impl AppServerEventProcessor {
         // collab transcript cell, so ordering matches the semantic "agent explains -> collab
         // action -> agent continues" flow.
         if let Some(cell) = self.stream.finalize() {
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+            self.emit_history_cell(cell);
         }
         self.flush_plan_stream();
         self.flush_pending_exploring_cell();
         self.flush_pending_success_ran_cell();
         self.needs_final_message_separator = true;
-        self.app_event_tx
-            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        self.emit_history_cell(Box::new(cell));
         self.had_work_activity = true;
     }
 
@@ -895,32 +896,7 @@ impl AppServerEventProcessor {
         if self.verbosity == Verbosity::Minimal {
             return;
         }
-        self.app_event_tx
-            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
-    }
-
-    fn flush_pending_compact_patch_changes_if_needed(&mut self, msg: &EventMsg) {
-        if self.pending_compact_patch_changes.is_empty() {
-            return;
-        }
-
-        if self.verbosity == Verbosity::Minimal {
-            // In `Verbosity::Minimal` we render patch applications as compact `Edited ...` items
-            // and coalesce adjacent patch applications. Many event types are suppressed entirely
-            // in this verbosity level (e.g. token count updates and `Ran` tool calls), so they
-            // should not break coalescing.
-            match msg {
-                EventMsg::PatchApplyBegin(_) => return,
-                EventMsg::PatchApplyEnd(ev) if ev.success => return,
-                EventMsg::ExecCommandBegin(_)
-                | EventMsg::ExecCommandEnd(_)
-                | EventMsg::SessionConfigured(_)
-                | EventMsg::TokenCount(_) => return,
-                _ => {}
-            }
-        }
-
-        self.flush_pending_compact_patch_changes();
+        self.emit_history_cell(Box::new(cell));
     }
 
     fn flush_pending_compact_patch_changes(&mut self) {
@@ -943,8 +919,7 @@ impl AppServerEventProcessor {
         if self.verbosity == Verbosity::Minimal {
             return;
         }
-        self.app_event_tx
-            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        self.emit_history_cell(Box::new(cell));
     }
 
     fn flush_plan_stream(&mut self) {
@@ -952,7 +927,7 @@ impl AppServerEventProcessor {
             return;
         };
         if let Some(cell) = controller.finalize() {
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+            self.emit_history_cell(cell);
         }
     }
 
@@ -968,7 +943,7 @@ impl AppServerEventProcessor {
             && !call.is_unified_exec_interaction()
     }
 
-    fn emit_agent_message(&self, message: &str, dim: bool) {
+    fn emit_agent_message(&mut self, message: &str, dim: bool) {
         let mut lines: Vec<Line<'static>> = Vec::new();
         crate::markdown::append_markdown(message, None, &mut lines);
         if lines.is_empty() {
@@ -982,9 +957,7 @@ impl AppServerEventProcessor {
                 }
             }
         }
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::AgentMessageCell::new(lines, true),
-        )));
+        self.emit_history_cell(Box::new(history_cell::AgentMessageCell::new(lines, true)));
     }
 }
 
