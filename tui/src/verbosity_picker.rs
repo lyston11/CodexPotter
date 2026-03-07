@@ -37,9 +37,6 @@ const WIDE_PREVIEW_MIN_WIDTH: u16 = 40;
 /// Left inset used for wide preview content.
 const WIDE_PREVIEW_LEFT_INSET: u16 = 2;
 
-/// Minimum frame padding used for vertically centered wide preview.
-const PREVIEW_FRAME_PADDING: u16 = 1;
-
 /// Narrow stacked preview uses a fixed compact layout.
 const NARROW_PREVIEW_HEIGHT: u16 = 4;
 
@@ -55,16 +52,6 @@ struct VerbosityPreviewWideRenderable {
 
 struct VerbosityPreviewNarrowRenderable {
     selected: Arc<Mutex<Verbosity>>,
-}
-
-fn centered_offset(available: u16, content: u16, min_frame: u16) -> u16 {
-    let free = available.saturating_sub(content);
-    let frame = if free >= min_frame.saturating_mul(2) {
-        min_frame
-    } else {
-        0
-    };
-    frame + free.saturating_sub(frame.saturating_mul(2)) / 2
 }
 
 fn dim_lines(lines: &mut [Line<'static>]) {
@@ -252,7 +239,6 @@ fn render_preview(
     verbosity: Verbosity,
     density: PreviewDensity,
     left_inset: u16,
-    center_vertically: bool,
 ) {
     if area.is_empty() {
         return;
@@ -266,23 +252,9 @@ fn render_preview(
         area.height,
     );
 
-    let mut lines = build_preview_lines(verbosity, density, render_area.width);
+    let lines = build_preview_lines(verbosity, density, render_area.width);
     if lines.is_empty() {
         return;
-    }
-
-    let content_height = (lines.len() as u16).min(area.height);
-    let top_pad = if center_vertically {
-        centered_offset(area.height, content_height, PREVIEW_FRAME_PADDING)
-    } else {
-        0
-    };
-
-    if top_pad > 0 {
-        let mut padded = Vec::with_capacity(lines.len() + top_pad as usize);
-        padded.extend(std::iter::repeat_n(Line::from(""), top_pad as usize));
-        padded.append(&mut lines);
-        lines = padded;
     }
 
     Paragraph::new(ratatui::text::Text::from(lines)).render(render_area, buf);
@@ -305,7 +277,6 @@ impl Renderable for VerbosityPreviewWideRenderable {
             verbosity,
             PreviewDensity::Full,
             WIDE_PREVIEW_LEFT_INSET,
-            true,
         );
     }
 }
@@ -320,7 +291,7 @@ impl Renderable for VerbosityPreviewNarrowRenderable {
             Ok(guard) => *guard,
             Err(poisoned) => *poisoned.into_inner(),
         };
-        render_preview(area, buf, verbosity, PreviewDensity::Compact, 0, false);
+        render_preview(area, buf, verbosity, PreviewDensity::Compact, 0);
     }
 }
 

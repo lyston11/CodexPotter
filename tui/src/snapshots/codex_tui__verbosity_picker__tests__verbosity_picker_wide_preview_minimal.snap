@@ -2,10 +2,6 @@
 source: tui/src/verbosity_picker.rs
 expression: lines
 ---
-                                                                        
-                                                                        
-                                                                        
-                                                                        
   • I'll first align the rollout and rendering pipeline, then           
     implement /verbosity.                                               
                                                                         
