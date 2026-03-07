@@ -1096,6 +1096,17 @@ impl RenderAppState {
             }
         }
 
+        if self.processor.verbosity == Verbosity::Minimal
+            && !self.processor.pending_compact_patch_changes.is_empty()
+        {
+            transient_lines.push(Line::from(""));
+            let cell = history_cell::new_coalesced_compact_patch_event(
+                self.processor.pending_compact_patch_changes.clone(),
+                &self.processor.cwd,
+            );
+            transient_lines.extend(cell.display_lines(width));
+        }
+
         if let Some(cell) = self.potter_stream_recovery_retry_cell.as_ref() {
             transient_lines.push(Line::from(""));
             transient_lines.extend(cell.display_lines(width));
@@ -1794,7 +1805,10 @@ impl RenderAppState {
             &event.msg,
             EventMsg::TokenCount(_) | EventMsg::TurnStarted(_)
         );
-        let should_redraw_after_event = matches!(&event.msg, EventMsg::ExecCommandEnd(_));
+        let should_redraw_after_event = matches!(
+            &event.msg,
+            EventMsg::ExecCommandEnd(_) | EventMsg::PatchApplyEnd(_)
+        );
 
         match &event.msg {
             EventMsg::PotterRoundFinished { outcome } if should_exit_on_round_end => {
@@ -4935,6 +4949,95 @@ mod tests {
             "expected a final message separator"
         );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
+    }
+
+    #[test]
+    fn round_renderer_minimal_renders_pending_patch_summary_in_transient_lines() {
+        let width: u16 = 80;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::Minimal);
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        let mut changes_a: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_a.insert(
+            PathBuf::from("a.txt"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: diffy::create_patch("old\n", "new\n").to_string(),
+                move_path: None,
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-a-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-a".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_a,
+            }),
+        });
+
+        let mut changes_b: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_b.insert(
+            PathBuf::from("b.txt"),
+            codex_protocol::protocol::FileChange::Add {
+                content: "new\n".to_string(),
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-b-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-b".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_b,
+            }),
+        });
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("• Changed 2 files (+2 -1)"),
+            "missing compact patch summary: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("└ Edited a.txt (+1 -1)"),
+            "missing file entry: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("Added b.txt (+1 -0)"),
+            "missing file entry: {transient_blob:?}"
+        );
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert!(
+            cells.is_empty(),
+            "expected pending patch summary to be transient-only; got: {cells:?}"
+        );
     }
 
     #[test]
