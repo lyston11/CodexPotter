@@ -267,6 +267,7 @@ async fn run_app_server_backend_inner(
                     &mut next_id,
                     ThreadResumeSettings {
                         thread_id,
+                        model: upstream_cli_args.model.clone(),
                         developer_instructions,
                         sandbox_mode: launch.thread_sandbox,
                         cwd: thread_cwd,
@@ -284,6 +285,7 @@ async fn run_app_server_backend_inner(
                     &mut lines,
                     &mut next_id,
                     ThreadStartSettings {
+                        model: upstream_cli_args.model.clone(),
                         developer_instructions,
                         sandbox_mode: launch.thread_sandbox,
                         cwd: thread_cwd,
@@ -531,6 +533,7 @@ async fn initialize_app_server(
 }
 
 struct ThreadStartSettings {
+    model: Option<String>,
     developer_instructions: Option<String>,
     sandbox_mode: Option<crate::app_server::upstream_protocol::SandboxMode>,
     cwd: Option<PathBuf>,
@@ -538,9 +541,42 @@ struct ThreadStartSettings {
 
 struct ThreadResumeSettings {
     thread_id: ThreadId,
+    model: Option<String>,
     developer_instructions: Option<String>,
     sandbox_mode: Option<crate::app_server::upstream_protocol::SandboxMode>,
     cwd: Option<PathBuf>,
+}
+
+impl ThreadStartSettings {
+    fn into_params(self) -> ThreadStartParams {
+        ThreadStartParams {
+            model: self.model,
+            model_provider: None,
+            cwd: self.cwd.map(|cwd| cwd.to_string_lossy().to_string()),
+            approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
+            sandbox: self.sandbox_mode,
+            config: None,
+            base_instructions: None,
+            developer_instructions: self.developer_instructions,
+            experimental_raw_events: false,
+        }
+    }
+}
+
+impl ThreadResumeSettings {
+    fn into_params(self) -> ThreadResumeParams {
+        ThreadResumeParams {
+            thread_id: self.thread_id.to_string(),
+            model: self.model,
+            model_provider: None,
+            cwd: self.cwd.map(|cwd| cwd.to_string_lossy().to_string()),
+            approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
+            sandbox: self.sandbox_mode,
+            config: None,
+            base_instructions: None,
+            developer_instructions: self.developer_instructions,
+        }
+    }
 }
 
 async fn thread_start(
@@ -551,25 +587,10 @@ async fn thread_start(
     recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<ThreadStartResponse> {
-    let ThreadStartSettings {
-        developer_instructions,
-        sandbox_mode,
-        cwd,
-    } = settings;
     let request_id = next_request_id(next_id);
     let request = ClientRequest::ThreadStart {
         request_id: request_id.clone(),
-        params: ThreadStartParams {
-            model: None,
-            model_provider: None,
-            cwd: cwd.map(|cwd| cwd.to_string_lossy().to_string()),
-            approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
-            sandbox: sandbox_mode,
-            config: None,
-            base_instructions: None,
-            developer_instructions,
-            experimental_raw_events: false,
-        },
+        params: settings.into_params(),
     };
     send_message(stdin, &request).await?;
     let response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
@@ -584,27 +605,10 @@ async fn thread_resume(
     recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<ThreadResumeResponse> {
-    let ThreadResumeSettings {
-        thread_id,
-        developer_instructions,
-        sandbox_mode,
-        cwd,
-    } = settings;
-
     let request_id = next_request_id(next_id);
     let request = ClientRequest::ThreadResume {
         request_id: request_id.clone(),
-        params: ThreadResumeParams {
-            thread_id: thread_id.to_string(),
-            model: None,
-            model_provider: None,
-            cwd: cwd.map(|cwd| cwd.to_string_lossy().to_string()),
-            approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
-            sandbox: sandbox_mode,
-            config: None,
-            base_instructions: None,
-            developer_instructions,
-        },
+        params: settings.into_params(),
     };
     send_message(stdin, &request).await?;
     let response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
@@ -1598,6 +1602,36 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::Duration;
     use tokio::time::timeout;
+
+    #[test]
+    fn thread_start_settings_into_params_preserves_model_override() {
+        let params = ThreadStartSettings {
+            model: Some("o3".to_string()),
+            developer_instructions: None,
+            sandbox_mode: None,
+            cwd: None,
+        }
+        .into_params();
+
+        assert_eq!(params.model.as_deref(), Some("o3"));
+    }
+
+    #[test]
+    fn thread_resume_settings_into_params_preserves_model_override() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("thread id");
+        let params = ThreadResumeSettings {
+            thread_id,
+            model: Some("o3".to_string()),
+            developer_instructions: None,
+            sandbox_mode: None,
+            cwd: None,
+        }
+        .into_params();
+
+        assert_eq!(params.thread_id, thread_id.to_string());
+        assert_eq!(params.model.as_deref(), Some("o3"));
+    }
 
     #[test]
     fn active_turn_id_is_not_cleared_by_unrelated_turn_complete() {

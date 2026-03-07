@@ -2,9 +2,12 @@
 //!
 //! CodexPotter spawns the upstream `codex app-server` process as a subprocess. Unlike the normal
 //! interactive `codex` CLI, the `codex app-server` entrypoint only consumes a subset of the
-//! top-level CLI flags. In particular, flags like `--model`, `--profile`, and `--search` are not
-//! wired through to the app-server by upstream Codex today, so CodexPotter must translate them
-//! into `--config key=value` overrides for them to take effect.
+//! top-level CLI flags. In particular, flags like `--profile` and `--search` are not wired
+//! through to the app-server by upstream Codex today, so CodexPotter must translate them into
+//! `--config key=value` overrides for them to take effect.
+//!
+//! `--model` is also ignored at the app-server CLI layer upstream, but CodexPotter can still
+//! honor it by setting the typesafe `model` field on `thread/start` and `thread/resume` requests.
 
 use clap::ArgAction;
 use clap::Args;
@@ -13,7 +16,10 @@ use clap::Args;
 ///
 /// Note that [`UpstreamCodexCliArgs::to_upstream_codex_args`] intentionally **does not** forward
 /// `--model`, `--profile`, and `--search` directly, because upstream Codex ignores these flags for
-/// `codex app-server`. Instead, they are translated into `--config` overrides.
+/// `codex app-server`.
+///
+/// - `--profile` and `--search` are translated into `--config` overrides.
+/// - `--model` is applied via upstream JSON-RPC `thread/*` params (`model` field).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
 pub struct UpstreamCodexCliArgs {
     /// Override a configuration value that would otherwise be loaded
@@ -113,19 +119,14 @@ impl UpstreamCodexCliArgs {
 
     /// Render CLI args for launching the upstream `codex app-server` backend.
     ///
-    /// This method converts `--model`, `--profile`, and `--search` to `--config` overrides because
-    /// upstream Codex does not wire those flags through to the app-server entrypoint.
+    /// This method converts `--profile` and `--search` to `--config` overrides because upstream
+    /// Codex does not wire those flags through to the app-server entrypoint.
     pub fn to_upstream_codex_args(&self) -> Vec<String> {
         let mut out = Vec::new();
 
         for override_kv in &self.config_overrides {
             out.push("--config".to_string());
             out.push(override_kv.clone());
-        }
-
-        if let Some(model) = &self.model {
-            out.push("--config".to_string());
-            out.push(format!("model={}", toml_string_literal(model)));
         }
 
         if let Some(profile) = &self.profile {
@@ -183,7 +184,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn upstream_args_translate_model_profile_and_search_to_config_overrides() {
+    fn upstream_args_translate_profile_and_search_to_config_overrides() {
         let args = UpstreamCodexCliArgs {
             config_overrides: vec!["foo=1".to_string()],
             enable_features: vec!["unified_exec".to_string()],
@@ -198,8 +199,6 @@ mod tests {
             vec![
                 "--config",
                 "foo=1",
-                "--config",
-                "model=\"o3\"",
                 "--config",
                 "profile=\"my-profile\"",
                 "--config",
@@ -238,13 +237,13 @@ mod tests {
     #[test]
     fn toml_string_literal_forces_string_values() {
         let args = UpstreamCodexCliArgs {
-            model: Some("true".to_string()),
+            profile: Some("true".to_string()),
             ..Default::default()
         };
 
         assert_eq!(
             args.to_upstream_codex_args(),
-            vec!["--config", "model=\"true\""]
+            vec!["--config", "profile=\"true\""]
                 .into_iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
