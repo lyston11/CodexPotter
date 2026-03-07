@@ -72,6 +72,7 @@ pub struct PotterAppServerConfig {
     pub backend_launch: crate::app_server::AppServerLaunchConfig,
     pub codex_compat_home: Option<PathBuf>,
     pub rounds: NonZeroUsize,
+    pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
 }
 
 #[derive(Debug)]
@@ -1252,6 +1253,7 @@ async fn run_fresh_project(
         developer_prompt,
         backend_launch: config.backend_launch,
         backend_event_mode,
+        upstream_cli_args: config.upstream_cli_args,
         codex_compat_home: config.codex_compat_home,
         thread_cwd: Some(plan.workdir.clone()),
         turn_prompt,
@@ -1396,6 +1398,7 @@ async fn run_resumed_project(
         developer_prompt,
         backend_launch: config.backend_launch,
         backend_event_mode,
+        upstream_cli_args: config.upstream_cli_args,
         codex_compat_home: config.codex_compat_home,
         thread_cwd: Some(resumed.resolved.workdir.clone()),
         turn_prompt,
@@ -1964,6 +1967,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
         let mut state = ServerState {
             config,
@@ -2018,6 +2022,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         let workdir = temp.path().to_path_buf();
@@ -2107,6 +2112,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         let handle = tokio::spawn(async {
@@ -2179,6 +2185,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         struct DropNotify(Option<tokio::sync::oneshot::Sender<()>>);
@@ -2266,6 +2273,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         let handle = tokio::spawn(async {
@@ -2342,6 +2350,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         let handle = tokio::spawn(async {});
@@ -2384,6 +2393,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         let plan = FreshProjectPlan {
@@ -2514,6 +2524,7 @@ mod tests {
             },
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
         };
 
         let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md");

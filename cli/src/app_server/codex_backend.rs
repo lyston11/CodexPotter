@@ -136,6 +136,7 @@ pub struct AppServerBackendConfig {
     pub codex_bin: String,
     pub developer_instructions: Option<String>,
     pub launch: AppServerLaunchConfig,
+    pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     pub codex_home: Option<PathBuf>,
     pub thread_cwd: Option<PathBuf>,
     pub resume_thread_id: Option<ThreadId>,
@@ -178,13 +179,19 @@ async fn run_app_server_backend_inner(
         codex_bin,
         developer_instructions,
         launch,
+        upstream_cli_args,
         codex_home,
         thread_cwd,
         resume_thread_id,
         event_mode,
     } = config;
-    let (mut child, stdin, stdout, stderr) =
-        spawn_app_server(&codex_bin, launch, codex_home.as_deref()).await?;
+    let (mut child, stdin, stdout, stderr) = spawn_app_server(
+        &codex_bin,
+        launch,
+        &upstream_cli_args,
+        codex_home.as_deref(),
+    )
+    .await?;
     let stderr_capture = Arc::new(Mutex::new(Vec::<u8>::new()));
     let stderr_truncated = Arc::new(AtomicBool::new(false));
     let stderr_task = {
@@ -453,6 +460,7 @@ async fn run_app_server_backend_inner(
 async fn spawn_app_server(
     codex_bin: &str,
     launch: AppServerLaunchConfig,
+    upstream_cli_args: &crate::app_server::UpstreamCodexCliArgs,
     codex_home: Option<&Path>,
 ) -> anyhow::Result<(Child, ChildStdin, ChildStdout, ChildStderr)> {
     let mut cmd = Command::new(codex_bin);
@@ -460,6 +468,10 @@ async fn spawn_app_server(
 
     if let Some(codex_home) = codex_home {
         cmd.env("CODEX_HOME", codex_home);
+    }
+
+    for arg in upstream_cli_args.to_upstream_codex_args() {
+        cmd.arg(arg);
     }
 
     if launch.bypass_approvals_and_sandbox {
@@ -1814,6 +1826,7 @@ done
                         thread_sandbox: None,
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -1965,6 +1978,7 @@ done
                         thread_sandbox: None,
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -2142,6 +2156,7 @@ done
                         thread_sandbox: None,
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -2294,6 +2309,7 @@ done
                         thread_sandbox: None,
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -2443,6 +2459,7 @@ touch "$MARKER"
                         ),
                         bypass_approvals_and_sandbox: true,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -2544,6 +2561,7 @@ touch "$MARKER"
                         ),
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -2630,6 +2648,7 @@ touch "$MARKER"
                         thread_sandbox: None,
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: None,
                     thread_cwd: None,
                     resume_thread_id: None,
@@ -2725,6 +2744,7 @@ touch "$MARKER"
                         thread_sandbox: None,
                         bypass_approvals_and_sandbox: false,
                     },
+                    upstream_cli_args: Default::default(),
                     codex_home: Some(codex_home),
                     thread_cwd: None,
                     resume_thread_id: None,

@@ -7,12 +7,14 @@
 pub mod codex_backend;
 pub mod potter;
 pub mod stream_recovery;
+pub mod upstream_cli_args;
 pub mod upstream_protocol;
 
 pub use codex_backend::AppServerBackendConfig;
 pub use codex_backend::AppServerEventMode;
 pub use codex_backend::AppServerLaunchConfig;
 pub use codex_backend::run_app_server_backend;
+pub use upstream_cli_args::UpstreamCodexCliArgs;
 
 fn sandbox_mode_cli_arg(mode: upstream_protocol::SandboxMode) -> &'static str {
     match mode {

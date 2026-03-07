@@ -34,6 +34,7 @@ pub async fn run_exec_json(
     rounds: NonZeroUsize,
     codex_bin: String,
     backend_launch: crate::app_server::AppServerLaunchConfig,
+    upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
 ) -> i32 {
     let prompt = match prompt {
         Some(prompt) => prompt,
@@ -64,6 +65,7 @@ pub async fn run_exec_json(
         codex_bin,
         rounds,
         backend_launch,
+        upstream_cli_args,
     )
     .await
     {

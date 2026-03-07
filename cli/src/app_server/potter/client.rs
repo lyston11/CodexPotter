@@ -57,6 +57,7 @@ impl PotterAppServerClient {
         codex_bin: String,
         rounds: NonZeroUsize,
         launch: crate::app_server::AppServerLaunchConfig,
+        upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     ) -> anyhow::Result<Self> {
         let exe = std::env::current_exe().context("resolve codex-potter executable path")?;
 
@@ -69,6 +70,10 @@ impl PotterAppServerClient {
 
         cmd.arg("--rounds");
         cmd.arg(rounds.get().to_string());
+
+        for arg in upstream_cli_args.to_potter_app_server_args() {
+            cmd.arg(arg);
+        }
 
         if launch.bypass_approvals_and_sandbox {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");

@@ -93,6 +93,9 @@ struct Cli {
     )]
     dangerously_bypass_approvals_and_sandbox: bool,
 
+    #[clap(flatten)]
+    upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+
     #[command(subcommand)]
     command: Option<CliCommand>,
 }
@@ -165,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
         cli.sandbox,
         cli.dangerously_bypass_approvals_and_sandbox,
     );
+    let upstream_cli_args = cli.upstream_cli_args.clone();
 
     if let Some(CliCommand::Exec { prompt, json }) = cli.command.as_ref() {
         if !json {
@@ -182,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
             cli.rounds,
             codex_bin,
             backend_launch,
+            upstream_cli_args,
         )
         .await;
         std::process::exit(exit_code);
@@ -209,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
                 backend_launch,
                 codex_compat_home,
                 rounds: cli.rounds,
+                upstream_cli_args,
             },
         )
         .await?;
@@ -271,6 +277,7 @@ async fn main() -> anyhow::Result<()> {
         codex_bin.clone(),
         cli.rounds,
         backend_launch,
+        cli.upstream_cli_args.clone(),
     )
     .await
     .context("spawn potter app-server")?;
@@ -636,6 +643,17 @@ mod tests {
             "3",
             "--codex-bin",
             "custom-codex",
+            "--model",
+            "o3",
+            "--profile",
+            "my-profile",
+            "--search",
+            "--config",
+            "model_reasoning_effort=\"high\"",
+            "--enable",
+            "unified_exec",
+            "--disable",
+            "web_search_request",
         ])
         .expect("parse args");
 
@@ -643,6 +661,21 @@ mod tests {
         assert_eq!(cli.sandbox, CliSandbox::ReadOnly);
         assert_eq!(cli.rounds.get(), 3);
         assert_eq!(cli.codex_bin, "custom-codex");
+        assert_eq!(cli.upstream_cli_args.model.as_deref(), Some("o3"));
+        assert_eq!(cli.upstream_cli_args.profile.as_deref(), Some("my-profile"));
+        assert!(cli.upstream_cli_args.web_search);
+        assert_eq!(
+            cli.upstream_cli_args.config_overrides,
+            vec!["model_reasoning_effort=\"high\"".to_string()]
+        );
+        assert_eq!(
+            cli.upstream_cli_args.enable_features,
+            vec!["unified_exec".to_string()]
+        );
+        assert_eq!(
+            cli.upstream_cli_args.disable_features,
+            vec!["web_search_request".to_string()]
+        );
 
         let Some(CliCommand::Resume { project_path }) = cli.command else {
             panic!("expected resume command, got: {:?}", cli.command);
