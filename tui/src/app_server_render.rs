@@ -435,6 +435,7 @@ struct AppServerEventProcessor {
     /// Divergence (codex-potter): coalesce consecutive successful patch applications into one
     /// compact `Edited ...` summary when `Verbosity::Minimal`.
     pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
+    pending_compact_patch_preview: Option<history_cell::PlainHistoryCell>,
     pending_potter_project_succeeded: Option<PendingPotterProjectSucceeded>,
 }
 
@@ -470,6 +471,7 @@ impl AppServerEventProcessor {
             pending_exploring_cell: None,
             pending_success_ran_cell: None,
             pending_compact_patch_changes: Vec::new(),
+            pending_compact_patch_preview: None,
             pending_potter_project_succeeded: None,
         }
     }
@@ -560,6 +562,13 @@ impl AppServerEventProcessor {
             EventMsg::SessionConfigured(cfg) => {
                 self.thread_id = Some(cfg.session_id);
                 self.cwd = cfg.cwd;
+                if !self.pending_compact_patch_changes.is_empty() {
+                    self.pending_compact_patch_preview =
+                        Some(history_cell::new_coalesced_compact_patch_event(
+                            &self.pending_compact_patch_changes,
+                            &self.cwd,
+                        ));
+                }
             }
             EventMsg::PotterProjectStarted {
                 user_message,
@@ -819,6 +828,11 @@ impl AppServerEventProcessor {
                 self.flush_pending_success_ran_cell();
                 if ev.success && self.verbosity == Verbosity::Minimal {
                     self.pending_compact_patch_changes.push(ev.changes);
+                    self.pending_compact_patch_preview =
+                        Some(history_cell::new_coalesced_compact_patch_event(
+                            &self.pending_compact_patch_changes,
+                            &self.cwd,
+                        ));
                 } else {
                     self.needs_final_message_separator = true;
                     if ev.success {
@@ -906,13 +920,20 @@ impl AppServerEventProcessor {
         if self.pending_compact_patch_changes.is_empty() {
             return;
         }
-
-        let change_sets = std::mem::take(&mut self.pending_compact_patch_changes);
         self.needs_final_message_separator = true;
+        let cell = self
+            .pending_compact_patch_preview
+            .take()
+            .unwrap_or_else(|| {
+                history_cell::new_coalesced_compact_patch_event(
+                    &self.pending_compact_patch_changes,
+                    &self.cwd,
+                )
+            });
+        self.pending_compact_patch_changes.clear();
         // Emit directly to avoid recursively flushing through `emit_history_cell`.
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::new_coalesced_compact_patch_event(change_sets, &self.cwd),
-        )));
+        self.app_event_tx
+            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
     }
 
     fn flush_pending_success_ran_cell(&mut self) {
@@ -1097,13 +1118,9 @@ impl RenderAppState {
         }
 
         if self.processor.verbosity == Verbosity::Minimal
-            && !self.processor.pending_compact_patch_changes.is_empty()
+            && let Some(cell) = self.processor.pending_compact_patch_preview.as_ref()
         {
             transient_lines.push(Line::from(""));
-            let cell = history_cell::new_coalesced_compact_patch_event(
-                self.processor.pending_compact_patch_changes.clone(),
-                &self.processor.cwd,
-            );
             transient_lines.extend(cell.display_lines(width));
         }
 

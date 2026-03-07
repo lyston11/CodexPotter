@@ -538,7 +538,7 @@ pub fn new_patch_event(
 /// This is used by the `Verbosity::Minimal` renderer to avoid repeating many one-line `Edited ...`
 /// items when an agent applies several small patches consecutively.
 pub fn new_coalesced_compact_patch_event(
-    change_sets: Vec<HashMap<PathBuf, FileChange>>,
+    change_sets: &[HashMap<PathBuf, FileChange>],
     cwd: &Path,
 ) -> PlainHistoryCell {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -642,7 +642,9 @@ pub fn new_coalesced_compact_patch_event(
                 _ => None,
             };
 
-            let entry = merged.entry(path).or_insert_with(|| Summary::new(verb));
+            let entry = merged
+                .entry(path.clone())
+                .or_insert_with(|| Summary::new(verb));
             entry.update_verb(verb);
             if move_path.is_some() {
                 entry.move_path = move_path;
