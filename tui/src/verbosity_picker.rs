@@ -11,7 +11,6 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::FileChange;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -25,6 +24,7 @@ use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::history_cell;
+use crate::render::line_utils::dim_lines;
 use crate::render::renderable::Renderable;
 use crate::verbosity::Verbosity;
 
@@ -36,15 +36,6 @@ const WIDE_PREVIEW_LEFT_INSET: u16 = 2;
 
 struct VerbosityPreviewWideRenderable {
     selected: Arc<Mutex<Verbosity>>,
-}
-
-fn dim_lines(lines: &mut [Line<'static>]) {
-    for line in lines.iter_mut() {
-        line.style = line.style.add_modifier(Modifier::DIM);
-        for span in line.spans.iter_mut() {
-            span.style = span.style.add_modifier(Modifier::DIM);
-        }
-    }
 }
 
 fn preview_commentary_cell(verbosity: Verbosity) -> history_cell::AgentMessageCell {

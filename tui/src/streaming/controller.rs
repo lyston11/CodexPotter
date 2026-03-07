@@ -2,6 +2,7 @@
 
 use crate::history_cell::HistoryCell;
 use crate::history_cell::{self};
+use crate::render::line_utils::dim_lines;
 use crate::render::line_utils::prefix_lines;
 use crate::style::proposed_plan_style;
 use ratatui::prelude::Stylize;
@@ -45,6 +46,27 @@ impl StreamController {
 
     /// Finalize the active stream. Drain and emit now.
     pub fn finalize(&mut self) -> Option<Box<dyn HistoryCell>> {
+        self.finalize_agent_message(false)
+    }
+
+    /// Finalize the active stream as an agent message, optionally dimming the content.
+    pub fn finalize_agent_message(&mut self, dim: bool) -> Option<Box<dyn HistoryCell>> {
+        let mut out_lines = self.finalize_lines();
+        if dim {
+            dim_lines(&mut out_lines);
+        }
+
+        let cell = self.emit(out_lines);
+
+        // `finalize` ends the current "answer stream". Reset state so a subsequent stream starts
+        // a fresh transcript bullet (matching upstream behavior where the stream controller is
+        // dropped and recreated at tool boundaries).
+        self.header_emitted = false;
+
+        cell
+    }
+
+    fn finalize_lines(&mut self) -> Vec<Line<'static>> {
         // Finalize collector first.
         let remaining = {
             let state = &mut self.state;
@@ -63,14 +85,8 @@ impl StreamController {
 
         // Cleanup
         self.state.clear();
-        let cell = self.emit(out_lines);
 
-        // `finalize` ends the current "answer stream". Reset state so a subsequent stream starts a
-        // fresh transcript bullet (matching upstream behavior where the stream controller is
-        // dropped and recreated at tool boundaries).
-        self.header_emitted = false;
-
-        cell
+        out_lines
     }
 
     /// Step animation: commit at most one queued line and handle end-of-drain cleanup.

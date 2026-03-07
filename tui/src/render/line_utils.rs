@@ -1,3 +1,4 @@
+use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
@@ -56,4 +57,14 @@ pub fn prefix_lines(
             Line::from(spans).style(l.style)
         })
         .collect()
+}
+
+/// Apply `DIM` to each line and span in-place.
+pub fn dim_lines(lines: &mut [Line<'static>]) {
+    for line in lines {
+        line.style = line.style.add_modifier(Modifier::DIM);
+        for span in &mut line.spans {
+            span.style = span.style.add_modifier(Modifier::DIM);
+        }
+    }
 }

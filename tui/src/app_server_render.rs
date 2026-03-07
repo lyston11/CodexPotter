@@ -17,7 +17,6 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use ratatui::prelude::Widget;
-use ratatui::style::Modifier;
 use ratatui::text::Line;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
@@ -43,6 +42,7 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell_potter::PotterStreamRecoveryRetryCell;
 use crate::history_cell_potter::PotterStreamRecoveryUnrecoverableCell;
+use crate::render::line_utils::dim_lines;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
@@ -480,13 +480,10 @@ impl AppServerEventProcessor {
         self.flush_pending_exploring_cell();
         self.flush_pending_success_ran_cell();
         self.flush_pending_compact_patch_changes();
-        if let Some(cell) = self.stream.finalize() {
-            self.emit_history_cell(cell);
-        }
+        self.flush_agent_stream();
         self.flush_plan_stream();
         self.adaptive_chunking.reset();
         self.app_event_tx.send(AppEvent::StopCommitAnimation);
-        self.saw_agent_delta = false;
         self.saw_plan_delta = false;
         self.needs_final_message_separator = true;
     }
@@ -503,6 +500,20 @@ impl AppServerEventProcessor {
     fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
         self.flush_pending_compact_patch_changes();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+    }
+
+    fn flush_agent_stream(&mut self) {
+        if let Some(cell) = self.stream.finalize() {
+            self.emit_history_cell(cell);
+        }
+        self.saw_agent_delta = false;
+    }
+
+    fn complete_streamed_agent_message(&mut self, dim_commentary: bool) {
+        if let Some(cell) = self.stream.finalize_agent_message(dim_commentary) {
+            self.emit_history_cell(cell);
+        }
+        self.saw_agent_delta = false;
     }
 
     fn on_commit_tick(&mut self) {
@@ -680,21 +691,20 @@ impl AppServerEventProcessor {
             EventMsg::AgentMessage(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
+                let dim_commentary = self.verbosity == Verbosity::Minimal
+                    && matches!(ev.phase, Some(MessagePhase::Commentary));
                 if self.saw_agent_delta {
+                    self.complete_streamed_agent_message(dim_commentary);
                     return;
                 }
                 self.maybe_emit_final_message_separator();
-                let dim_commentary = self.verbosity == Verbosity::Minimal
-                    && matches!(ev.phase, Some(MessagePhase::Commentary));
                 self.emit_agent_message(&ev.message, dim_commentary);
             }
             EventMsg::TurnComplete(_) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 // Flush any remaining agent markdown buffer.
-                if let Some(cell) = self.stream.finalize() {
-                    self.emit_history_cell(cell);
-                }
+                self.flush_agent_stream();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 if let Some(done) = self.pending_potter_project_succeeded.take() {
@@ -713,9 +723,7 @@ impl AppServerEventProcessor {
             EventMsg::TurnAborted(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
-                if let Some(cell) = self.stream.finalize() {
-                    self.emit_history_cell(cell);
-                }
+                self.flush_agent_stream();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
 
@@ -770,9 +778,7 @@ impl AppServerEventProcessor {
                 // Align with upstream Codex TUI behavior: flush any newline-gated agent output
                 // before rendering the tool result, so transcript ordering matches the semantic
                 // "agent explains -> tool runs -> agent continues" flow.
-                if let Some(cell) = self.stream.finalize() {
-                    self.emit_history_cell(cell);
-                }
+                self.flush_agent_stream();
                 self.flush_plan_stream();
 
                 let aggregated_output = if !ev.aggregated_output.is_empty() {
@@ -876,12 +882,9 @@ impl AppServerEventProcessor {
             EventMsg::Error(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
-                if let Some(cell) = self.stream.finalize() {
-                    self.emit_history_cell(cell);
-                }
+                self.flush_agent_stream();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
-                self.saw_agent_delta = false;
                 self.saw_plan_delta = false;
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_error_event(ev.message)));
@@ -894,9 +897,7 @@ impl AppServerEventProcessor {
         // Align with upstream behavior: flush any newline-gated agent output before inserting the
         // collab transcript cell, so ordering matches the semantic "agent explains -> collab
         // action -> agent continues" flow.
-        if let Some(cell) = self.stream.finalize() {
-            self.emit_history_cell(cell);
-        }
+        self.flush_agent_stream();
         self.flush_plan_stream();
         self.flush_pending_exploring_cell();
         self.flush_pending_success_ran_cell();
@@ -975,12 +976,7 @@ impl AppServerEventProcessor {
             return;
         }
         if dim {
-            for line in lines.iter_mut() {
-                line.style = line.style.add_modifier(Modifier::DIM);
-                for span in line.spans.iter_mut() {
-                    span.style = span.style.add_modifier(Modifier::DIM);
-                }
-            }
+            dim_lines(&mut lines);
         }
         self.emit_history_cell(Box::new(history_cell::AgentMessageCell::new(lines, true)));
     }
@@ -1959,6 +1955,7 @@ mod tests {
     use codex_protocol::protocol::TurnStartedEvent;
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::Instant;
@@ -1989,6 +1986,15 @@ mod tests {
             out.push(lines_to_plain_strings(&cell.display_lines(width)));
         }
         out
+    }
+
+    fn recv_inserted_history_cell(rx: &mut UnboundedReceiver<AppEvent>) -> Box<dyn HistoryCell> {
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = ev {
+                return cell;
+            }
+        }
+        panic!("expected an inserted history cell");
     }
 
     fn drain_render_history_events(
@@ -3613,6 +3619,43 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_minimal_dims_streamed_commentary_agent_messages() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "agent-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "hello\n".to_string(),
+            }),
+        });
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "hello\n".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        let lines = cell.display_lines(width);
+        let Some(content) = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref().contains("hello"))
+        else {
+            panic!("expected hello span");
+        };
+
+        assert!(
+            content.style.add_modifier.contains(Modifier::DIM),
+            "expected streamed commentary span to be dimmed"
+        );
+    }
+
+    #[test]
     fn round_renderer_minimal_keeps_final_answer_agent_messages_normal() {
         let width: u16 = 80;
 
@@ -3641,6 +3684,73 @@ mod tests {
         assert!(
             !content.style.add_modifier.contains(Modifier::DIM),
             "expected final answer span to keep normal intensity"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_keeps_streamed_final_answer_agent_messages_normal() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "agent-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "done\n".to_string(),
+            }),
+        });
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "done\n".to_string(),
+                phase: Some(MessagePhase::FinalAnswer),
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        let lines = cell.display_lines(width);
+        let Some(content) = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref().contains("done"))
+        else {
+            panic!("expected done span");
+        };
+
+        assert!(
+            !content.style.add_modifier.contains(Modifier::DIM),
+            "expected streamed final answer span to keep normal intensity"
+        );
+    }
+
+    #[test]
+    fn round_renderer_streamed_agent_message_completion_resets_stream_header() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        for (id, message) in [("first", "first\n"), ("second", "second\n")] {
+            proc.handle_codex_event(Event {
+                id: format!("{id}-delta"),
+                msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                    delta: message.to_string(),
+                }),
+            });
+
+            proc.handle_codex_event(Event {
+                id: format!("{id}-message"),
+                msg: EventMsg::AgentMessage(AgentMessageEvent {
+                    message: message.to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                }),
+            });
+        }
+
+        let cells = drain_history_cell_strings(&mut rx, width);
+        pretty_assertions::assert_eq!(
+            cells,
+            vec![vec!["• first".to_string()], vec!["• second".to_string()],]
         );
     }
 
