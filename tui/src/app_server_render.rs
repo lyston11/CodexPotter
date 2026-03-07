@@ -4372,6 +4372,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn round_renderer_minimal_replay_fixture_suppresses_worked_for_separator_vt100() {
+        let width: u16 = 80;
+        let height: u16 = 24;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
+        terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        proc.verbosity = Verbosity::Minimal;
+        proc.current_elapsed_secs = Some(0);
+
+        let mut has_emitted_history_lines = false;
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        let fixture = include_str!("../tests/fixtures/minimal-worked-for-suppressed.jsonl");
+        for (idx, line) in fixture.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let event: Event = serde_json::from_str(line).unwrap_or_else(|error| {
+                panic!("invalid fixture event at line {}: {error}", idx + 1)
+            });
+            proc.handle_codex_event(event);
+            drain_render_history_events(
+                &mut rx,
+                &mut terminal,
+                width,
+                &mut has_emitted_history_lines,
+            );
+        }
+
+        let contents = terminal.backend().vt100().screen().contents();
+        assert!(
+            !contents.contains("Worked for"),
+            "expected minimal replay to suppress worked-for separators"
+        );
+
+        assert_snapshot!(
+            "round_renderer_minimal_replay_fixture_suppresses_worked_for_separator_vt100",
+            contents
+        );
+    }
+
+    #[tokio::test]
     async fn round_renderer_flushes_agent_stream_before_ran_vt100() {
         let width: u16 = 80;
         let height: u16 = 16;

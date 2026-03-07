@@ -1,0 +1,28 @@
+---
+source: tui/src/app_server_render.rs
+assertion_line: 4419
+expression: contents
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› test prompt
+
+
+• First update.
+
+• Second update.
+
+• Third update.

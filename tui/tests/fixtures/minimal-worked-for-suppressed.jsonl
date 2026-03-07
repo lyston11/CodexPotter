@@ -1,0 +1,6 @@
+{"id":"exec-1","msg":{"type":"exec_command_end","call_id":"exec-1","turn_id":"turn-1","command":["bash","-lc","true"],"cwd":"project","parsed_cmd":[],"stdout":"","stderr":"","exit_code":0,"duration":{"secs":0,"nanos":0},"formatted_output":""}}
+{"id":"agent-1","msg":{"type":"agent_message","message":"First update."}}
+{"id":"exec-2","msg":{"type":"exec_command_end","call_id":"exec-2","turn_id":"turn-1","command":["bash","-lc","true"],"cwd":"project","parsed_cmd":[],"stdout":"","stderr":"","exit_code":0,"duration":{"secs":0,"nanos":0},"formatted_output":""}}
+{"id":"agent-2","msg":{"type":"agent_message","message":"Second update."}}
+{"id":"exec-3","msg":{"type":"exec_command_end","call_id":"exec-3","turn_id":"turn-1","command":["bash","-lc","true"],"cwd":"project","parsed_cmd":[],"stdout":"","stderr":"","exit_code":0,"duration":{"secs":0,"nanos":0},"formatted_output":""}}
+{"id":"agent-3","msg":{"type":"agent_message","message":"Third update."}}
