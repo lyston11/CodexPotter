@@ -1256,6 +1256,9 @@ impl RenderAppState {
                         }
                         None => {
                             if !self.exit_after_next_draw {
+                                self.processor.flush_pending_exploring_cell();
+                                self.processor.flush_pending_success_ran_cell();
+                                self.processor.flush_pending_compact_patch_changes();
                                 self.exit_reason =
                                     ExitReason::Fatal("Backend disconnected".to_string());
                                 self.exit_after_next_draw = true;
@@ -1375,6 +1378,7 @@ impl RenderAppState {
                     // in the transcript before clearing the inline viewport on exit.
                     self.processor.flush_pending_exploring_cell();
                     self.processor.flush_pending_success_ran_cell();
+                    self.processor.flush_pending_compact_patch_changes();
 
                     self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
 
@@ -1446,6 +1450,7 @@ impl RenderAppState {
                         // exit.
                         self.processor.flush_pending_exploring_cell();
                         self.processor.flush_pending_success_ran_cell();
+                        self.processor.flush_pending_compact_patch_changes();
 
                         self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
 
@@ -1683,6 +1688,9 @@ impl RenderAppState {
                     self.codex_op_tx.is_some(),
                     "internal error: FatalExitRequest requires backend channels",
                 );
+                self.processor.flush_pending_exploring_cell();
+                self.processor.flush_pending_success_ran_cell();
+                self.processor.flush_pending_compact_patch_changes();
                 self.exit_reason = ExitReason::Fatal(message);
                 self.bottom_pane.set_task_running(false);
                 self.exit_after_next_draw = true;
@@ -2867,6 +2875,75 @@ mod tests {
             }
         }
         assert!(saw_interrupt, "expected /exit to request Op::Interrupt");
+    }
+
+    #[test]
+    fn round_renderer_ctrl_c_flushes_pending_minimal_patch_summary_before_exit() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let width: u16 = 80;
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let mut processor =
+            AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        processor.verbosity = Verbosity::Minimal;
+
+        let patch = diffy::create_patch("a\n", "b\n").to_string();
+        let mut changes: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes.insert(
+            PathBuf::from("file.txt"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: patch,
+                move_path: None,
+            },
+        );
+
+        processor.handle_codex_event(Event {
+            id: "patch-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes,
+            }),
+        });
+
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane.set_task_running(true);
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            width,
+        );
+
+        assert!(app.exit_after_next_draw, "expected Ctrl+C to request exit");
+
+        let events = drain_history_cell_strings(&mut rx_app, width);
+        pretty_assertions::assert_eq!(events, vec![vec!["• Edited file.txt (+1 -1)".to_string()]]);
     }
 
     #[test]
