@@ -121,7 +121,7 @@ impl HistoryCell for PotterProjectSummaryCell {
         ];
         if matches!(self.outcome, PotterProjectSummaryOutcome::Interrupted) {
             header_spans.push(" ".into());
-            header_spans.push("(Interrupted)".cyan().bold());
+            header_spans.push("(Interrupted)".red());
         }
         header_spans.push(Span::styled(" ─", separator_style));
         let header_width = header_spans
@@ -243,6 +243,38 @@ impl HistoryCell for PotterStreamRecoveryRetryCell {
         ));
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ratatui::style::Color;
+
+    #[test]
+    fn potter_project_summary_interrupted_is_red_and_not_bold() {
+        let cell = new_potter_project_interrupted(
+            1,
+            Duration::from_secs(23),
+            PathBuf::from(".codexpotter/projects/2026/03/07/9/MAIN.md"),
+            String::new(),
+            String::new(),
+        );
+
+        let lines = cell.display_lines(120);
+        let header = &lines[0];
+        let interrupted = header
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "(Interrupted)")
+            .unwrap_or_else(|| panic!("expected interrupted marker in header: {header:?}"));
+
+        assert_eq!(interrupted.style.fg, Some(Color::Red));
+        assert!(
+            !interrupted.style.add_modifier.contains(Modifier::BOLD),
+            "Interrupted marker should not be bold: {interrupted:?}"
+        );
     }
 }
 
