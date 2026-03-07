@@ -581,13 +581,18 @@ impl AppServerEventProcessor {
         // coalesced compact summary. Flush here so work activity is committed to the transcript
         // before deciding whether to insert a final-message separator.
         self.flush_pending_compact_patch_changes();
+
         if self.needs_final_message_separator && self.had_work_activity {
             let elapsed_seconds = self
                 .current_elapsed_secs
                 .map(|current| self.worked_elapsed_from(current));
-            self.emit_history_cell(Box::new(history_cell::FinalMessageSeparator::new(
-                elapsed_seconds,
-            )));
+
+            if self.verbosity == Verbosity::Simple {
+                self.emit_history_cell(Box::new(history_cell::FinalMessageSeparator::new(
+                    elapsed_seconds,
+                )));
+            }
+
             self.needs_final_message_separator = false;
             self.had_work_activity = false;
         } else if self.needs_final_message_separator {
@@ -4221,6 +4226,7 @@ mod tests {
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
         let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        proc.verbosity = Verbosity::Simple;
 
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
@@ -4285,6 +4291,82 @@ mod tests {
 
         assert_snapshot!(
             "round_renderer_worked_for_separator_vt100",
+            terminal.backend().vt100().screen().contents()
+        );
+    }
+
+    #[tokio::test]
+    async fn round_renderer_minimal_suppresses_worked_for_separator_before_agent_message_vt100() {
+        let width: u16 = 80;
+        let height: u16 = 16;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
+        terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        proc.verbosity = Verbosity::Minimal;
+
+        let mut has_emitted_history_lines = false;
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        proc.handle_codex_event(Event {
+            id: "exec-end".into(),
+            msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "exec-1".into(),
+                process_id: None,
+                turn_id: "turn-1".into(),
+                command: vec!["bash".into(), "-lc".into(), "true".into()],
+                cwd: PathBuf::from("project"),
+                parsed_cmd: Vec::new(),
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                aggregated_output: String::new(),
+                exit_code: 0,
+                duration: std::time::Duration::from_millis(1200),
+                formatted_output: String::new(),
+            }),
+        });
+
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        proc.current_elapsed_secs = Some(0);
+        proc.handle_codex_event(Event {
+            id: "delta-1".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "ok\n".into(),
+            }),
+        });
+
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        drive_stream_to_idle(
+            &mut proc,
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        assert_snapshot!(
+            "round_renderer_minimal_suppresses_worked_for_separator_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }
@@ -4985,15 +5067,9 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, width);
-        let [separator, agent_message] = events.as_slice() else {
-            panic!("expected separator, then agent message");
+        let [agent_message] = events.as_slice() else {
+            panic!("expected agent message");
         };
-        assert!(
-            separator
-                .first()
-                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
-            "expected a final message separator"
-        );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
 
@@ -5034,15 +5110,9 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, width);
-        let [separator, agent_message] = events.as_slice() else {
-            panic!("expected separator, then agent message");
+        let [agent_message] = events.as_slice() else {
+            panic!("expected agent message");
         };
-        assert!(
-            separator
-                .first()
-                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
-            "expected a final message separator"
-        );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
 
@@ -5099,16 +5169,10 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, width);
-        let [patch, separator, agent_message] = events.as_slice() else {
-            panic!("expected patch, separator, then agent message");
+        let [patch, agent_message] = events.as_slice() else {
+            panic!("expected patch, then agent message");
         };
         pretty_assertions::assert_eq!(patch, &vec!["• Edited file.txt (+2 -2)".to_string()]);
-        assert!(
-            separator
-                .first()
-                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
-            "expected a final message separator"
-        );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
 
@@ -5224,16 +5288,10 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, width);
-        let [patch, separator, agent_message] = events.as_slice() else {
-            panic!("expected patch, separator, then agent message");
+        let [patch, agent_message] = events.as_slice() else {
+            panic!("expected patch, then agent message");
         };
         pretty_assertions::assert_eq!(patch, &vec!["• Edited file.txt (+2 -2)".to_string()]);
-        assert!(
-            separator
-                .first()
-                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
-            "expected a final message separator"
-        );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
 
@@ -5445,8 +5503,8 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, width);
-        let [patch, separator, agent_message] = events.as_slice() else {
-            panic!("expected patch, separator, then agent message");
+        let [patch, agent_message] = events.as_slice() else {
+            panic!("expected patch, then agent message");
         };
         pretty_assertions::assert_eq!(
             patch,
@@ -5455,12 +5513,6 @@ mod tests {
                 "  └ Edited a.txt (+1 -1)".to_string(),
                 "    Added b.txt (+1 -0)".to_string(),
             ]
-        );
-        assert!(
-            separator
-                .first()
-                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
-            "expected a final message separator"
         );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
@@ -5608,15 +5660,9 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, 80);
-        let [separator, agent_message] = events.as_slice() else {
-            panic!("expected separator, then agent message");
+        let [agent_message] = events.as_slice() else {
+            panic!("expected agent message");
         };
-        assert!(
-            separator
-                .first()
-                .is_some_and(|line| line.chars().all(|ch| ch == '─')),
-            "expected a final message separator"
-        );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
 

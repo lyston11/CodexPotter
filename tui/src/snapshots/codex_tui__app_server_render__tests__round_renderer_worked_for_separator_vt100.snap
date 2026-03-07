@@ -1,11 +1,8 @@
 ---
 source: tui/src/app_server_render.rs
+assertion_line: 4292
 expression: terminal.backend().vt100().screen().contents()
 ---
-
-
-
-
 
 
 
@@ -16,4 +13,8 @@ expression: terminal.backend().vt100().screen().contents()
 › test prompt
 
 
+• Ran true
+
 ─ Worked for 0s ────────────────────────────────────────────────────────────────
+
+• ok

@@ -45,6 +45,7 @@ Divergences must be documented in places below to avoid regression when syncing 
   - `commentary` agent messages are dimmed
   - Streamed agent text is committed only after completion, so `commentary` can be dimmed phase-aware and streamed final answers stay normal
   - All `Ran` and `Explored` items are hidden
+  - `Worked for ...` separators are hidden
   - Consecutive Change (Edited, Created, Deleted) items are coalesced into one, and provide file list only, no diff body.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success).
 

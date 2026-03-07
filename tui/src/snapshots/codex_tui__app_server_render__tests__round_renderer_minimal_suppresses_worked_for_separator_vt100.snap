@@ -1,0 +1,19 @@
+---
+source: tui/src/app_server_render.rs
+assertion_line: 4368
+expression: terminal.backend().vt100().screen().contents()
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+› test prompt
