@@ -1266,7 +1266,7 @@ impl ChatComposer {
                 let message = format!(
                     r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
                 );
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                self.app_event_tx.send(AppEvent::EmitHistoryCell(Box::new(
                     crate::history_cell::new_info_event(message, None),
                 )));
                 return None;
@@ -2034,6 +2034,42 @@ mod tests {
     use crate::bottom_pane::chat_composer::LARGE_PASTE_CHAR_THRESHOLD;
     use crate::bottom_pane::textarea::TextArea;
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn unrecognized_slash_command_emits_history_cell_through_pipeline() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        composer.set_text_content("/no_such_command".to_string());
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+
+        let event = rx.try_recv().expect("expected history cell event");
+        let cell = match event {
+            AppEvent::EmitHistoryCell(cell) => cell,
+            other => panic!("expected EmitHistoryCell, got {other:?}"),
+        };
+
+        let display = cell.display_lines(80);
+        let content = display
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(content.contains("Unrecognized command '/no_such_command'."));
+    }
 
     #[test]
     fn footer_hint_row_is_separated_from_composer() {

@@ -29,6 +29,17 @@ pub enum AppEvent {
         matches: Vec<FileMatch>,
     },
 
+    /// Emit a committed transcript cell through the transcript pipeline.
+    ///
+    /// Prefer this over `InsertHistoryCell` for UI-generated messages so any pending coalescers
+    /// (for example `Verbosity::Minimal` compact patch folding) are flushed at the correct
+    /// semantic boundary.
+    EmitHistoryCell(Box<dyn HistoryCell>),
+
+    /// Insert a committed transcript cell into the history list.
+    ///
+    /// This is produced by the transcript pipeline. UI widgets should generally emit
+    /// `EmitHistoryCell` instead so coalescers can flush deterministically.
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     StartCommitAnimation,

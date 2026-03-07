@@ -1285,20 +1285,16 @@ impl RenderAppState {
                     .apply_external_edit(new_text);
             }
             Ok(None) => {
-                self.handle_app_event(
-                    tui,
-                    AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(
+                self.processor
+                    .emit_history_cell(Box::new(history_cell::new_error_event(
                         external_editor_integration::MISSING_EDITOR_ERROR.to_string(),
-                    ))),
-                )?;
+                    )));
             }
             Err(err) => {
-                self.handle_app_event(
-                    tui,
-                    AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(format!(
+                self.processor
+                    .emit_history_cell(Box::new(history_cell::new_error_event(format!(
                         "Failed to open editor: {err}",
-                    )))),
-                )?;
+                    ))));
             }
         }
 
@@ -1521,6 +1517,9 @@ impl RenderAppState {
 
     fn handle_app_event(&mut self, tui: &mut Tui, app_event: AppEvent) -> anyhow::Result<()> {
         match app_event {
+            AppEvent::EmitHistoryCell(cell) => {
+                self.processor.emit_history_cell(cell);
+            }
             AppEvent::InsertHistoryCell(cell) => {
                 let cell: Arc<dyn HistoryCell> = cell.into();
                 let width = tui.terminal.last_known_screen_size.width;
@@ -1557,25 +1556,20 @@ impl RenderAppState {
                             }
                             Err(err) => {
                                 restore_runtime_theme_from_codex_config(cwd);
-                                self.handle_app_event(
-                                    tui,
-                                    AppEvent::InsertHistoryCell(Box::new(
-                                        history_cell::new_error_event(format!(
-                                            "Failed to save theme: {err}"
-                                        )),
+                                self.processor.emit_history_cell(Box::new(
+                                    history_cell::new_error_event(format!(
+                                        "Failed to save theme: {err}"
                                     )),
-                                )?;
+                                ));
                             }
                         }
                     }
                     Err(err) => {
                         restore_runtime_theme_from_codex_config(cwd);
-                        self.handle_app_event(
-                            tui,
-                            AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(
-                                format!("Failed to find CODEX_HOME: {err}"),
-                            ))),
-                        )?;
+                        self.processor
+                            .emit_history_cell(Box::new(history_cell::new_error_event(format!(
+                                "Failed to find CODEX_HOME: {err}"
+                            ))));
                     }
                 }
                 tui.frame_requester().schedule_frame();
@@ -1586,12 +1580,10 @@ impl RenderAppState {
                         self.processor.verbosity = verbosity;
                     }
                     Err(err) => {
-                        self.handle_app_event(
-                            tui,
-                            AppEvent::InsertHistoryCell(Box::new(history_cell::new_error_event(
-                                format!("Failed to save verbosity: {err}"),
-                            ))),
-                        )?;
+                        self.processor
+                            .emit_history_cell(Box::new(history_cell::new_error_event(format!(
+                                "Failed to save verbosity: {err}"
+                            ))));
                     }
                 }
                 tui.frame_requester().schedule_frame();
