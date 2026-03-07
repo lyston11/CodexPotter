@@ -386,4 +386,47 @@ mod tests {
             terminal.backend().vt100().screen().contents()
         );
     }
+
+    #[test]
+    fn startup_verbosity_prompt_narrow_truncated_height_vt100() {
+        let width: u16 = 80;
+
+        let (app_event_tx, _app_event_rx) = unbounded_channel();
+        let app_event_tx = AppEventSender::new(app_event_tx);
+        let prompt_view =
+            build_startup_prompt_view(Some(StartupSetupStep::new(2, 2)), app_event_tx);
+
+        let full_height = desired_height(
+            width,
+            &prompt_view.view,
+            prompt_view.side_content_width,
+            prompt_view.side_content_min_width,
+        );
+        let height: u16 = 12;
+        assert!(
+            full_height > height,
+            "expected the startup verbosity prompt to exceed the truncated height"
+        );
+
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+
+        terminal
+            .draw(|frame| {
+                render_startup_prompt(
+                    frame.area(),
+                    frame.buffer_mut(),
+                    &prompt_view.view,
+                    &prompt_view.selected_for_preview,
+                    prompt_view.side_content_width,
+                    prompt_view.side_content_min_width,
+                );
+            })
+            .expect("draw");
+
+        assert_snapshot!(
+            "startup_verbosity_prompt_narrow_truncated_height_vt100",
+            terminal.backend().vt100().screen().contents()
+        );
+    }
 }
