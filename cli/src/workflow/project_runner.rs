@@ -311,7 +311,7 @@ where
                                         project_id: project_id.clone(),
                                         action: crate::app_server::potter::ResolveInterruptAction::Continue,
                                         turn_prompt_override: Some(String::from(
-                                            "Progress file has been changed by user, continue",
+                                            "Progress file has been changed by user",
                                         )),
                                     },
                                 )
@@ -356,7 +356,9 @@ mod tests {
     struct MockUi {
         queued_prompts: VecDeque<String>,
         prompt_user_responses: VecDeque<Option<String>>,
+        prompt_interrupted_project_action_responses: VecDeque<Option<InterruptedProjectAction>>,
         prompt_user_calls: usize,
+        prompt_interrupted_project_action_calls: usize,
         clear_calls: usize,
         project_started_at_calls: usize,
     }
@@ -366,7 +368,9 @@ mod tests {
             Self {
                 queued_prompts: VecDeque::from(queued_prompts),
                 prompt_user_responses: VecDeque::from(prompt_user_responses),
+                prompt_interrupted_project_action_responses: VecDeque::new(),
                 prompt_user_calls: 0,
+                prompt_interrupted_project_action_calls: 0,
                 clear_calls: 0,
                 project_started_at_calls: 0,
             }
@@ -444,7 +448,12 @@ mod tests {
             &'a mut self,
             _progress_file_rel: PathBuf,
         ) -> UiFuture<'a, Option<InterruptedProjectAction>> {
-            Box::pin(async { Ok(Some(InterruptedProjectAction::StopIterate)) })
+            self.prompt_interrupted_project_action_calls += 1;
+            let response = self
+                .prompt_interrupted_project_action_responses
+                .pop_front()
+                .unwrap_or(Some(InterruptedProjectAction::StopIterate));
+            Box::pin(async move { Ok(response) })
         }
 
         fn insert_interrupted_project_summary_block(
@@ -463,6 +472,135 @@ mod tests {
     impl ProjectClock for TestClock {
         fn now_instant(&self) -> Instant {
             Instant::now()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct InterruptContinueAppServer {
+        started_prompts: std::sync::Mutex<Vec<String>>,
+        resolve_interrupt_calls:
+            std::sync::Mutex<Vec<crate::app_server::potter::ProjectResolveInterruptParams>>,
+    }
+
+    impl InterruptContinueAppServer {
+        fn started_prompts(&self) -> Vec<String> {
+            self.started_prompts.lock().expect("lock").clone()
+        }
+
+        fn resolve_interrupt_calls(
+            &self,
+        ) -> Vec<crate::app_server::potter::ProjectResolveInterruptParams> {
+            self.resolve_interrupt_calls.lock().expect("lock").clone()
+        }
+    }
+
+    impl crate::workflow::project_render_loop::PotterEventSource for InterruptContinueAppServer {
+        fn read_next_event<'a>(&'a mut self) -> UiFuture<'a, Option<Event>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    impl crate::workflow::project_render_loop::PotterProjectController for InterruptContinueAppServer {
+        fn interrupt_project<'a>(&'a mut self, _project_id: String) -> UiFuture<'a, Vec<Event>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    impl ProjectAppServer for InterruptContinueAppServer {
+        fn project_start<'a>(
+            &'a mut self,
+            params: crate::app_server::potter::ProjectStartParams,
+        ) -> UiFuture<'a, (crate::app_server::potter::ProjectStartResponse, Vec<Event>)> {
+            Box::pin(async move {
+                self.started_prompts
+                    .lock()
+                    .expect("lock")
+                    .push(params.user_message.clone());
+
+                let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md");
+                let response = crate::app_server::potter::ProjectStartResponse {
+                    project_id: String::from("project_1"),
+                    working_dir: PathBuf::from("/tmp"),
+                    project_dir: PathBuf::from("/tmp/project_1"),
+                    progress_file_rel: progress_file_rel.clone(),
+                    progress_file: PathBuf::from("/tmp/project_1/MAIN.md"),
+                    git_commit_start: String::new(),
+                    git_branch: None,
+                    rounds_total: 2,
+                };
+
+                let buffered_events = vec![
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterRoundStarted {
+                            current: 1,
+                            total: 2,
+                        },
+                    },
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterRoundFinished {
+                            outcome: PotterRoundOutcome::Interrupted,
+                        },
+                    },
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterProjectInterrupted {
+                            project_id: String::from("project_1"),
+                            user_prompt_file: progress_file_rel,
+                        },
+                    },
+                ];
+
+                Ok((response, buffered_events))
+            })
+        }
+
+        fn project_interrupt<'a>(&'a mut self, _project_id: String) -> UiFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn project_resolve_interrupt<'a>(
+            &'a mut self,
+            params: crate::app_server::potter::ProjectResolveInterruptParams,
+        ) -> UiFuture<
+            'a,
+            (
+                crate::app_server::potter::ProjectResolveInterruptResponse,
+                Vec<Event>,
+            ),
+        > {
+            self.resolve_interrupt_calls
+                .lock()
+                .expect("lock")
+                .push(params);
+
+            Box::pin(async {
+                Ok((
+                    crate::app_server::potter::ProjectResolveInterruptResponse { summary: None },
+                    vec![
+                        Event {
+                            id: String::new(),
+                            msg: EventMsg::PotterRoundStarted {
+                                current: 1,
+                                total: 2,
+                            },
+                        },
+                        Event {
+                            id: String::new(),
+                            msg: EventMsg::PotterRoundFinished {
+                                outcome: PotterRoundOutcome::Completed,
+                            },
+                        },
+                        Event {
+                            id: String::new(),
+                            msg: EventMsg::PotterProjectCompleted {
+                                outcome: PotterProjectOutcome::BudgetExhausted,
+                            },
+                        },
+                    ],
+                ))
+            })
         }
     }
 
@@ -653,5 +791,43 @@ mod tests {
         assert_eq!(app_server.started_prompts(), vec![String::from("one")]);
         assert_eq!(ui.prompt_user_calls, 1);
         assert_eq!(ui.clear_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn continue_iterate_sends_progress_file_prompt_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut ui = MockUi::new(Vec::new(), vec![Some(String::from("hello")), None]);
+        ui.prompt_interrupted_project_action_responses
+            .push_back(Some(InterruptedProjectAction::ContinueIterate));
+
+        let mut app_server = InterruptContinueAppServer::default();
+        let clock = TestClock;
+
+        let exit = run_project_queue_with_deps(
+            &mut ui,
+            &mut app_server,
+            temp.path().to_path_buf(),
+            ProjectQueueOptions {
+                rounds: NonZeroUsize::new(2).expect("rounds"),
+                turn_prompt: String::from("Continue"),
+            },
+            &clock,
+        )
+        .await
+        .expect("run project queue");
+
+        assert_eq!(exit, ProjectQueueExit::Completed);
+        assert_eq!(app_server.started_prompts(), vec![String::from("hello")]);
+
+        let resolve_calls = app_server.resolve_interrupt_calls();
+        assert_eq!(resolve_calls.len(), 1, "expected resolve_interrupt call");
+        assert_eq!(
+            resolve_calls[0],
+            crate::app_server::potter::ProjectResolveInterruptParams {
+                project_id: String::from("project_1"),
+                action: crate::app_server::potter::ResolveInterruptAction::Continue,
+                turn_prompt_override: Some(String::from("Progress file has been changed by user")),
+            }
+        );
     }
 }

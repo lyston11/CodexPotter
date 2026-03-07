@@ -1119,6 +1119,22 @@ struct FreshProjectPlan {
     initial_turn_prompt_override: Option<String>,
 }
 
+impl FreshProjectPlan {
+    /// Build a continuation plan after an interrupted iteration round.
+    ///
+    /// `interrupted_round_index` is zero-based (same scale as `round_start_index`).
+    fn continuation_after_interrupt(&self, interrupted_round_index: u32) -> FreshProjectPlan {
+        FreshProjectPlan {
+            // Continue should retry the interrupted iteration round; do not advance the round
+            // index (and do not consume round budget) just because we interrupted.
+            round_start_index: interrupted_round_index,
+            emit_project_started_event: false,
+            initial_turn_prompt_override: None,
+            ..self.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ResumedProjectPlan {
     resumed: ResumedProject,
@@ -1221,27 +1237,13 @@ async fn run_fresh_project(
     plan: FreshProjectPlan,
     interrupt_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<ProjectRunExit> {
-    let FreshProjectPlan {
-        workdir,
-        user_message,
-        project_dir_rel,
-        progress_file_rel,
-        git_commit_start,
-        potter_rollout_path,
-        rounds_total,
-        event_mode,
-        project_started_at,
-        round_start_index,
-        emit_project_started_event,
-        initial_turn_prompt_override,
-    } = plan;
-
-    let developer_prompt = crate::workflow::project::render_developer_prompt(&progress_file_rel);
+    let developer_prompt =
+        crate::workflow::project::render_developer_prompt(&plan.progress_file_rel);
     let turn_prompt = crate::workflow::project::fixed_prompt()
         .trim_end()
         .to_string();
 
-    let backend_event_mode = backend_event_mode_for_potter(event_mode);
+    let backend_event_mode = backend_event_mode_for_potter(plan.event_mode);
 
     let round_context = crate::workflow::round_runner::PotterRoundContext {
         codex_bin: config.codex_bin,
@@ -1249,42 +1251,44 @@ async fn run_fresh_project(
         backend_launch: config.backend_launch,
         backend_event_mode,
         codex_compat_home: config.codex_compat_home,
-        thread_cwd: Some(workdir.clone()),
+        thread_cwd: Some(plan.workdir.clone()),
         turn_prompt,
-        workdir: workdir.clone(),
-        progress_file_rel: progress_file_rel.clone(),
-        user_prompt_file: progress_file_rel.clone(),
-        git_commit_start: git_commit_start.clone(),
-        potter_rollout_path: potter_rollout_path.clone(),
-        project_started_at,
+        workdir: plan.workdir.clone(),
+        progress_file_rel: plan.progress_file_rel.clone(),
+        user_prompt_file: plan.progress_file_rel.clone(),
+        git_commit_start: plan.git_commit_start.clone(),
+        potter_rollout_path: plan.potter_rollout_path.clone(),
+        project_started_at: plan.project_started_at,
     };
 
-    let round_context_with_override = initial_turn_prompt_override.map(|turn_prompt| {
-        crate::workflow::round_runner::PotterRoundContext {
-            turn_prompt,
-            ..round_context.clone()
-        }
-    });
+    let round_context_with_override =
+        plan.initial_turn_prompt_override
+            .clone()
+            .map(
+                |turn_prompt| crate::workflow::round_runner::PotterRoundContext {
+                    turn_prompt,
+                    ..round_context.clone()
+                },
+            );
 
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
 
-    let mut rounds_run = round_start_index;
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
 
-    for round_index in round_start_index..rounds_total {
+    for round_index in plan.round_start_index..plan.rounds_total {
         let current_round = round_index.saturating_add(1);
-        let project_started = if emit_project_started_event && round_index == 0 {
+        let project_started = if plan.emit_project_started_event && round_index == 0 {
             Some(crate::workflow::round_runner::PotterProjectStartedInfo {
-                user_message: Some(user_message.clone()),
-                working_dir: workdir.clone(),
-                project_dir: project_dir_rel.clone(),
-                user_prompt_file: progress_file_rel.clone(),
+                user_message: Some(plan.user_message.clone()),
+                working_dir: plan.workdir.clone(),
+                project_dir: plan.project_dir_rel.clone(),
+                user_prompt_file: plan.progress_file_rel.clone(),
             })
         } else {
             None
         };
 
-        let round_context = if round_index == round_start_index {
+        let round_context = if round_index == plan.round_start_index {
             round_context_with_override
                 .as_ref()
                 .unwrap_or(&round_context)
@@ -1296,10 +1300,10 @@ async fn run_fresh_project(
             &mut ui,
             round_context,
             crate::workflow::round_runner::PotterRoundOptions {
-                pad_before_first_cell: round_index != round_start_index,
+                pad_before_first_cell: round_index != plan.round_start_index,
                 project_started,
                 round_current: current_round,
-                round_total: rounds_total,
+                round_total: plan.rounds_total,
                 project_succeeded_rounds: current_round,
             },
         )
@@ -1315,40 +1319,26 @@ async fn run_fresh_project(
             }
         };
 
-        rounds_run = rounds_run.saturating_add(1);
-
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
                     outcome = PotterProjectOutcome::Succeeded;
                     break;
                 }
-                if round_index.saturating_add(1) >= rounds_total {
+                if round_index.saturating_add(1) >= plan.rounds_total {
                     outcome = PotterProjectOutcome::BudgetExhausted;
                 }
             }
             codex_tui::ExitReason::Interrupted => {
-                let continuation_plan = FreshProjectPlan {
-                    workdir: workdir.clone(),
-                    user_message: user_message.clone(),
-                    project_dir_rel: project_dir_rel.clone(),
-                    progress_file_rel: progress_file_rel.clone(),
-                    git_commit_start: git_commit_start.clone(),
-                    potter_rollout_path: potter_rollout_path.clone(),
-                    rounds_total,
-                    event_mode,
-                    project_started_at,
-                    round_start_index: rounds_run,
-                    emit_project_started_event: false,
-                    initial_turn_prompt_override: None,
-                };
+                let continuation_plan = plan.continuation_after_interrupt(round_index);
                 return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
-                    project_id: workdir
-                        .join(&progress_file_rel)
+                    project_id: plan
+                        .workdir
+                        .join(&plan.progress_file_rel)
                         .to_string_lossy()
                         .to_string(),
-                    user_prompt_file: progress_file_rel.clone(),
-                    rounds_run,
+                    user_prompt_file: plan.progress_file_rel.clone(),
+                    rounds_run: current_round,
                     plan: continuation_plan,
                 })));
             }
@@ -2423,6 +2413,63 @@ mod tests {
         assert!(
             state.interrupted.is_some(),
             "expected interrupted state to remain on validation failure"
+        );
+    }
+
+    #[test]
+    fn fresh_project_plan_continuation_after_interrupt_retries_same_round() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+
+        let plan = FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: "hello".to_string(),
+            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
+            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
+            git_commit_start: String::from("start"),
+            potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            rounds_total: 3,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            round_start_index: 0,
+            emit_project_started_event: true,
+            initial_turn_prompt_override: Some(String::from("override")),
+        };
+
+        let continuation = plan.continuation_after_interrupt(0);
+        assert_eq!(continuation.round_start_index, 0);
+        assert!(!continuation.emit_project_started_event);
+        assert!(continuation.initial_turn_prompt_override.is_none());
+        assert_eq!(continuation.rounds_total, 3);
+        assert_eq!(continuation.workdir, plan.workdir);
+        assert_eq!(continuation.progress_file_rel, plan.progress_file_rel);
+    }
+
+    #[test]
+    fn fresh_project_plan_continuation_after_interrupt_allows_retry_on_last_round() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+
+        let plan = FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: "hello".to_string(),
+            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
+            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
+            git_commit_start: String::from("start"),
+            potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            rounds_total: 1,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            round_start_index: 0,
+            emit_project_started_event: true,
+            initial_turn_prompt_override: None,
+        };
+
+        let continuation = plan.continuation_after_interrupt(0);
+        assert_eq!(continuation.round_start_index, 0);
+        assert!(
+            continuation.round_start_index < continuation.rounds_total,
+            "expected continuation to retry the last round instead of exhausting the budget"
         );
     }
 
