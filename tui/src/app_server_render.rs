@@ -363,7 +363,7 @@ pub async fn run_round_with_tui_options_and_queue(
     let file_search = FileSearchManager::new(file_search_dir, app_event_tx.clone());
     let prompt_history = crate::prompt_history_store::PromptHistoryStore::new();
 
-    let driver = AppServerEventProcessor::new(app_event_tx.clone(), *state.verbosity);
+    let mut driver = AppServerEventProcessor::new(app_event_tx.clone(), *state.verbosity);
     if options.render_user_prompt {
         driver.emit_user_prompt(prompt.clone());
     }
@@ -489,12 +489,15 @@ impl AppServerEventProcessor {
         self.needs_final_message_separator = true;
     }
 
-    fn emit_user_prompt(&self, prompt: String) {
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::new_user_prompt(prompt),
-        )));
+    fn emit_user_prompt(&mut self, prompt: String) {
+        self.emit_history_cell(Box::new(history_cell::new_user_prompt(prompt)));
     }
 
+    /// Emit a committed transcript cell.
+    ///
+    /// This is the insertion seam for history cells: before emitting anything visible, flush any
+    /// pending `Verbosity::Minimal` compact patch summary so transcript-suppressed protocol events
+    /// cannot break coalescing.
     fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
         self.flush_pending_compact_patch_changes();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
@@ -906,6 +909,7 @@ impl AppServerEventProcessor {
 
         let change_sets = std::mem::take(&mut self.pending_compact_patch_changes);
         self.needs_final_message_separator = true;
+        // Emit directly to avoid recursively flushing through `emit_history_cell`.
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             history_cell::new_coalesced_compact_patch_event(change_sets, &self.cwd),
         )));
@@ -1446,9 +1450,8 @@ impl RenderAppState {
                             "'/{}' is disabled while a task is in progress.",
                             cmd.command()
                         );
-                        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                            history_cell::new_error_event(message),
-                        )));
+                        self.processor
+                            .emit_history_cell(Box::new(history_cell::new_error_event(message)));
                         frame_requester.schedule_frame();
                         return;
                     }
@@ -1719,12 +1722,11 @@ impl RenderAppState {
                     .status_widget()
                     .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds);
                 self.processor.handle_retryable_stream_error();
-                self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                    PotterStreamRecoveryUnrecoverableCell {
+                self.processor
+                    .emit_history_cell(Box::new(PotterStreamRecoveryUnrecoverableCell {
                         max_attempts: *max_attempts,
                         error_message: error_message.clone(),
-                    },
-                )));
+                    }));
 
                 frame_requester.schedule_frame();
                 return Ok(());
@@ -2013,7 +2015,7 @@ mod tests {
     ) -> (AppServerEventProcessor, UnboundedReceiver<AppEvent>) {
         let (tx_raw, rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
-        let proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
+        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
         proc.emit_user_prompt(prompt.to_string());
         (proc, rx)
     }
