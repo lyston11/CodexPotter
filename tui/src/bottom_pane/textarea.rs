@@ -9,6 +9,7 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement as UserTextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -245,6 +246,12 @@ impl TextArea {
 
     /// Handle a single keyboard event and update the buffer/cursor.
     pub fn input(&mut self, event: KeyEvent) {
+        // Only process key presses or repeats; release events can otherwise re-trigger movement
+        // or text insertion when terminals report modifiers differently on key-up.
+        if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return;
+        }
+
         match event {
             // Some terminals (or configurations) send Control key chords as
             // C0 control characters without reporting the CONTROL modifier.
@@ -1684,6 +1691,34 @@ mod tests {
 
         assert_eq!(super_modified.text(), regular.text());
         assert_eq!(super_modified.cursor(), regular.cursor());
+    }
+
+    #[test]
+    fn release_events_are_ignored() {
+        use crossterm::event::KeyEventKind;
+        use crossterm::event::KeyEventState;
+
+        let mut text_release = ta_with("hello");
+        text_release.set_cursor(text_release.text().len());
+        text_release.input(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        });
+        assert_eq!(text_release.text(), "hello");
+        assert_eq!(text_release.cursor(), "hello".len());
+
+        let mut arrow_release = ta_with("hello\nworld");
+        arrow_release.set_cursor(7);
+        arrow_release.input(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::SUPER,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        });
+        assert_eq!(arrow_release.text(), "hello\nworld");
+        assert_eq!(arrow_release.cursor(), 7);
     }
 
     #[test]
