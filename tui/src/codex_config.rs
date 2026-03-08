@@ -60,6 +60,9 @@ pub fn resolve_codex_model_config(cwd: &Path) -> io::Result<ResolvedCodexModelCo
 ///
 /// `fast_mode_override` represents the dedicated CLI `--enable/--disable fast_mode` layer, which
 /// has higher precedence than profile-level `[features].fast_mode` config in upstream Codex.
+/// In contrast, top-level entries inside `runtime_config_overrides` (for example
+/// `model=...` / `model_reasoning_effort=...`) still behave like upstream session-flags config,
+/// so the selected profile continues to override them.
 pub fn resolve_codex_model_config_with_runtime_overrides(
     cwd: &Path,
     model_override: Option<&str>,
@@ -838,6 +841,57 @@ fast_mode = true
             resolved,
             ResolvedCodexModelConfig {
                 model: "gpt-5.4".to_string(),
+                reasoning_effort: Some(ReasoningEffort::High),
+                is_fast: true,
+            }
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn runtime_top_level_model_and_reasoning_overrides_still_yield_to_selected_profile() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        write_config(
+            &codex_home.path().join("config.toml"),
+            r#"
+model = "gpt-5.2"
+model_reasoning_effort = "low"
+service_tier = "flex"
+
+[features]
+fast_mode = false
+
+[profiles.fast]
+model = "gpt-5.3"
+model_reasoning_effort = "high"
+service_tier = "fast"
+
+[profiles.fast.features]
+fast_mode = true
+"#,
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let resolved = resolve_codex_model_config_with_runtime_overrides(
+            cwd.path(),
+            None,
+            &[
+                "profile=\"fast\"".to_string(),
+                "model=\"gpt-5.4\"".to_string(),
+                "model_reasoning_effort=\"minimal\"".to_string(),
+                "service_tier=\"flex\"".to_string(),
+                "features.fast_mode=false".to_string(),
+            ],
+            None,
+        )
+        .expect("resolve");
+
+        assert_eq!(
+            resolved,
+            ResolvedCodexModelConfig {
+                model: "gpt-5.3".to_string(),
                 reasoning_effort: Some(ReasoningEffort::High),
                 is_fast: true,
             }
