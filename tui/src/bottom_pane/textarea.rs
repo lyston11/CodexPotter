@@ -10,6 +10,11 @@
 //! This module does not implement an Emacs-style multi-entry kill ring. It keeps only the most
 //! recent killed span.
 //!
+//! CodexPotter keeps text elements as anonymous atomic ranges. Upstream's `id`/`name`-based
+//! element helpers are intentionally omitted from this subset because the local composer only
+//! needs range-based placeholders today; if named placeholders return, prefer restoring the
+//! upstream model instead of introducing a parallel local abstraction here.
+//!
 //! Word-wise navigation and deletion delegate to `word_boundary` to isolate CodexPotter's
 //! ICU4X-based divergence from upstream.
 

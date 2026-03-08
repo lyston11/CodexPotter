@@ -81,6 +81,7 @@ Engineering related:
   - Other interactive features not needed
   - Unneeded codes, tests and snapshots
 - codex-potter explicitly forbids `pub(crate)` visibility in TUI code; only `pub` and private items are allowed.
+- `bottom_pane::textarea::TextArea` keeps atomic text elements as anonymous ranges only; upstream named-element helpers stay removed until codex-potter needs those flows.
 - codex-potter does not use Bazel.
 
 ## Conventions

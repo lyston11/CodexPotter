@@ -69,6 +69,10 @@ The composer differentiates between:
 For paste-like bursts, Enter is treated as a newline so the burst is captured as pasted text instead
 of submitting mid-burst.
 
+Successful submit paths and bare slash-command dispatch both clear the visible draft via
+`TextArea::set_text_clearing_elements("")`. That reset intentionally preserves the textarea kill
+buffer, so `Ctrl+Y` can still restore the most recent `Ctrl+K` span into the next draft.
+
 ## Prompt History (Up/Down, Ctrl+P/Ctrl+N)
 
 History navigation is only activated when it is unlikely the user is trying to move the cursor:
