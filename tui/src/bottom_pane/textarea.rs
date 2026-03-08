@@ -1,7 +1,17 @@
-//! Minimal text area implementation for the bottom-pane composer.
+//! The textarea owns editable composer text, placeholder elements, cursor/wrap state, and a
+//! single-entry kill buffer.
 //!
-//! This is intentionally self-contained (cursor movement, wrapping, word-wise navigation and
-//! deletion, and placeholder "elements" used to represent large pastes).
+//! Whole-buffer replacement APIs intentionally rebuild only the visible draft state. They clear
+//! element ranges and derived cursor/wrapping caches, but they keep the kill buffer intact so a
+//! caller can clear or rewrite the draft and still allow `Ctrl+Y` to restore the user's most
+//! recent `Ctrl+K`. This is the contract higher-level composer flows rely on after submit,
+//! slash-command dispatch, and other synthetic clears.
+//!
+//! This module does not implement an Emacs-style multi-entry kill ring. It keeps only the most
+//! recent killed span.
+//!
+//! Word-wise navigation and deletion delegate to `word_boundary` to isolate CodexPotter's
+//! ICU4X-based divergence from upstream.
 
 use super::word_boundary;
 use crate::key_hint::is_altgr;
@@ -29,8 +39,15 @@ struct TextElement {
     range: Range<usize>,
 }
 
+/// `TextArea` is the editable buffer behind the TUI composer.
+///
+/// It owns the raw UTF-8 text, placeholder-like text elements that must move atomically with
+/// edits, cursor/wrapping state for rendering, and a single-entry kill buffer for `Ctrl+K` /
+/// `Ctrl+Y` style editing. Callers may replace the entire visible buffer through
+/// [`Self::set_text_clearing_elements`] or [`Self::set_text_with_elements`] without disturbing the
+/// kill buffer; if they incorrectly assume those methods fully reset editing state, a later yank
+/// will appear to restore stale text from the user's perspective.
 #[derive(Debug)]
-/// Editable text buffer with cursor and wrapping state.
 pub struct TextArea {
     text: String,
     cursor_pos: usize,
@@ -65,12 +82,21 @@ impl TextArea {
         }
     }
 
-    /// Replace the textarea text and clear any existing text elements.
+    /// Replace the visible textarea text and clear any existing text elements.
+    ///
+    /// This is the "fresh buffer" path for callers that want plain text with no placeholder
+    /// ranges. It intentionally preserves the current kill buffer, because higher-level flows such
+    /// as submit or slash-command dispatch clear the draft through this method and still want
+    /// `Ctrl+Y` to recover the user's most recent kill.
     pub fn set_text_clearing_elements(&mut self, text: &str) {
         self.set_text_inner(text, None);
     }
 
-    /// Replace the textarea text and set the provided text elements.
+    /// Replace the visible textarea text and rebuild the provided text elements.
+    ///
+    /// As with [`Self::set_text_clearing_elements`], this resets only state derived from the
+    /// visible buffer. The kill buffer survives so callers restoring drafts or external edits do
+    /// not silently discard a pending yank target.
     pub fn set_text_with_elements(&mut self, text: &str, elements: &[UserTextElement]) {
         self.set_text_inner(text, Some(elements));
     }
@@ -95,10 +121,11 @@ impl TextArea {
             self.elements.sort_by_key(|e| e.range.start);
         }
         // Stage 3: clamp the cursor and reset derived state tied to the prior content.
+        // The kill buffer is editing history rather than visible-buffer state, so full-buffer
+        // replacements intentionally leave it alone.
         self.cursor_pos = self.clamp_pos_to_nearest_boundary(self.cursor_pos);
         self.wrap_cache.replace(None);
         self.preferred_col = None;
-        self.kill_buffer.clear();
     }
 
     pub fn text(&self) -> &str {
@@ -172,7 +199,7 @@ impl TextArea {
         self.wrapped_lines(width).len() as u16
     }
 
-    #[cfg(test)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.cursor_pos_with_state(area, TextAreaState::default())
     }
@@ -246,8 +273,8 @@ impl TextArea {
 
     /// Handle a single keyboard event and update the buffer/cursor.
     pub fn input(&mut self, event: KeyEvent) {
-        // Only process key presses or repeats; release events can otherwise re-trigger movement
-        // or text insertion when terminals report modifiers differently on key-up.
+        // Only process key presses or repeats; ignore releases to avoid inserting
+        // characters on key-up events when modifiers are no longer reported.
         if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return;
         }
@@ -318,7 +345,12 @@ impl TextArea {
                 code: KeyCode::Delete,
                 modifiers: KeyModifiers::ALT,
                 ..
-            }  => self.delete_forward_word(),
+            }
+            | KeyEvent {
+                code: KeyCode::Char('d'),
+                modifiers: KeyModifiers::ALT,
+                ..
+            } => self.delete_forward_word(),
             KeyEvent {
                 code: KeyCode::Delete,
                 ..
@@ -535,6 +567,12 @@ impl TextArea {
         }
     }
 
+    /// Kill from the cursor to the end of the current logical line.
+    ///
+    /// If the cursor is already at end-of-line and a trailing newline exists, this kills that
+    /// newline so repeated invocations continue making progress. The removed text becomes the next
+    /// yank target and remains available even if a caller later clears or rewrites the visible
+    /// buffer via `set_text_*`.
     pub fn kill_to_end_of_line(&mut self) {
         let eol = self.end_of_current_line();
         let range = if self.cursor_pos == eol {
@@ -565,6 +603,11 @@ impl TextArea {
         }
     }
 
+    /// Insert the most recently killed text at the cursor.
+    ///
+    /// This uses the textarea's single-entry kill buffer. Because whole-buffer replacement APIs do
+    /// not clear that buffer, `yank` can restore text after composer-level clears such as submit
+    /// and slash-command dispatch.
     pub fn yank(&mut self) {
         if self.kill_buffer.is_empty() {
             return;
@@ -1599,6 +1642,21 @@ mod tests {
     }
 
     #[test]
+    fn kill_buffer_persists_across_set_text() {
+        let mut t = ta_with("restore me");
+        t.set_cursor(0);
+        t.kill_to_end_of_line();
+        assert!(t.text().is_empty());
+
+        t.set_text_clearing_elements("/diff");
+        t.set_text_clearing_elements("");
+        t.yank();
+
+        assert_eq!(t.text(), "restore me");
+        assert_eq!(t.cursor(), "restore me".len());
+    }
+
+    #[test]
     fn cursor_left_and_right_handle_graphemes() {
         let mut t = ta_with("a👍b");
         t.set_cursor(t.text().len());
@@ -1743,6 +1801,15 @@ mod tests {
         t.input(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         assert_eq!(t.text(), "ello");
         assert_eq!(t.cursor(), 0);
+    }
+
+    #[test]
+    fn delete_forward_word_alt_d() {
+        let mut t = ta_with("hello world");
+        t.set_cursor(6);
+        t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        pretty_assertions::assert_eq!(t.text(), "hello ");
+        pretty_assertions::assert_eq!(t.cursor(), 6);
     }
 
     #[test]
