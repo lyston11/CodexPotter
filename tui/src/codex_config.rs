@@ -48,7 +48,7 @@ pub struct ResolvedCodexModelConfig {
 
 /// Resolve the effective model metadata used by the startup banner from layered Codex config.
 pub fn resolve_codex_model_config(cwd: &Path) -> io::Result<ResolvedCodexModelConfig> {
-    resolve_codex_model_config_with_runtime_overrides(cwd, None, &[])
+    resolve_codex_model_config_with_runtime_overrides(cwd, None, &[], None)
 }
 
 /// Resolve the startup banner model metadata after applying runtime config overrides.
@@ -57,10 +57,14 @@ pub fn resolve_codex_model_config(cwd: &Path) -> io::Result<ResolvedCodexModelCo
 /// `thread/resume`, while `runtime_config_overrides` must match the effective runtime
 /// `key=value` overrides after folding higher-level CLI flags like `--profile`, `--search`,
 /// `--enable`, and `--disable`.
+///
+/// `fast_mode_override` represents the dedicated CLI `--enable/--disable fast_mode` layer, which
+/// has higher precedence than profile-level `[features].fast_mode` config in upstream Codex.
 pub fn resolve_codex_model_config_with_runtime_overrides(
     cwd: &Path,
     model_override: Option<&str>,
     runtime_config_overrides: &[String],
+    fast_mode_override: Option<bool>,
 ) -> io::Result<ResolvedCodexModelConfig> {
     let raw = load_codex_config(cwd, runtime_config_overrides)?;
 
@@ -81,8 +85,8 @@ pub fn resolve_codex_model_config_with_runtime_overrides(
         .unwrap_or_else(|| DEFAULT_FALLBACK_MODEL.to_string());
     let reasoning_effort = profile_config.reasoning_effort.or(raw.reasoning_effort);
     let service_tier = profile_config.service_tier.or(raw.service_tier);
-    let fast_mode_enabled = profile_config
-        .fast_mode_enabled
+    let fast_mode_enabled = fast_mode_override
+        .or(profile_config.fast_mode_enabled)
         .or(raw.fast_mode_enabled)
         .unwrap_or(true);
 
@@ -777,6 +781,7 @@ fast_mode = false
                 "service_tier=fast".to_string(),
                 "features.fast_mode=true".to_string(),
             ],
+            None,
         )
         .expect("resolve");
 
@@ -825,6 +830,7 @@ fast_mode = true
             cwd.path(),
             Some("gpt-5.4"),
             &["profile=\"fast\"".to_string()],
+            None,
         )
         .expect("resolve");
 
@@ -868,6 +874,7 @@ model = "gpt-5.4"
             &cwd,
             None,
             &["project_root_markers=[\"MARKER\"]".to_string()],
+            None,
         )
         .expect("resolve");
 
@@ -895,6 +902,31 @@ service_tier = "turbo"
                 .contains("config field `service_tier` has invalid value `turbo`"),
             "unexpected error: {err}",
         );
+    }
+
+    #[test]
+    #[serial]
+    fn runtime_fast_mode_override_beats_selected_profile_feature() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        write_config(
+            &codex_home.path().join("config.toml"),
+            r#"
+service_tier = "fast"
+profile = "fast"
+
+[profiles.fast.features]
+fast_mode = true
+"#,
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let resolved =
+            resolve_codex_model_config_with_runtime_overrides(cwd.path(), None, &[], Some(false))
+                .expect("resolve");
+
+        assert_eq!(resolved.is_fast, false);
     }
 
     #[test]

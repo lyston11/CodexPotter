@@ -103,12 +103,14 @@ impl CodexPotterTui {
         cwd: &Path,
         model_override: Option<String>,
         runtime_config_overrides: Vec<String>,
+        fast_mode_override: Option<bool>,
     ) -> std::io::Result<()> {
         self.startup_codex_model_config = Some(
             crate::codex_config::resolve_codex_model_config_with_runtime_overrides(
                 cwd,
                 model_override.as_deref(),
                 &runtime_config_overrides,
+                fast_mode_override,
             )?,
         );
         Ok(())

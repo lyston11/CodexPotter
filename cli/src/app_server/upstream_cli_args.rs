@@ -175,6 +175,29 @@ impl UpstreamCodexCliArgs {
 
         out
     }
+
+    /// Resolve the effective CLI fast-mode override for startup-banner display.
+    ///
+    /// This preserves the same precedence as [`UpstreamCodexCliArgs::to_upstream_codex_args`]:
+    /// repeated `--enable fast_mode` entries are applied before repeated
+    /// `--disable fast_mode` entries, so the latter wins when both are present.
+    pub fn effective_fast_mode_override(&self) -> Option<bool> {
+        let mut fast_mode_enabled = None;
+
+        for feature in &self.enable_features {
+            if feature == "fast_mode" {
+                fast_mode_enabled = Some(true);
+            }
+        }
+
+        for feature in &self.disable_features {
+            if feature == "fast_mode" {
+                fast_mode_enabled = Some(false);
+            }
+        }
+
+        fast_mode_enabled
+    }
 }
 
 fn toml_string_literal(input: &str) -> String {
@@ -307,5 +330,16 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn effective_fast_mode_override_prefers_disable_over_enable() {
+        let args = UpstreamCodexCliArgs {
+            enable_features: vec!["fast_mode".to_string()],
+            disable_features: vec!["fast_mode".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(args.effective_fast_mode_override(), Some(false));
     }
 }

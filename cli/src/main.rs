@@ -235,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
         &workdir,
         cli.upstream_cli_args.model.clone(),
         cli.upstream_cli_args.effective_runtime_config_overrides(),
+        cli.upstream_cli_args.effective_fast_mode_override(),
     )
     .context("resolve startup banner Codex model config")?;
 
