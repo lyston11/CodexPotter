@@ -538,8 +538,8 @@ pub fn new_patch_event(
 /// This is used by the `Verbosity::Minimal` renderer to avoid repeating many one-line `Edited ...`
 /// items when an agent applies several small patches consecutively.
 ///
-/// Divergence (codex-potter): file paths are listed in patch event order (last touch wins), not
-/// sorted alphabetically.
+/// Divergence (codex-potter): file paths are listed in patch event order (first occurrence),
+/// not sorted alphabetically.
 pub fn new_coalesced_compact_patch_event(
     change_sets: &[HashMap<PathBuf, FileChange>],
     cwd: &Path,
@@ -622,9 +622,8 @@ pub fn new_coalesced_compact_patch_event(
     }
 
     let mut merged: HashMap<PathBuf, Summary> = HashMap::new();
-    // Track output ordering in the same order patch events arrive. If a file is touched multiple
-    // times, move it to the end so the final list reflects the chronological stream as closely as
-    // possible while still rendering each path once.
+    // Track output ordering in the same order patch events arrive. Use first occurrence so the
+    // list remains stable as counts are updated by later patch events.
     let mut path_order: Vec<PathBuf> = Vec::new();
 
     for changes in change_sets {
@@ -662,13 +661,11 @@ pub fn new_coalesced_compact_patch_event(
 
             let entry = match merged.entry(path.clone()) {
                 Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => entry.insert(Summary::new(verb)),
+                Entry::Vacant(entry) => {
+                    path_order.push(path.clone());
+                    entry.insert(Summary::new(verb))
+                }
             };
-
-            if let Some(pos) = path_order.iter().position(|p| p == path) {
-                path_order.remove(pos);
-            }
-            path_order.push(path.clone());
             entry.update_verb(verb);
             if move_path.is_some() {
                 entry.move_path = move_path;

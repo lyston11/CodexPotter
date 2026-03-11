@@ -46,7 +46,7 @@ Divergences must be documented in places below to avoid regression when syncing 
   - All `Ran` and `Explored` items are hidden
   - `Worked for ...` separators are hidden
   - Consecutive Change (Edited, Created, Deleted) items are coalesced into one, and provide file list only, no diff body.
-  - The coalesced Change file list preserves patch event order (last touch wins) instead of sorting paths alphabetically.
+  - The coalesced Change file list preserves patch event order instead of sorting paths alphabetically.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success).
 
 ### Shimmer
