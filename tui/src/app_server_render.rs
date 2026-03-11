@@ -5826,6 +5826,36 @@ mod tests {
 
         let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
 
+        // File list should preserve patch event ordering (not alphabetical ordering).
+        let mut changes_b: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_b.insert(
+            PathBuf::from("b.txt"),
+            codex_protocol::protocol::FileChange::Add {
+                content: "new\n".to_string(),
+            },
+        );
+
+        proc.handle_codex_event(Event {
+            id: "patch-b-begin".into(),
+            msg: EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
+                call_id: "patch-b".into(),
+                turn_id: "turn-1".into(),
+                auto_approved: true,
+                changes: changes_b.clone(),
+            }),
+        });
+        proc.handle_codex_event(Event {
+            id: "patch-b-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-b".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_b,
+            }),
+        });
+
         let patch_a = diffy::create_patch("old\n", "new\n").to_string();
         let mut changes_a: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
         changes_a.insert(
@@ -5857,35 +5887,6 @@ mod tests {
             }),
         });
 
-        let mut changes_b: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
-        changes_b.insert(
-            PathBuf::from("b.txt"),
-            codex_protocol::protocol::FileChange::Add {
-                content: "new\n".to_string(),
-            },
-        );
-
-        proc.handle_codex_event(Event {
-            id: "patch-b-begin".into(),
-            msg: EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
-                call_id: "patch-b".into(),
-                turn_id: "turn-1".into(),
-                auto_approved: true,
-                changes: changes_b.clone(),
-            }),
-        });
-        proc.handle_codex_event(Event {
-            id: "patch-b-end".into(),
-            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
-                call_id: "patch-b".into(),
-                turn_id: "turn-1".into(),
-                stdout: String::new(),
-                stderr: String::new(),
-                success: true,
-                changes: changes_b,
-            }),
-        });
-
         proc.handle_codex_event(Event {
             id: "agent-message".into(),
             msg: EventMsg::AgentMessage(AgentMessageEvent {
@@ -5902,8 +5903,8 @@ mod tests {
             patch,
             &vec![
                 "• Changed 2 files (+2 -1)".to_string(),
-                "  └ Edited a.txt (+1 -1)".to_string(),
-                "    Added b.txt (+1 -0)".to_string(),
+                "  └ Added b.txt (+1 -0)".to_string(),
+                "    Edited a.txt (+1 -1)".to_string(),
             ]
         );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);

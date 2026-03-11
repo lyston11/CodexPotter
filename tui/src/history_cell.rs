@@ -537,6 +537,9 @@ pub fn new_patch_event(
 ///
 /// This is used by the `Verbosity::Minimal` renderer to avoid repeating many one-line `Edited ...`
 /// items when an agent applies several small patches consecutively.
+///
+/// Divergence (codex-potter): file paths are listed in patch event order (last touch wins), not
+/// sorted alphabetically.
 pub fn new_coalesced_compact_patch_event(
     change_sets: &[HashMap<PathBuf, FileChange>],
     cwd: &Path,
@@ -619,9 +622,22 @@ pub fn new_coalesced_compact_patch_event(
     }
 
     let mut merged: HashMap<PathBuf, Summary> = HashMap::new();
+    // Track output ordering in the same order patch events arrive. If a file is touched multiple
+    // times, move it to the end so the final list reflects the chronological stream as closely as
+    // possible while still rendering each path once.
+    let mut path_order: Vec<PathBuf> = Vec::new();
 
     for changes in change_sets {
-        for (path, change) in changes {
+        // `HashMap` iteration order is intentionally non-deterministic; sort the keys so that
+        // multi-file patch events render stably, while preserving the higher-level event ordering
+        // from the `change_sets` slice.
+        let mut paths: Vec<&PathBuf> = changes.keys().collect();
+        paths.sort();
+
+        for path in paths {
+            let Some(change) = changes.get(path) else {
+                continue;
+            };
             let verb = match &change {
                 FileChange::Add { .. } => Verb::Added,
                 FileChange::Delete { .. } => Verb::Deleted,
@@ -642,9 +658,17 @@ pub fn new_coalesced_compact_patch_event(
                 _ => None,
             };
 
-            let entry = merged
-                .entry(path.clone())
-                .or_insert_with(|| Summary::new(verb));
+            use std::collections::hash_map::Entry;
+
+            let entry = match merged.entry(path.clone()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(Summary::new(verb)),
+            };
+
+            if let Some(pos) = path_order.iter().position(|p| p == path) {
+                path_order.remove(pos);
+            }
+            path_order.push(path.clone());
             entry.update_verb(verb);
             if move_path.is_some() {
                 entry.move_path = move_path;
@@ -658,8 +682,26 @@ pub fn new_coalesced_compact_patch_event(
         return PlainHistoryCell::new(Vec::new());
     }
 
-    let mut rows: Vec<(PathBuf, Summary)> = merged.into_iter().collect();
-    rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut rows: Vec<(PathBuf, Summary)> = Vec::with_capacity(merged.len());
+    for path in path_order {
+        match merged.remove(&path) {
+            Some(summary) => rows.push((path, summary)),
+            None => debug_assert!(
+                false,
+                "coalesced patch summary missing expected path in merged map: {}",
+                path.display()
+            ),
+        }
+    }
+    if !merged.is_empty() {
+        debug_assert!(
+            false,
+            "coalesced patch summary missing expected paths in output order"
+        );
+        let mut leftovers: Vec<(PathBuf, Summary)> = merged.into_iter().collect();
+        leftovers.sort_by(|(a, _), (b, _)| a.cmp(b));
+        rows.extend(leftovers);
+    }
 
     let file_count = rows.len();
     let noun = if file_count == 1 { "file" } else { "files" };
