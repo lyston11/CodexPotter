@@ -1,0 +1,9 @@
+---
+source: tui/src/app_server_render.rs
+expression: lines_to_plain_text(&transient_lines)
+---
+
+• Viewed Image
+  └ /tmp/slock_ui_05_invite_human_modal.png
+    /tmp/slock_ui_06_edit_channel_modal.png
+    /tmp/slock_ui_07_create_channel_modal.png

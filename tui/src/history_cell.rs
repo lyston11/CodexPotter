@@ -782,13 +782,20 @@ pub fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
-pub fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistoryCell {
-    let display_path = display_path_for(&path, cwd);
+/// Create a `Viewed Image` cell.
+///
+/// Divergence (codex-potter): consecutive image tool calls are folded into one transcript item,
+/// preserving event order and rendering newly arrived paths into the live viewport immediately.
+pub fn new_view_image_tool_calls(paths: &[PathBuf], cwd: &Path) -> PlainHistoryCell {
+    if paths.is_empty() {
+        return PlainHistoryCell::new(Vec::new());
+    }
 
-    let lines: Vec<Line<'static>> = vec![
-        vec!["• ".dim(), "Viewed Image".bold()].into(),
-        vec!["  └ ".dim(), display_path.dim()].into(),
-    ];
+    let mut lines: Vec<Line<'static>> = vec![vec!["• ".dim(), "Viewed Image".bold()].into()];
+    for (idx, path) in paths.iter().enumerate() {
+        let prefix = if idx == 0 { "  └ " } else { "    " };
+        lines.push(vec![prefix.dim(), display_path_for(path, cwd).dim()].into());
+    }
 
     PlainHistoryCell { lines }
 }

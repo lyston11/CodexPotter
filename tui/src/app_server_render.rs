@@ -469,6 +469,9 @@ struct AppServerEventProcessor {
     /// Divergence (codex-potter): coalesce consecutive successful non-shell `Ran` items into one
     /// history cell.
     pending_success_ran_cell: Option<ExecCell>,
+    /// Divergence (codex-potter): coalesce consecutive `Viewed Image` items into one history
+    /// cell across all verbosity modes, while preserving event order.
+    pending_view_image_paths: Vec<PathBuf>,
     /// Divergence (codex-potter): coalesce consecutive successful patch applications into one
     /// compact `Edited ...` summary when `Verbosity::Minimal`.
     pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
@@ -507,6 +510,7 @@ impl AppServerEventProcessor {
             current_elapsed_secs: None,
             pending_exploring_cell: None,
             pending_success_ran_cell: None,
+            pending_view_image_paths: Vec::new(),
             pending_compact_patch_changes: Vec::new(),
             pending_compact_patch_preview: None,
             pending_potter_project_succeeded: None,
@@ -514,8 +518,7 @@ impl AppServerEventProcessor {
     }
 
     fn handle_retryable_stream_error(&mut self) {
-        self.flush_pending_exploring_cell();
-        self.flush_pending_success_ran_cell();
+        self.flush_pending_live_activity_cells();
         self.flush_pending_compact_patch_changes();
         self.flush_agent_stream();
         self.flush_plan_stream();
@@ -558,10 +561,10 @@ impl AppServerEventProcessor {
     /// In `Verbosity::Minimal`, streamed agent text is intentionally held until completion because
     /// `AgentMessageDelta` does not carry `phase`, and once a history cell is inserted we cannot
     /// retroactively restyle it from normal intensity to dim commentary. Exit paths still need to
-    /// flush that buffered content so the user does not lose in-flight output.
+    /// flush that buffered content, including coalesced `Viewed Image` blocks, so the user does
+    /// not lose in-flight output.
     fn flush_live_transcript_buffers(&mut self) {
-        self.flush_pending_exploring_cell();
-        self.flush_pending_success_ran_cell();
+        self.flush_pending_live_activity_cells();
         self.flush_agent_stream();
         self.flush_plan_stream();
         self.flush_pending_compact_patch_changes();
@@ -656,8 +659,7 @@ impl AppServerEventProcessor {
                 user_prompt_file,
                 ..
             } => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 if let Some(message) = user_message.filter(|message| !message.is_empty()) {
                     self.emit_user_prompt(message);
                 }
@@ -667,8 +669,7 @@ impl AppServerEventProcessor {
                 ));
             }
             EventMsg::PotterRoundStarted { current, total } => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(
                     crate::history_cell_potter::new_potter_round_started(current, total),
@@ -681,8 +682,7 @@ impl AppServerEventProcessor {
                 git_commit_start,
                 git_commit_end,
             } => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.pending_potter_project_succeeded = Some(PendingPotterProjectSucceeded {
                     rounds,
                     duration,
@@ -692,8 +692,7 @@ impl AppServerEventProcessor {
                 });
             }
             EventMsg::PotterRoundFinished { .. } => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 if let Some(done) = self.pending_potter_project_succeeded.take() {
                     self.emit_history_cell(Box::new(
                         crate::history_cell_potter::new_potter_project_succeeded(
@@ -726,8 +725,7 @@ impl AppServerEventProcessor {
                 self.saw_plan_delta = false;
             }
             EventMsg::AgentMessageDelta(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 if !self.saw_agent_delta {
                     self.maybe_emit_final_message_separator();
                 }
@@ -740,8 +738,7 @@ impl AppServerEventProcessor {
                 }
             }
             EventMsg::PlanDelta(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 if !self.saw_agent_delta && !self.saw_plan_delta {
                     self.maybe_emit_final_message_separator();
                 }
@@ -761,8 +758,7 @@ impl AppServerEventProcessor {
                 }
             }
             EventMsg::AgentMessage(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 let dim_commentary = self.verbosity == Verbosity::Minimal
                     && matches!(ev.phase, Some(MessagePhase::Commentary));
                 if self.saw_agent_delta {
@@ -773,8 +769,7 @@ impl AppServerEventProcessor {
                 self.emit_agent_message(&ev.message, dim_commentary);
             }
             EventMsg::TurnComplete(_) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 // Flush any remaining agent markdown buffer.
                 self.flush_agent_stream();
                 self.flush_plan_stream();
@@ -793,8 +788,7 @@ impl AppServerEventProcessor {
                 self.flush_pending_compact_patch_changes();
             }
             EventMsg::TurnAborted(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.flush_agent_stream();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
@@ -807,33 +801,28 @@ impl AppServerEventProcessor {
                 self.flush_pending_compact_patch_changes();
             }
             EventMsg::Warning(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_warning_event(ev.message)));
             }
             EventMsg::ContextCompacted(_) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.emit_agent_message("Context compacted", false);
             }
             EventMsg::DeprecationNotice(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_deprecation_notice(
                     ev.summary, ev.details,
                 )));
             }
             EventMsg::PlanUpdate(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_plan_update(ev)));
             }
             EventMsg::WebSearchEnd(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_web_search_call(ev.query)));
                 self.had_work_activity = true;
@@ -841,10 +830,8 @@ impl AppServerEventProcessor {
             EventMsg::ViewImageToolCall(ev) => {
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
-                self.needs_final_message_separator = true;
-                self.emit_history_cell(Box::new(history_cell::new_view_image_tool_call(
-                    ev.path, &self.cwd,
-                )));
+                self.flush_pending_compact_patch_changes();
+                self.pending_view_image_paths.push(ev.path);
             }
             EventMsg::ExecCommandEnd(ev) => {
                 // Align with upstream Codex TUI behavior: flush any newline-gated agent output
@@ -879,6 +866,7 @@ impl AppServerEventProcessor {
 
                 if cell.is_exploring_cell() {
                     self.flush_pending_success_ran_cell();
+                    self.flush_pending_view_image_tool_calls();
                     if let Some(pending) = self.pending_exploring_cell.as_mut() {
                         pending.calls.extend(cell.calls);
                     } else {
@@ -886,14 +874,14 @@ impl AppServerEventProcessor {
                     }
                 } else if Self::can_coalesce_success_ran_cell(&cell) {
                     self.flush_pending_exploring_cell();
+                    self.flush_pending_view_image_tool_calls();
                     if let Some(pending) = self.pending_success_ran_cell.as_mut() {
                         pending.calls.extend(cell.calls);
                     } else {
                         self.pending_success_ran_cell = Some(cell);
                     }
                 } else {
-                    self.flush_pending_exploring_cell();
-                    self.flush_pending_success_ran_cell();
+                    self.flush_pending_live_activity_cells();
                     self.needs_final_message_separator = true;
                     if self.verbosity != Verbosity::Minimal {
                         self.emit_history_cell(Box::new(cell));
@@ -902,8 +890,7 @@ impl AppServerEventProcessor {
                 self.had_work_activity = true;
             }
             EventMsg::PatchApplyEnd(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 if ev.success && self.verbosity == Verbosity::Minimal {
                     self.pending_compact_patch_changes.push(ev.changes);
                     self.pending_compact_patch_preview =
@@ -952,8 +939,7 @@ impl AppServerEventProcessor {
                 self.on_collab_event(crate::multi_agents::resume_end(ev))
             }
             EventMsg::Error(ev) => {
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
+                self.flush_pending_live_activity_cells();
                 self.flush_agent_stream();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
@@ -971,11 +957,16 @@ impl AppServerEventProcessor {
         // action -> agent continues" flow.
         self.flush_agent_stream();
         self.flush_plan_stream();
-        self.flush_pending_exploring_cell();
-        self.flush_pending_success_ran_cell();
+        self.flush_pending_live_activity_cells();
         self.needs_final_message_separator = true;
         self.emit_history_cell(Box::new(cell));
         self.had_work_activity = true;
+    }
+
+    fn flush_pending_live_activity_cells(&mut self) {
+        self.flush_pending_exploring_cell();
+        self.flush_pending_success_ran_cell();
+        self.flush_pending_view_image_tool_calls();
     }
 
     fn flush_pending_exploring_cell(&mut self) {
@@ -987,6 +978,18 @@ impl AppServerEventProcessor {
             return;
         }
         self.emit_history_cell(Box::new(cell));
+    }
+
+    fn flush_pending_view_image_tool_calls(&mut self) {
+        if self.pending_view_image_paths.is_empty() {
+            return;
+        }
+
+        self.needs_final_message_separator = true;
+        let paths = std::mem::take(&mut self.pending_view_image_paths);
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+            history_cell::new_view_image_tool_calls(&paths, &self.cwd),
+        )));
     }
 
     fn flush_pending_compact_patch_changes(&mut self) {
@@ -1204,6 +1207,17 @@ impl RenderAppState {
                 transient_lines.push(Line::from(""));
                 transient_lines.extend(cell.display_lines(width));
             }
+        }
+
+        if !self.processor.pending_view_image_paths.is_empty() {
+            transient_lines.push(Line::from(""));
+            transient_lines.extend(
+                history_cell::new_view_image_tool_calls(
+                    &self.processor.pending_view_image_paths,
+                    &self.processor.cwd,
+                )
+                .display_lines(width),
+            );
         }
 
         if self.processor.verbosity == Verbosity::Minimal
@@ -2138,6 +2152,7 @@ mod tests {
     use codex_protocol::protocol::TurnAbortedEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
+    use codex_protocol::protocol::ViewImageToolCallEvent;
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
@@ -6103,6 +6118,151 @@ mod tests {
         let rendered = explored.join("\n") + "\n";
         assert_snapshot!(
             "round_renderer_flushes_explored_cells_on_turn_complete",
+            rendered
+        );
+    }
+
+    #[test]
+    fn round_renderer_coalesces_viewed_image_cells_in_event_order() {
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        let _ = drain_history_cell_strings(&mut rx, u16::MAX);
+
+        for (id, path) in [
+            ("view-image-1", "/tmp/slock_ui_05_invite_human_modal.png"),
+            ("view-image-2", "/tmp/slock_ui_06_edit_channel_modal.png"),
+            ("view-image-3", "/tmp/slock_ui_07_create_channel_modal.png"),
+            ("view-image-4", "/tmp/slock_ui_08_create_agent_modal.png"),
+        ] {
+            proc.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: id.into(),
+                    path: PathBuf::from(path),
+                }),
+            });
+        }
+
+        assert!(rx.try_recv().is_err());
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "ok".into(),
+                phase: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, u16::MAX);
+        let [viewed_images, agent_message] = events.as_slice() else {
+            panic!("expected viewed image cell, then agent message");
+        };
+        pretty_assertions::assert_eq!(
+            viewed_images,
+            &vec![
+                "• Viewed Image".to_string(),
+                "  └ /tmp/slock_ui_05_invite_human_modal.png".to_string(),
+                "    /tmp/slock_ui_06_edit_channel_modal.png".to_string(),
+                "    /tmp/slock_ui_07_create_channel_modal.png".to_string(),
+                "    /tmp/slock_ui_08_create_agent_modal.png".to_string(),
+            ]
+        );
+        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
+    }
+
+    #[test]
+    fn round_renderer_live_viewed_images_render_in_minimal_transient_lines() {
+        let width: u16 = 80;
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+        let mut proc = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::Minimal);
+        proc.emit_user_prompt("test prompt".to_string());
+        let _ = drain_history_cell_strings(&mut rx, width);
+
+        for (id, path) in [
+            ("view-image-1", "/tmp/slock_ui_05_invite_human_modal.png"),
+            ("view-image-2", "/tmp/slock_ui_06_edit_channel_modal.png"),
+            ("view-image-3", "/tmp/slock_ui_07_create_channel_modal.png"),
+        ] {
+            proc.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: id.into(),
+                    path: PathBuf::from(path),
+                }),
+            });
+        }
+
+        assert!(rx.try_recv().is_err());
+
+        let (codex_op_tx, _codex_op_rx) = unbounded_channel::<Op>();
+        let file_search_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        let file_search = FileSearchManager::new(file_search_dir, app_event_tx.clone());
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
+            PathBuf::from("project"),
+            Some("main".to_string()),
+        ));
+        bottom_pane.set_task_running(true);
+
+        let mut app = RenderAppState::new(
+            proc,
+            app_event_tx,
+            Some(codex_op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.has_emitted_history_lines = true;
+
+        let transient_lines = app.build_transient_lines(width);
+        assert_snapshot!(
+            "round_renderer_live_viewed_images_in_minimal_transient_lines",
+            lines_to_plain_text(&transient_lines)
+        );
+    }
+
+    #[test]
+    fn round_renderer_flushes_viewed_image_cells_on_turn_complete_in_minimal() {
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        let _ = drain_history_cell_strings(&mut rx, u16::MAX);
+        proc.verbosity = Verbosity::Minimal;
+
+        for (id, path) in [
+            ("view-image-1", "/tmp/slock_ui_05_invite_human_modal.png"),
+            ("view-image-2", "/tmp/slock_ui_06_edit_channel_modal.png"),
+        ] {
+            proc.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: id.into(),
+                    path: PathBuf::from(path),
+                }),
+            });
+        }
+
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, u16::MAX);
+        let [viewed_images] = events.as_slice() else {
+            panic!("expected exactly one viewed image cell");
+        };
+        let rendered = viewed_images.join("\n") + "\n";
+        assert_snapshot!(
+            "round_renderer_flushes_viewed_image_cells_on_turn_complete_in_minimal",
             rendered
         );
     }
