@@ -828,6 +828,8 @@ impl AppServerEventProcessor {
                 self.had_work_activity = true;
             }
             EventMsg::ViewImageToolCall(ev) => {
+                self.flush_agent_stream();
+                self.flush_plan_stream();
                 self.flush_pending_exploring_cell();
                 self.flush_pending_success_ran_cell();
                 self.flush_pending_compact_patch_changes();
@@ -6264,6 +6266,52 @@ mod tests {
         assert_snapshot!(
             "round_renderer_flushes_viewed_image_cells_on_turn_complete_in_minimal",
             rendered
+        );
+    }
+
+    #[test]
+    fn round_renderer_flushes_agent_stream_before_viewed_image_in_minimal() {
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+        proc.verbosity = Verbosity::Minimal;
+
+        proc.handle_codex_event(Event {
+            id: "agent-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "first message.".into(),
+            }),
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "expected minimal mode to keep agent deltas buffered"
+        );
+
+        proc.handle_codex_event(Event {
+            id: "view-image-1".into(),
+            msg: EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                call_id: "view-image-1".into(),
+                path: PathBuf::from("/tmp/slock_ui_05_invite_human_modal.png"),
+            }),
+        });
+
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, u16::MAX);
+        let [agent_message, viewed_images] = events.as_slice() else {
+            panic!("expected agent stream flush before viewed image cell");
+        };
+        pretty_assertions::assert_eq!(agent_message, &vec!["• first message.".to_string()]);
+        pretty_assertions::assert_eq!(
+            viewed_images,
+            &vec![
+                "• Viewed Image".to_string(),
+                "  └ /tmp/slock_ui_05_invite_human_modal.png".to_string(),
+            ]
         );
     }
 
