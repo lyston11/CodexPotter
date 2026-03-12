@@ -353,9 +353,39 @@ impl HistoryCell for PrefixedWrappedHistoryCell {
     }
 }
 
-pub fn new_web_search_call(query: String) -> PrefixedWrappedHistoryCell {
-    let text: Text<'static> = Line::from(vec!["Searched".bold(), " ".into(), query.into()]).into();
-    PrefixedWrappedHistoryCell::new(text, "• ".dim(), "  ")
+#[derive(Debug)]
+pub struct WebSearchToolCallsCell {
+    queries: Vec<String>,
+}
+
+pub fn new_web_search_tool_calls(queries: Vec<String>) -> WebSearchToolCallsCell {
+    WebSearchToolCallsCell { queries }
+}
+
+impl HistoryCell for WebSearchToolCallsCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 || self.queries.is_empty() {
+            return Vec::new();
+        }
+
+        let wrap_width = width.max(1) as usize;
+        let mut out: Vec<Line<'static>> = vec![vec!["• ".dim(), "Searched".bold()].into()];
+
+        for (idx, query) in self.queries.iter().enumerate() {
+            let initial_prefix: Line<'static> = if idx == 0 {
+                "  └ ".dim().into()
+            } else {
+                "    ".dim().into()
+            };
+            let opts = RtOptions::new(wrap_width)
+                .initial_indent(initial_prefix)
+                .subsequent_indent("    ".dim().into());
+            let wrapped = adaptive_wrap_lines(query.lines(), opts);
+            out.extend(wrapped);
+        }
+
+        out
+    }
 }
 
 pub fn new_info_event(message: String, hint: Option<String>) -> PlainHistoryCell {

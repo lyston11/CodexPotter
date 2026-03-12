@@ -470,8 +470,11 @@ struct AppServerEventProcessor {
     /// history cell.
     pending_success_ran_cell: Option<ExecCell>,
     /// Divergence (codex-potter): coalesce consecutive `Viewed Image` items into one history
-    /// cell across all verbosity modes, while preserving event order.
+    /// cell when `Verbosity::Simple`, while suppressing them entirely in `Verbosity::Minimal`.
     pending_view_image_paths: Vec<PathBuf>,
+    /// Divergence (codex-potter): coalesce consecutive `Searched` items into one history cell
+    /// when `Verbosity::Simple`, while suppressing them entirely in `Verbosity::Minimal`.
+    pending_web_search_queries: Vec<String>,
     /// Divergence (codex-potter): coalesce consecutive successful patch applications into one
     /// compact `Edited ...` summary when `Verbosity::Minimal`.
     pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
@@ -511,6 +514,7 @@ impl AppServerEventProcessor {
             pending_exploring_cell: None,
             pending_success_ran_cell: None,
             pending_view_image_paths: Vec::new(),
+            pending_web_search_queries: Vec::new(),
             pending_compact_patch_changes: Vec::new(),
             pending_compact_patch_preview: None,
             pending_potter_project_succeeded: None,
@@ -561,8 +565,7 @@ impl AppServerEventProcessor {
     /// In `Verbosity::Minimal`, streamed agent text is intentionally held until completion because
     /// `AgentMessageDelta` does not carry `phase`, and once a history cell is inserted we cannot
     /// retroactively restyle it from normal intensity to dim commentary. Exit paths still need to
-    /// flush that buffered content, including coalesced `Viewed Image` blocks, so the user does
-    /// not lose in-flight output.
+    /// flush that buffered content so the user does not lose in-flight output.
     fn flush_live_transcript_buffers(&mut self) {
         self.flush_pending_live_activity_cells();
         self.flush_agent_stream();
@@ -822,19 +825,35 @@ impl AppServerEventProcessor {
                 self.emit_history_cell(Box::new(history_cell::new_plan_update(ev)));
             }
             EventMsg::WebSearchEnd(ev) => {
-                self.flush_pending_live_activity_cells();
+                if self.verbosity == Verbosity::Minimal {
+                    return;
+                }
+
+                // Align with upstream behavior: flush any newline-gated agent output before
+                // rendering the tool result so ordering matches "agent explains -> tool runs -> agent continues".
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+
+                self.flush_pending_exploring_cell();
+                self.flush_pending_success_ran_cell();
+                self.flush_pending_view_image_tool_calls();
+                self.flush_pending_compact_patch_changes();
+
+                self.pending_web_search_queries.push(ev.query);
                 self.needs_final_message_separator = true;
-                self.emit_history_cell(Box::new(history_cell::new_web_search_call(ev.query)));
                 self.had_work_activity = true;
             }
             EventMsg::ViewImageToolCall(ev) => {
-                self.flush_agent_stream();
-                self.flush_plan_stream();
-                self.flush_pending_exploring_cell();
-                self.flush_pending_success_ran_cell();
-                self.flush_pending_compact_patch_changes();
-                self.pending_view_image_paths.push(ev.path);
-                self.had_work_activity = true;
+                if self.verbosity == Verbosity::Simple {
+                    self.flush_agent_stream();
+                    self.flush_plan_stream();
+                    self.flush_pending_exploring_cell();
+                    self.flush_pending_success_ran_cell();
+                    self.flush_pending_web_search_calls();
+                    self.flush_pending_compact_patch_changes();
+                    self.pending_view_image_paths.push(ev.path);
+                    self.had_work_activity = true;
+                }
             }
             EventMsg::ExecCommandEnd(ev) => {
                 // Align with upstream Codex TUI behavior: flush any newline-gated agent output
@@ -869,6 +888,7 @@ impl AppServerEventProcessor {
 
                 if cell.is_exploring_cell() {
                     self.flush_pending_success_ran_cell();
+                    self.flush_pending_web_search_calls();
                     self.flush_pending_view_image_tool_calls();
                     if let Some(pending) = self.pending_exploring_cell.as_mut() {
                         pending.calls.extend(cell.calls);
@@ -877,6 +897,7 @@ impl AppServerEventProcessor {
                     }
                 } else if Self::can_coalesce_success_ran_cell(&cell) {
                     self.flush_pending_exploring_cell();
+                    self.flush_pending_web_search_calls();
                     self.flush_pending_view_image_tool_calls();
                     if let Some(pending) = self.pending_success_ran_cell.as_mut() {
                         pending.calls.extend(cell.calls);
@@ -969,6 +990,7 @@ impl AppServerEventProcessor {
     fn flush_pending_live_activity_cells(&mut self) {
         self.flush_pending_exploring_cell();
         self.flush_pending_success_ran_cell();
+        self.flush_pending_web_search_calls();
         self.flush_pending_view_image_tool_calls();
     }
 
@@ -988,11 +1010,29 @@ impl AppServerEventProcessor {
             return;
         }
 
-        self.needs_final_message_separator = true;
         let paths = std::mem::take(&mut self.pending_view_image_paths);
+        if self.verbosity == Verbosity::Minimal {
+            return;
+        }
+
+        self.needs_final_message_separator = true;
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             history_cell::new_view_image_tool_calls(&paths, &self.cwd),
         )));
+    }
+
+    fn flush_pending_web_search_calls(&mut self) {
+        if self.pending_web_search_queries.is_empty() {
+            return;
+        }
+
+        let queries = std::mem::take(&mut self.pending_web_search_queries);
+        if self.verbosity == Verbosity::Minimal {
+            return;
+        }
+
+        self.needs_final_message_separator = true;
+        self.emit_history_cell(Box::new(history_cell::new_web_search_tool_calls(queries)));
     }
 
     fn flush_pending_compact_patch_changes(&mut self) {
@@ -1212,7 +1252,21 @@ impl RenderAppState {
             }
         }
 
-        if !self.processor.pending_view_image_paths.is_empty() {
+        if self.processor.verbosity == Verbosity::Simple
+            && !self.processor.pending_web_search_queries.is_empty()
+        {
+            transient_lines.push(Line::from(""));
+            transient_lines.extend(
+                history_cell::new_web_search_tool_calls(
+                    self.processor.pending_web_search_queries.clone(),
+                )
+                .display_lines(width),
+            );
+        }
+
+        if self.processor.verbosity == Verbosity::Simple
+            && !self.processor.pending_view_image_paths.is_empty()
+        {
             transient_lines.push(Line::from(""));
             transient_lines.extend(
                 history_cell::new_view_image_tool_calls(
@@ -2156,6 +2210,7 @@ mod tests {
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::ViewImageToolCallEvent;
+    use codex_protocol::protocol::WebSearchEndEvent;
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
@@ -6127,8 +6182,10 @@ mod tests {
 
     #[test]
     fn round_renderer_coalesces_viewed_image_cells_in_event_order() {
+        let width: u16 = 80;
         let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
-        let _ = drain_history_cell_strings(&mut rx, u16::MAX);
+        let _ = drain_history_cell_strings(&mut rx, width);
+        proc.verbosity = Verbosity::Simple;
 
         for (id, path) in [
             ("view-image-1", "/tmp/slock_ui_05_invite_human_modal.png"),
@@ -6155,9 +6212,9 @@ mod tests {
             }),
         });
 
-        let events = drain_history_cell_strings(&mut rx, u16::MAX);
-        let [viewed_images, agent_message] = events.as_slice() else {
-            panic!("expected viewed image cell, then agent message");
+        let events = drain_history_cell_strings(&mut rx, width);
+        let [viewed_images, _separator, agent_message] = events.as_slice() else {
+            panic!("expected viewed image cell, separator, then agent message");
         };
         pretty_assertions::assert_eq!(
             viewed_images,
@@ -6173,7 +6230,159 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_live_viewed_images_render_in_minimal_transient_lines() {
+    fn round_renderer_coalesces_web_search_cells_in_simple() {
+        let width: u16 = 80;
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        let _ = drain_history_cell_strings(&mut rx, width);
+        proc.verbosity = Verbosity::Simple;
+
+        for (id, query) in [
+            (
+                "search-1",
+                "'--label=' in\nhttps://docs.podman.io/en/latest/markdown/podman-create.1.html",
+            ),
+            (
+                "search-2",
+                "site:docs.podman.io/en/stable/markdown podman-logs official docs",
+            ),
+        ] {
+            proc.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::WebSearchEnd(WebSearchEndEvent {
+                    call_id: id.into(),
+                    query: query.to_string(),
+                }),
+            });
+        }
+
+        assert!(rx.try_recv().is_err());
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "ok".into(),
+                phase: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, width);
+        let [searches, _separator, agent_message] = events.as_slice() else {
+            panic!("expected web search cell, separator, then agent message");
+        };
+        pretty_assertions::assert_eq!(
+            searches,
+            &vec![
+                "• Searched".to_string(),
+                "  └ '--label=' in".to_string(),
+                "    https://docs.podman.io/en/latest/markdown/podman-create.1.html".to_string(),
+                "    site:docs.podman.io/en/stable/markdown podman-logs official docs".to_string(),
+            ]
+        );
+        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
+    }
+
+    #[test]
+    fn round_renderer_simple_renders_live_web_searches_in_transient_lines() {
+        let width: u16 = 80;
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+        let mut proc = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::Simple);
+        proc.emit_user_prompt("test prompt".to_string());
+        let _ = drain_history_cell_strings(&mut rx, width);
+
+        for (id, query) in [
+            (
+                "search-1",
+                "'--label=' in\nhttps://docs.podman.io/en/latest/markdown/podman-create.1.html",
+            ),
+            (
+                "search-2",
+                "site:docs.podman.io/en/stable/markdown podman-logs official docs",
+            ),
+        ] {
+            proc.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::WebSearchEnd(WebSearchEndEvent {
+                    call_id: id.into(),
+                    query: query.to_string(),
+                }),
+            });
+        }
+
+        assert!(rx.try_recv().is_err());
+
+        let (codex_op_tx, _codex_op_rx) = unbounded_channel::<Op>();
+        let file_search_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        let file_search = FileSearchManager::new(file_search_dir, app_event_tx.clone());
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
+            PathBuf::from("project"),
+            Some("main".to_string()),
+        ));
+        bottom_pane.set_task_running(true);
+
+        let mut app = RenderAppState::new(
+            proc,
+            app_event_tx,
+            Some(codex_op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.has_emitted_history_lines = true;
+
+        pretty_assertions::assert_eq!(
+            lines_to_plain_strings(&app.build_transient_lines(width)),
+            vec![
+                "".to_string(),
+                "• Searched".to_string(),
+                "  └ '--label=' in".to_string(),
+                "    https://docs.podman.io/en/latest/markdown/podman-create.1.html".to_string(),
+                "    site:docs.podman.io/en/stable/markdown podman-logs official docs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_suppresses_web_search_cells() {
+        let width: u16 = 80;
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        let _ = drain_history_cell_strings(&mut rx, width);
+        proc.verbosity = Verbosity::Minimal;
+
+        proc.handle_codex_event(Event {
+            id: "search-1".into(),
+            msg: EventMsg::WebSearchEnd(WebSearchEndEvent {
+                call_id: "search-1".into(),
+                query: "podman logs --follow".to_string(),
+            }),
+        });
+
+        proc.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "ok".into(),
+                phase: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, width);
+        let [agent_message] = events.as_slice() else {
+            panic!("expected only agent message in minimal mode");
+        };
+        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
+    }
+
+    #[test]
+    fn round_renderer_minimal_hides_viewed_images_from_transient_lines() {
         let width: u16 = 80;
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
@@ -6225,10 +6434,10 @@ mod tests {
         );
         app.has_emitted_history_lines = true;
 
-        let transient_lines = app.build_transient_lines(width);
-        assert_snapshot!(
-            "round_renderer_live_viewed_images_in_minimal_transient_lines",
-            lines_to_plain_text(&transient_lines)
+        let transient_blob = lines_to_plain_text(&app.build_transient_lines(width));
+        assert!(
+            !transient_blob.contains("Viewed Image"),
+            "expected minimal mode to hide viewed images; got: {transient_blob:?}"
         );
     }
 
@@ -6318,7 +6527,7 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_flushes_viewed_image_cells_on_turn_complete_in_minimal() {
+    fn round_renderer_minimal_suppresses_viewed_image_cells_on_turn_complete() {
         let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
         let _ = drain_history_cell_strings(&mut rx, u16::MAX);
         proc.verbosity = Verbosity::Minimal;
@@ -6345,18 +6554,14 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, u16::MAX);
-        let [viewed_images] = events.as_slice() else {
-            panic!("expected exactly one viewed image cell");
-        };
-        let rendered = viewed_images.join("\n") + "\n";
-        assert_snapshot!(
-            "round_renderer_flushes_viewed_image_cells_on_turn_complete_in_minimal",
-            rendered
+        assert!(
+            events.is_empty(),
+            "expected minimal mode to suppress viewed images; got: {events:?}"
         );
     }
 
     #[test]
-    fn round_renderer_flushes_agent_stream_before_viewed_image_in_minimal() {
+    fn round_renderer_viewed_image_does_not_flush_agent_stream_in_minimal() {
         let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
         proc.verbosity = Verbosity::Minimal;
 
@@ -6388,17 +6593,10 @@ mod tests {
         });
 
         let events = drain_history_cell_strings(&mut rx, u16::MAX);
-        let [agent_message, viewed_images] = events.as_slice() else {
-            panic!("expected agent stream flush before viewed image cell");
+        let [agent_message] = events.as_slice() else {
+            panic!("expected agent stream flush on turn complete only");
         };
         pretty_assertions::assert_eq!(agent_message, &vec!["• first message.".to_string()]);
-        pretty_assertions::assert_eq!(
-            viewed_images,
-            &vec![
-                "• Viewed Image".to_string(),
-                "  └ /tmp/slock_ui_05_invite_human_modal.png".to_string(),
-            ]
-        );
     }
 
     #[test]
