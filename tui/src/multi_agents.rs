@@ -8,6 +8,7 @@ use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
 use crate::text_formatting::truncate_text;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentRef;
@@ -43,17 +44,21 @@ pub fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         new_agent_nickname,
         new_agent_role,
         prompt,
+        model,
+        reasoning_effort,
         status: _,
     } = ev;
 
     let title = match new_thread_id {
-        Some(thread_id) => title_with_agent(
+        Some(thread_id) => title_with_agent_and_spawn_request(
             "Spawned",
             AgentLabel {
                 thread_id: Some(thread_id),
                 nickname: new_agent_nickname.as_deref(),
                 role: new_agent_role.as_deref(),
             },
+            &model,
+            reasoning_effort,
         ),
         None => title_text("Agent spawn failed"),
     };
@@ -216,6 +221,18 @@ fn title_with_agent(prefix: &str, agent: AgentLabel<'_>) -> Line<'static> {
     title_spans_line(spans)
 }
 
+fn title_with_agent_and_spawn_request(
+    prefix: &str,
+    agent: AgentLabel<'_>,
+    model: &str,
+    reasoning_effort: ReasoningEffortConfig,
+) -> Line<'static> {
+    let mut spans = vec![Span::from(format!("{prefix} ")).bold()];
+    spans.extend(agent_label_spans(agent));
+    spans.extend(spawn_request_spans(model, reasoning_effort));
+    title_spans_line(spans)
+}
+
 fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
     let mut title = Vec::with_capacity(spans.len() + 1);
     title.push(Span::from("• ").dim());
@@ -244,19 +261,34 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
 
     if let Some(nickname) = nickname {
-        spans.push(Span::from(nickname.to_string()).light_blue().bold());
+        spans.push(Span::from(nickname.to_string()).cyan().bold());
     } else if let Some(thread_id) = agent.thread_id {
-        spans.push(Span::from(thread_id.to_string()).dim());
+        spans.push(Span::from(thread_id.to_string()).cyan());
     } else {
-        spans.push(Span::from("agent").dim());
+        spans.push(Span::from("agent").cyan());
     }
 
     if let Some(role) = role {
         spans.push(Span::from(" ").dim());
-        spans.push(Span::from(format!("[{role}]")).dim());
+        spans.push(Span::from(format!("[{role}]")));
     }
 
     spans
+}
+
+fn spawn_request_spans(model: &str, reasoning_effort: ReasoningEffortConfig) -> Vec<Span<'static>> {
+    let model = model.trim();
+    if model.is_empty() && reasoning_effort == ReasoningEffortConfig::default() {
+        return Vec::new();
+    }
+
+    let details = if model.is_empty() {
+        format!("({reasoning_effort})")
+    } else {
+        format!("({model} {reasoning_effort})")
+    };
+
+    vec![Span::from(" ").dim(), Span::from(details).magenta()]
 }
 
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
@@ -370,8 +402,9 @@ fn status_summary_line(status: &AgentStatus) -> Line<'static> {
 
 fn status_summary_spans(status: &AgentStatus) -> Vec<Span<'static>> {
     match status {
-        AgentStatus::PendingInit => vec![Span::from("Pending init").dim()],
+        AgentStatus::PendingInit => vec![Span::from("Pending init").cyan()],
         AgentStatus::Running => vec![Span::from("Running").cyan().bold()],
+        AgentStatus::Interrupted => vec![Span::from("Interrupted").cyan()],
         AgentStatus::Completed(message) => {
             let mut spans = vec![Span::from("Completed").green()];
             if let Some(message) = message.as_ref() {
@@ -394,11 +427,11 @@ fn status_summary_spans(status: &AgentStatus) -> Vec<Span<'static>> {
             );
             if !error_preview.is_empty() {
                 spans.push(Span::from(" - ").dim());
-                spans.push(Span::from(error_preview).dim());
+                spans.push(Span::from(error_preview));
             }
             spans
         }
-        AgentStatus::Shutdown => vec![Span::from("Shutdown").dim()],
+        AgentStatus::Shutdown => vec![Span::from("Shutdown")],
         AgentStatus::NotFound => vec![Span::from("Not found").red()],
     }
 }
@@ -428,6 +461,8 @@ mod tests {
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
             prompt: "Compute 11! and reply with just the integer result.".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::High,
             status: AgentStatus::PendingInit,
         });
 
@@ -508,16 +543,18 @@ mod tests {
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
             prompt: String::new(),
+            model: String::new(),
+            reasoning_effort: ReasoningEffortConfig::default(),
             status: AgentStatus::PendingInit,
         });
 
         let lines = cell.display_lines(200);
         let title = &lines[0];
         assert_eq!(title.spans[2].content.as_ref(), "Robie");
-        assert_eq!(title.spans[2].style.fg, Some(Color::LightBlue));
+        assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
-        assert!(title.spans[4].style.add_modifier.contains(Modifier::DIM));
+        assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
     }
 
     fn cell_to_text(cell: &PlainHistoryCell) -> String {

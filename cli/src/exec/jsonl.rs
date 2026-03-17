@@ -201,6 +201,7 @@ pub enum CollabToolCallStatus {
 pub enum CollabAgentStatus {
     PendingInit,
     Running,
+    Interrupted,
     Completed,
     Errored,
     Shutdown,
@@ -1089,6 +1090,10 @@ impl From<&codex_protocol::protocol::AgentStatus> for CollabAgentState {
             },
             codex_protocol::protocol::AgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
+                message: None,
+            },
+            codex_protocol::protocol::AgentStatus::Interrupted => Self {
+                status: CollabAgentStatus::Interrupted,
                 message: None,
             },
             codex_protocol::protocol::AgentStatus::Completed(message) => Self {

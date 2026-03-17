@@ -925,6 +925,8 @@ pub enum AgentStatus {
     PendingInit,
     /// Agent is currently running.
     Running,
+    /// Agent's current turn was interrupted and it may receive more input.
+    Interrupted,
     /// Agent is done. Contains the final assistant message.
     Completed(Option<String>),
     /// Agent encountered an error.
@@ -941,8 +943,14 @@ pub struct CollabAgentSpawnBeginEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
-    /// Initial prompt sent to the agent.
+    /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.
     pub prompt: String,
+    /// Model requested for the spawned agent.
+    #[serde(default)]
+    pub model: String,
+    /// Reasoning effort requested for the spawned agent.
+    #[serde(default)]
+    pub reasoning_effort: ReasoningEffortConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -985,8 +993,14 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
-    /// Initial prompt sent to the agent.
+    /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.
     pub prompt: String,
+    /// Model requested for the spawned agent.
+    #[serde(default)]
+    pub model: String,
+    /// Reasoning effort requested for the spawned agent.
+    #[serde(default)]
+    pub reasoning_effort: ReasoningEffortConfig,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
 }
