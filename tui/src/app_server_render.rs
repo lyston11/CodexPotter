@@ -1025,6 +1025,51 @@ impl AppServerEventProcessor {
                 }
                 self.had_work_activity = true;
             }
+            EventMsg::HookStarted(ev) => {
+                // Align with upstream behavior: flush any newline-gated agent output before
+                // rendering the tool result so ordering matches "agent explains -> tool runs -> agent continues".
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+                self.flush_pending_live_activity_cells();
+                self.flush_pending_compact_patch_changes();
+
+                let label = hook_event_label(ev.run.event_name);
+                let mut message = format!("Running {label} hook");
+                if let Some(status_message) = ev.run.status_message
+                    && !status_message.is_empty()
+                {
+                    message.push_str(": ");
+                    message.push_str(&status_message);
+                }
+
+                self.needs_final_message_separator = true;
+                self.had_work_activity = true;
+                self.emit_history_cell(Box::new(history_cell::new_info_event(message, None)));
+            }
+            EventMsg::HookCompleted(ev) => {
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+                self.flush_pending_live_activity_cells();
+                self.flush_pending_compact_patch_changes();
+
+                let status = format!("{:?}", ev.run.status).to_lowercase();
+                let header = format!("{} hook ({status})", hook_event_label(ev.run.event_name));
+                let mut lines: Vec<Line<'static>> = vec![header.into()];
+                for entry in ev.run.entries {
+                    let prefix = match entry.kind {
+                        codex_protocol::protocol::HookOutputEntryKind::Warning => "warning: ",
+                        codex_protocol::protocol::HookOutputEntryKind::Stop => "stop: ",
+                        codex_protocol::protocol::HookOutputEntryKind::Feedback => "feedback: ",
+                        codex_protocol::protocol::HookOutputEntryKind::Context => "hook context: ",
+                        codex_protocol::protocol::HookOutputEntryKind::Error => "error: ",
+                    };
+                    lines.push(format!("  {prefix}{}", entry.text).into());
+                }
+
+                self.needs_final_message_separator = true;
+                self.had_work_activity = true;
+                self.emit_history_cell(Box::new(history_cell::PlainHistoryCell::new(lines)));
+            }
             EventMsg::CollabAgentSpawnBegin(_) => {}
             EventMsg::CollabAgentSpawnEnd(ev) => {
                 self.on_collab_event(crate::multi_agents::spawn_end(ev))
@@ -2226,6 +2271,13 @@ impl RenderAppState {
     }
 }
 
+fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
+    match event_name {
+        codex_protocol::protocol::HookEventName::SessionStart => "SessionStart",
+        codex_protocol::protocol::HookEventName::Stop => "Stop",
+    }
+}
+
 /// Returns true when `msg` is a reasoning/thinking stream event that should not be rendered as a
 /// transcript/history item.
 ///
@@ -2293,6 +2345,16 @@ mod tests {
     use codex_protocol::protocol::ExecCommandBeginEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
+    use codex_protocol::protocol::HookCompletedEvent;
+    use codex_protocol::protocol::HookEventName;
+    use codex_protocol::protocol::HookExecutionMode;
+    use codex_protocol::protocol::HookHandlerType;
+    use codex_protocol::protocol::HookOutputEntry;
+    use codex_protocol::protocol::HookOutputEntryKind;
+    use codex_protocol::protocol::HookRunStatus;
+    use codex_protocol::protocol::HookRunSummary;
+    use codex_protocol::protocol::HookScope;
+    use codex_protocol::protocol::HookStartedEvent;
     use codex_protocol::protocol::PatchApplyBeginEvent;
     use codex_protocol::protocol::PatchApplyEndEvent;
     use codex_protocol::protocol::PlanDeltaEvent;
@@ -4208,6 +4270,97 @@ mod tests {
         let cell = recv_inserted_history_cell(&mut rx);
         assert_snapshot!(
             "round_renderer_request_permissions",
+            lines_to_plain_text(&cell.display_lines(width))
+        );
+    }
+
+    #[test]
+    fn round_renderer_renders_hook_started() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "hook-started".into(),
+            msg: EventMsg::HookStarted(HookStartedEvent {
+                turn_id: Some("turn-1".to_string()),
+                run: HookRunSummary {
+                    id: "hook-run-1".to_string(),
+                    event_name: HookEventName::SessionStart,
+                    handler_type: HookHandlerType::Command,
+                    execution_mode: HookExecutionMode::Sync,
+                    scope: HookScope::Thread,
+                    source_path: PathBuf::from("hooks/session_start.sh"),
+                    display_order: 0,
+                    status: HookRunStatus::Running,
+                    status_message: Some("Setting up environment".to_string()),
+                    started_at: 0,
+                    completed_at: None,
+                    duration_ms: None,
+                    entries: Vec::new(),
+                },
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        assert_snapshot!(
+            "round_renderer_hook_started",
+            lines_to_plain_text(&cell.display_lines(width))
+        );
+    }
+
+    #[test]
+    fn round_renderer_renders_hook_completed() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "hook-completed".into(),
+            msg: EventMsg::HookCompleted(HookCompletedEvent {
+                turn_id: None,
+                run: HookRunSummary {
+                    id: "hook-run-1".to_string(),
+                    event_name: HookEventName::SessionStart,
+                    handler_type: HookHandlerType::Command,
+                    execution_mode: HookExecutionMode::Sync,
+                    scope: HookScope::Thread,
+                    source_path: PathBuf::from("hooks/session_start.sh"),
+                    display_order: 0,
+                    status: HookRunStatus::Completed,
+                    status_message: None,
+                    started_at: 0,
+                    completed_at: Some(5),
+                    duration_ms: Some(5),
+                    entries: vec![
+                        HookOutputEntry {
+                            kind: HookOutputEntryKind::Warning,
+                            text: "fallback value used".to_string(),
+                        },
+                        HookOutputEntry {
+                            kind: HookOutputEntryKind::Feedback,
+                            text: "consider adding more logging".to_string(),
+                        },
+                        HookOutputEntry {
+                            kind: HookOutputEntryKind::Context,
+                            text: "exported CODEX_HOME".to_string(),
+                        },
+                        HookOutputEntry {
+                            kind: HookOutputEntryKind::Error,
+                            text: "failed to warm cache".to_string(),
+                        },
+                        HookOutputEntry {
+                            kind: HookOutputEntryKind::Stop,
+                            text: "hook requested stop".to_string(),
+                        },
+                    ],
+                },
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        assert_snapshot!(
+            "round_renderer_hook_completed",
             lines_to_plain_text(&cell.display_lines(width))
         );
     }

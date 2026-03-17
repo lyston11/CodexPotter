@@ -1,0 +1,10 @@
+---
+source: tui/src/app_server_render.rs
+expression: lines_to_plain_text(&cell.display_lines(width))
+---
+SessionStart hook (completed)
+  warning: fallback value used
+  feedback: consider adding more logging
+  hook context: exported CODEX_HOME
+  error: failed to warm cache
+  stop: hook requested stop

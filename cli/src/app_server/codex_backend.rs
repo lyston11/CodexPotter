@@ -40,6 +40,16 @@ use crate::app_server::upstream_protocol::FileChangeRequestApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeThreadItem as UpstreamFileChangeThreadItem;
 use crate::app_server::upstream_protocol::FileUpdateChange as UpstreamFileUpdateChange;
 use crate::app_server::upstream_protocol::GrantedPermissionProfile;
+use crate::app_server::upstream_protocol::HookCompletedNotification as UpstreamHookCompletedNotification;
+use crate::app_server::upstream_protocol::HookEventName as UpstreamHookEventName;
+use crate::app_server::upstream_protocol::HookExecutionMode as UpstreamHookExecutionMode;
+use crate::app_server::upstream_protocol::HookHandlerType as UpstreamHookHandlerType;
+use crate::app_server::upstream_protocol::HookOutputEntry as UpstreamHookOutputEntry;
+use crate::app_server::upstream_protocol::HookOutputEntryKind as UpstreamHookOutputEntryKind;
+use crate::app_server::upstream_protocol::HookRunStatus as UpstreamHookRunStatus;
+use crate::app_server::upstream_protocol::HookRunSummary as UpstreamHookRunSummary;
+use crate::app_server::upstream_protocol::HookScope as UpstreamHookScope;
+use crate::app_server::upstream_protocol::HookStartedNotification as UpstreamHookStartedNotification;
 use crate::app_server::upstream_protocol::InitializeParams;
 use crate::app_server::upstream_protocol::ItemCompletedNotification as UpstreamItemCompletedNotification;
 use crate::app_server::upstream_protocol::ItemStartedNotification as UpstreamItemStartedNotification;
@@ -88,6 +98,16 @@ use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::FileChange;
+use codex_protocol::protocol::HookCompletedEvent;
+use codex_protocol::protocol::HookEventName;
+use codex_protocol::protocol::HookExecutionMode;
+use codex_protocol::protocol::HookHandlerType;
+use codex_protocol::protocol::HookOutputEntry;
+use codex_protocol::protocol::HookOutputEntryKind;
+use codex_protocol::protocol::HookRunStatus;
+use codex_protocol::protocol::HookRunSummary;
+use codex_protocol::protocol::HookScope;
+use codex_protocol::protocol::HookStartedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
@@ -927,6 +947,38 @@ fn handle_typed_notification(
                 UpstreamTurnStatus::InProgress => {}
             }
         }
+        "hook/started" => {
+            let ev: UpstreamHookStartedNotification =
+                serde_json::from_value(params).context("decode hook/started notification")?;
+            let run = hook_run_summary_from_upstream(ev.run);
+            handle_codex_event(
+                Event {
+                    id: run.id.clone(),
+                    msg: EventMsg::HookStarted(HookStartedEvent {
+                        turn_id: ev.turn_id,
+                        run,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "hook/completed" => {
+            let ev: UpstreamHookCompletedNotification =
+                serde_json::from_value(params).context("decode hook/completed notification")?;
+            let run = hook_run_summary_from_upstream(ev.run);
+            handle_codex_event(
+                Event {
+                    id: run.id.clone(),
+                    msg: EventMsg::HookCompleted(HookCompletedEvent {
+                        turn_id: ev.turn_id,
+                        run,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
         "thread/tokenUsage/updated" => {
             let ev: UpstreamThreadTokenUsageUpdatedNotification = serde_json::from_value(params)
                 .context("decode thread/tokenUsage/updated notification")?;
@@ -1207,6 +1259,60 @@ fn handle_typed_item_completed(
     }
 
     Ok(())
+}
+
+fn hook_run_summary_from_upstream(run: UpstreamHookRunSummary) -> HookRunSummary {
+    HookRunSummary {
+        id: run.id,
+        event_name: match run.event_name {
+            UpstreamHookEventName::SessionStart => HookEventName::SessionStart,
+            UpstreamHookEventName::Stop => HookEventName::Stop,
+        },
+        handler_type: match run.handler_type {
+            UpstreamHookHandlerType::Command => HookHandlerType::Command,
+            UpstreamHookHandlerType::Prompt => HookHandlerType::Prompt,
+            UpstreamHookHandlerType::Agent => HookHandlerType::Agent,
+        },
+        execution_mode: match run.execution_mode {
+            UpstreamHookExecutionMode::Sync => HookExecutionMode::Sync,
+            UpstreamHookExecutionMode::Async => HookExecutionMode::Async,
+        },
+        scope: match run.scope {
+            UpstreamHookScope::Thread => HookScope::Thread,
+            UpstreamHookScope::Turn => HookScope::Turn,
+        },
+        source_path: run.source_path,
+        display_order: run.display_order,
+        status: match run.status {
+            UpstreamHookRunStatus::Running => HookRunStatus::Running,
+            UpstreamHookRunStatus::Completed => HookRunStatus::Completed,
+            UpstreamHookRunStatus::Failed => HookRunStatus::Failed,
+            UpstreamHookRunStatus::Blocked => HookRunStatus::Blocked,
+            UpstreamHookRunStatus::Stopped => HookRunStatus::Stopped,
+        },
+        status_message: run.status_message,
+        started_at: run.started_at,
+        completed_at: run.completed_at,
+        duration_ms: run.duration_ms,
+        entries: run
+            .entries
+            .into_iter()
+            .map(hook_output_entry_from_upstream)
+            .collect(),
+    }
+}
+
+fn hook_output_entry_from_upstream(entry: UpstreamHookOutputEntry) -> HookOutputEntry {
+    HookOutputEntry {
+        kind: match entry.kind {
+            UpstreamHookOutputEntryKind::Warning => HookOutputEntryKind::Warning,
+            UpstreamHookOutputEntryKind::Stop => HookOutputEntryKind::Stop,
+            UpstreamHookOutputEntryKind::Feedback => HookOutputEntryKind::Feedback,
+            UpstreamHookOutputEntryKind::Context => HookOutputEntryKind::Context,
+            UpstreamHookOutputEntryKind::Error => HookOutputEntryKind::Error,
+        },
+        text: entry.text,
+    }
 }
 
 fn command_tokens_from_string(command: &str) -> Vec<String> {
