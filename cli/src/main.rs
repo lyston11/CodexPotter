@@ -367,7 +367,14 @@ async fn main() -> anyhow::Result<()> {
                 crate::workflow::resume::ResumeExit::FatalExitRequested => {
                     // `std::process::exit` skips destructors, so explicitly drop the UI to restore
                     // terminal state before exiting.
+                    let queued_prompts = ui
+                        .take_queued_user_prompts()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let resume_note_path = derive_resume_project_path_for_note(&project_path);
                     drop(ui);
+                    print_queued_prompts_note(&queued_prompts);
+                    print_resume_note(&resume_note_path);
                     std::process::exit(1);
                 }
             }
@@ -403,7 +410,12 @@ async fn main() -> anyhow::Result<()> {
         crate::workflow::project_runner::ProjectQueueExit::FatalExitRequested => {
             // `std::process::exit` skips destructors, so explicitly drop the UI to restore terminal
             // state before exiting.
+            queued_prompts_on_exit = ui
+                .take_queued_user_prompts()
+                .into_iter()
+                .collect::<Vec<_>>();
             drop(ui);
+            print_queued_prompts_note(&queued_prompts_on_exit);
             std::process::exit(1);
         }
     }

@@ -236,9 +236,9 @@ pub async fn run_app_server_backend(
     config: AppServerBackendConfig,
     mut op_rx: UnboundedReceiver<Op>,
     event_tx: UnboundedSender<Event>,
-    fatal_exit_tx: UnboundedSender<String>,
+    _fatal_exit_tx: UnboundedSender<String>,
 ) -> anyhow::Result<()> {
-    match run_app_server_backend_inner(config, &mut op_rx, &event_tx, &fatal_exit_tx).await {
+    match run_app_server_backend_inner(config, &mut op_rx, &event_tx).await {
         Ok(()) => Ok(()),
         Err(err) => {
             let message = format!("Failed to run `codex app-server`: {err}");
@@ -249,7 +249,12 @@ pub async fn run_app_server_backend(
                     codex_error_info: None,
                 }),
             });
-            let _ = fatal_exit_tx.send(message);
+            let _ = event_tx.send(Event {
+                id: "".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::TaskFailed { message },
+                },
+            });
 
             // Surface backend failures via the UI and exit reason, instead of bubbling up an
             // additional anyhow error that would get printed after the TUI exits.
@@ -262,7 +267,6 @@ async fn run_app_server_backend_inner(
     config: AppServerBackendConfig,
     op_rx: &mut UnboundedReceiver<Op>,
     event_tx: &UnboundedSender<Event>,
-    fatal_exit_tx: &UnboundedSender<String>,
 ) -> anyhow::Result<()> {
     let AppServerBackendConfig {
         codex_bin,
@@ -508,7 +512,7 @@ async fn run_app_server_backend_inner(
         let _ = stderr_task.await;
     }
 
-    result.map_err(|err| {
+    let result = result.map_err(|err| {
         let stderr = {
             let capture = match stderr_capture.lock() {
                 Ok(guard) => guard,
@@ -533,19 +537,23 @@ async fn run_app_server_backend_inner(
             message.push_str("[stderr truncated]");
         }
         anyhow::Error::msg(message)
-    })?;
+    });
+
+    match result {
+        Ok(()) => {}
+        Err(err) => {
+            // Avoid turning shutdown errors into a second round failure: once we emitted the
+            // round outcome, the UI is already leaving the round renderer.
+            if recovery.has_finished_round {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    }
 
     // If the backend finishes while the UI still expects it to be alive, ensure the UI can exit.
-    if !shutdown_requested {
-        let message = "codex app-server exited unexpectedly".to_string();
-        let _ = event_tx.send(Event {
-            id: "".to_string(),
-            msg: EventMsg::Error(ErrorEvent {
-                message: message.clone(),
-                codex_error_info: None,
-            }),
-        });
-        let _ = fatal_exit_tx.send(message);
+    if !shutdown_requested && !recovery.has_finished_round {
+        anyhow::bail!("codex app-server exited unexpectedly");
     }
 
     Ok(())
@@ -2944,7 +2952,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -2965,7 +2972,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3063,7 +3069,7 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, mut fatal_exit_rx) = unbounded_channel::<String>();
+        let (_fatal_exit_tx, mut fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3084,7 +3090,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3140,6 +3145,73 @@ done
             .expect("backend timed out")
             .expect("backend panicked")
             .expect("backend failed");
+    }
+
+    #[tokio::test]
+    async fn backend_reports_startup_failure_as_task_failed_round() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_codex = temp.path().join("missing-codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, mut fatal_exit_rx) = unbounded_channel::<String>();
+
+        let (_op_tx, op_rx) = unbounded_channel::<Op>();
+        run_app_server_backend(
+            AppServerBackendConfig {
+                codex_bin: missing_codex.display().to_string(),
+                developer_instructions: None,
+                launch: AppServerLaunchConfig {
+                    spawn_sandbox: None,
+                    thread_sandbox: None,
+                    bypass_approvals_and_sandbox: false,
+                },
+                upstream_cli_args: Default::default(),
+                codex_home: None,
+                thread_cwd: None,
+                resume_thread_id: None,
+                event_mode: AppServerEventMode::Interactive,
+            },
+            op_rx,
+            event_tx,
+            fatal_exit_tx,
+        )
+        .await
+        .expect("backend should swallow startup failures");
+
+        let error_event = timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event timed out")
+            .expect("event channel closed");
+        let EventMsg::Error(ErrorEvent { message, .. }) = error_event.msg else {
+            panic!("expected Error event, got {:?}", error_event.msg);
+        };
+        assert!(
+            message.starts_with("Failed to run `codex app-server`:"),
+            "unexpected error message: {message:?}"
+        );
+
+        let finished_event = timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event timed out")
+            .expect("event channel closed");
+        let EventMsg::PotterRoundFinished {
+            outcome:
+                PotterRoundOutcome::TaskFailed {
+                    message: finished_message,
+                },
+        } = finished_event.msg
+        else {
+            panic!(
+                "expected PotterRoundFinished(TaskFailed), got {:?}",
+                finished_event.msg
+            );
+        };
+        assert_eq!(finished_message, message);
+
+        assert!(
+            fatal_exit_rx.try_recv().is_err(),
+            "expected no fatal exit message"
+        );
     }
 
     #[cfg(unix)]
@@ -3212,7 +3284,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3233,7 +3304,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3356,7 +3426,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3377,7 +3446,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3475,7 +3543,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3496,7 +3563,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3609,7 +3675,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3630,7 +3695,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3761,7 +3825,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3782,7 +3845,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -3939,7 +4001,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -3960,7 +4021,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -4092,7 +4152,6 @@ done
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         let backend = tokio::spawn(async move {
@@ -4113,7 +4172,6 @@ done
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             )
             .await
         });
@@ -4237,7 +4295,6 @@ touch "$MARKER"
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         drop(op_tx);
@@ -4263,7 +4320,6 @@ touch "$MARKER"
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             ),
         )
         .await
@@ -4337,7 +4393,6 @@ touch "$MARKER"
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         drop(op_tx);
@@ -4365,7 +4420,6 @@ touch "$MARKER"
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             ),
         )
         .await
@@ -4428,7 +4482,6 @@ touch "$MARKER"
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         drop(op_tx);
@@ -4452,7 +4505,6 @@ touch "$MARKER"
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             ),
         )
         .await
@@ -4524,7 +4576,6 @@ touch "$MARKER"
         std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
 
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
         drop(op_tx);
@@ -4548,7 +4599,6 @@ touch "$MARKER"
                 },
                 &mut op_rx,
                 &event_tx,
-                &fatal_exit_tx,
             ),
         )
         .await
