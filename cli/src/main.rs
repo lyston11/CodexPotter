@@ -21,6 +21,7 @@ mod global_gitignore;
 mod path_utils;
 mod rounds;
 mod startup;
+mod terminal_title;
 mod workflow;
 
 use std::num::NonZeroUsize;
@@ -220,6 +221,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
         return Ok(());
+    }
+
+    if let Err(err) = crate::terminal_title::set_codexpotter_terminal_title(&workdir) {
+        eprintln!("warning: failed to set terminal title: {err}");
     }
 
     let mut resume_note_project_path: Option<String> = None;

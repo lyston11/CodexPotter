@@ -302,6 +302,7 @@ dependencies = [
  "clap",
  "codex-protocol",
  "codex-tui",
+ "crossterm",
  "dirs",
  "ignore",
  "insta",

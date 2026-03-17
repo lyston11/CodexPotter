@@ -301,6 +301,9 @@ pub async fn run_resume(
     std::env::set_current_dir(&resume.working_dir)
         .with_context(|| format!("set current directory to {}", resume.working_dir.display()))?;
 
+    // Best-effort; avoid emitting warnings here because stderr output can corrupt the TUI.
+    let _ = crate::terminal_title::set_codexpotter_terminal_title(&resume.working_dir);
+
     run_resume_with_deps(ui, app_server, resume, iterate_rounds, &SystemResumeClock).await
 }
 
