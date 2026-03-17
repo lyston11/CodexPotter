@@ -86,14 +86,56 @@ pub enum ServerRequest {
         params: Option<serde_json::Value>,
     },
 
-    ApplyPatch {
+    #[serde(rename = "item/tool/requestUserInput")]
+    ToolRequestUserInput {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        #[serde(default)]
+        params: Option<v2::ToolRequestUserInputParams>,
+    },
+
+    #[serde(rename = "mcpServer/elicitation/request")]
+    McpServerElicitationRequest {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        #[serde(default)]
+        params: Option<v2::McpServerElicitationRequestParams>,
+    },
+
+    #[serde(rename = "item/permissions/requestApproval")]
+    PermissionsRequestApproval {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        #[serde(default)]
+        params: Option<v2::PermissionsRequestApprovalParams>,
+    },
+
+    #[serde(rename = "item/tool/call")]
+    DynamicToolCall {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        #[serde(default)]
+        params: Option<v2::DynamicToolCallParams>,
+    },
+
+    #[serde(rename = "account/chatgptAuthTokens/refresh")]
+    ChatgptAuthTokensRefresh {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        #[serde(default)]
+        params: Option<v2::ChatgptAuthTokensRefreshParams>,
+    },
+
+    #[serde(rename = "applyPatchApproval")]
+    ApplyPatchApproval {
         #[serde(rename = "id")]
         request_id: RequestId,
         #[serde(default)]
         params: Option<serde_json::Value>,
     },
 
-    ExecCommand {
+    #[serde(rename = "execCommandApproval")]
+    ExecCommandApproval {
         #[serde(rename = "id")]
         request_id: RequestId,
         #[serde(default)]

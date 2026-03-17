@@ -70,6 +70,197 @@ pub struct FileChangeRequestApprovalResponse {
     pub decision: FileChangeApprovalDecision,
 }
 
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdditionalNetworkPermissions {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdditionalFileSystemPermissions {
+    pub read: Option<Vec<AbsolutePathBuf>>,
+    pub write: Option<Vec<AbsolutePathBuf>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestPermissionProfile {
+    pub network: Option<AdditionalNetworkPermissions>,
+    pub file_system: Option<AdditionalFileSystemPermissions>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantedPermissionProfile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<AdditionalNetworkPermissions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_system: Option<AdditionalFileSystemPermissions>,
+}
+
+impl From<RequestPermissionProfile> for GrantedPermissionProfile {
+    fn from(value: RequestPermissionProfile) -> Self {
+        Self {
+            network: value.network,
+            file_system: value.file_system,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionGrantScope {
+    #[default]
+    Turn,
+    Session,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionsRequestApprovalParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub reason: Option<String>,
+    pub permissions: RequestPermissionProfile,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionsRequestApprovalResponse {
+    pub permissions: GrantedPermissionProfile,
+    #[serde(default)]
+    pub scope: PermissionGrantScope,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRequestUserInputOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRequestUserInputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub is_other: bool,
+    #[serde(default)]
+    pub is_secret: bool,
+    pub options: Option<Vec<ToolRequestUserInputOption>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRequestUserInputParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub questions: Vec<ToolRequestUserInputQuestion>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRequestUserInputAnswer {
+    pub answers: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRequestUserInputResponse {
+    pub answers: HashMap<String, ToolRequestUserInputAnswer>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum McpServerElicitationAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum McpServerElicitationRequest {
+    #[serde(rename_all = "camelCase")]
+    Form {
+        #[serde(rename = "_meta")]
+        meta: Option<JsonValue>,
+        message: String,
+        requested_schema: JsonValue,
+    },
+    #[serde(rename_all = "camelCase")]
+    Url {
+        #[serde(rename = "_meta")]
+        meta: Option<JsonValue>,
+        message: String,
+        url: String,
+        elicitation_id: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerElicitationRequestParams {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub server_name: String,
+    #[serde(flatten)]
+    pub request: McpServerElicitationRequest,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerElicitationRequestResponse {
+    pub action: McpServerElicitationAction,
+    pub content: Option<JsonValue>,
+    #[serde(rename = "_meta")]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolCallParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    pub tool: String,
+    pub arguments: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolCallResponse {
+    pub content_items: Vec<DynamicToolCallOutputContentItem>,
+    pub success: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DynamicToolCallOutputContentItem {
+    #[serde(rename_all = "camelCase")]
+    InputText { text: String },
+    #[serde(rename_all = "camelCase")]
+    InputImage { image_url: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatgptAuthTokensRefreshReason {
+    Unauthorized,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatgptAuthTokensRefreshParams {
+    pub reason: ChatgptAuthTokensRefreshReason,
+    pub previous_account_id: Option<String>,
+}
+
 /// Network access configuration for external sandbox policies.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

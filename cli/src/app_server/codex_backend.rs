@@ -31,12 +31,15 @@ use crate::app_server::upstream_protocol::CommandAction as UpstreamCommandAction
 use crate::app_server::upstream_protocol::CommandExecutionApprovalDecision;
 use crate::app_server::upstream_protocol::CommandExecutionRequestApprovalResponse;
 use crate::app_server::upstream_protocol::CommandExecutionThreadItem as UpstreamCommandExecutionThreadItem;
+use crate::app_server::upstream_protocol::DynamicToolCallOutputContentItem;
+use crate::app_server::upstream_protocol::DynamicToolCallResponse;
 use crate::app_server::upstream_protocol::ErrorNotification as UpstreamErrorNotification;
 use crate::app_server::upstream_protocol::ExecCommandApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeApprovalDecision;
 use crate::app_server::upstream_protocol::FileChangeRequestApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeThreadItem as UpstreamFileChangeThreadItem;
 use crate::app_server::upstream_protocol::FileUpdateChange as UpstreamFileUpdateChange;
+use crate::app_server::upstream_protocol::GrantedPermissionProfile;
 use crate::app_server::upstream_protocol::InitializeParams;
 use crate::app_server::upstream_protocol::ItemCompletedNotification as UpstreamItemCompletedNotification;
 use crate::app_server::upstream_protocol::ItemStartedNotification as UpstreamItemStartedNotification;
@@ -45,8 +48,12 @@ use crate::app_server::upstream_protocol::JSONRPCErrorError;
 use crate::app_server::upstream_protocol::JSONRPCMessage;
 use crate::app_server::upstream_protocol::JSONRPCNotification;
 use crate::app_server::upstream_protocol::JSONRPCResponse;
+use crate::app_server::upstream_protocol::McpServerElicitationAction;
+use crate::app_server::upstream_protocol::McpServerElicitationRequestResponse;
 use crate::app_server::upstream_protocol::PatchApplyStatus as UpstreamPatchApplyStatus;
 use crate::app_server::upstream_protocol::PatchChangeKind as UpstreamPatchChangeKind;
+use crate::app_server::upstream_protocol::PermissionGrantScope;
+use crate::app_server::upstream_protocol::PermissionsRequestApprovalResponse;
 use crate::app_server::upstream_protocol::PlanDeltaNotification as UpstreamPlanDeltaNotification;
 use crate::app_server::upstream_protocol::ReasoningSummaryTextDeltaNotification as UpstreamReasoningSummaryTextDeltaNotification;
 use crate::app_server::upstream_protocol::ReasoningTextDeltaNotification as UpstreamReasoningTextDeltaNotification;
@@ -60,6 +67,7 @@ use crate::app_server::upstream_protocol::ThreadRollbackResponse;
 use crate::app_server::upstream_protocol::ThreadStartParams;
 use crate::app_server::upstream_protocol::ThreadStartResponse;
 use crate::app_server::upstream_protocol::ThreadTokenUsageUpdatedNotification as UpstreamThreadTokenUsageUpdatedNotification;
+use crate::app_server::upstream_protocol::ToolRequestUserInputResponse;
 use crate::app_server::upstream_protocol::TurnCompletedNotification as UpstreamTurnCompletedNotification;
 use crate::app_server::upstream_protocol::TurnStartParams;
 use crate::app_server::upstream_protocol::TurnStartResponse;
@@ -96,6 +104,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput as CodexUserInput;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
@@ -119,6 +128,11 @@ enum RecoveryAction {
     RetryContinue { attempt: u32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ServerRequestPolicy {
+    bypass_approvals_and_sandbox: bool,
+}
+
 struct StreamRecoveryContext {
     stream_recovery: PotterStreamRecovery,
     recovery_action_tx: UnboundedSender<RecoveryAction>,
@@ -128,6 +142,7 @@ struct StreamRecoveryContext {
     has_finished_round: bool,
     last_turn_start_was_recovery_continue: bool,
     event_mode: AppServerEventMode,
+    server_request_policy: ServerRequestPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +297,9 @@ async fn run_app_server_backend_inner(
         has_finished_round: false,
         last_turn_start_was_recovery_continue: false,
         event_mode,
+        server_request_policy: ServerRequestPolicy {
+            bypass_approvals_and_sandbox: launch.bypass_approvals_and_sandbox,
+        },
     };
 
     let result = async {
@@ -777,7 +795,7 @@ async fn handle_app_server_message(
         }
         JSONRPCMessage::Request(request) => {
             if let Some(stdin) = stdin.as_mut() {
-                handle_server_request(stdin, request).await?;
+                handle_server_request(stdin, request, recovery, event_tx).await?;
             }
         }
         JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_) => {}
@@ -1483,6 +1501,8 @@ fn handle_codex_event(
 async fn handle_server_request(
     stdin: &mut ChildStdin,
     request: crate::app_server::upstream_protocol::JSONRPCRequest,
+    recovery: &StreamRecoveryContext,
+    event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<()> {
     let request_id = request.id.clone();
     let method = request.method.clone();
@@ -1506,6 +1526,33 @@ async fn handle_server_request(
         }
     };
 
+    let emit_warning = |turn_id: Option<&str>, message: String| {
+        let id = turn_id
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| recovery.active_turn_id.clone())
+            .unwrap_or_default();
+        let _ = event_tx.send(Event {
+            id,
+            msg: EventMsg::Warning(WarningEvent { message }),
+        });
+    };
+
+    let emit_error = |turn_id: Option<&str>, message: String| {
+        let id = turn_id
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| recovery.active_turn_id.clone())
+            .unwrap_or_default();
+        let _ = event_tx.send(Event {
+            id,
+            msg: EventMsg::Error(ErrorEvent {
+                message,
+                codex_error_info: None,
+            }),
+        });
+    };
+
     match server_request {
         ServerRequest::CommandExecution { .. } => {
             let response = CommandExecutionRequestApprovalResponse {
@@ -1519,13 +1566,159 @@ async fn handle_server_request(
             };
             send_response(stdin, request_id, response).await?;
         }
-        ServerRequest::ApplyPatch { .. } => {
+        ServerRequest::ToolRequestUserInput { params, .. } => {
+            let (turn_id, item_id, questions) = match params {
+                Some(params) => (
+                    Some(params.turn_id),
+                    Some(params.item_id),
+                    params.questions.len(),
+                ),
+                None => (None, None, 0),
+            };
+            let item_id = item_id.as_deref().unwrap_or("<unknown>");
+            emit_warning(
+                turn_id.as_deref(),
+                format!(
+                    "Upstream requested request_user_input (itemId={item_id}, questions={questions}); running non-interactively, returning empty answers."
+                ),
+            );
+            let response = ToolRequestUserInputResponse::default();
+            send_response(stdin, request_id, response).await?;
+        }
+        ServerRequest::McpServerElicitationRequest { params, .. } => {
+            let (turn_id, server_name, mode) = match params {
+                Some(params) => {
+                    let mode = match params.request {
+                        crate::app_server::upstream_protocol::McpServerElicitationRequest::Form {
+                            ..
+                        } => "form",
+                        crate::app_server::upstream_protocol::McpServerElicitationRequest::Url {
+                            ..
+                        } => "url",
+                    };
+                    (params.turn_id, Some(params.server_name), mode)
+                }
+                None => (None, None, "<unknown>"),
+            };
+            let server_name = server_name.as_deref().unwrap_or("<unknown>");
+            emit_warning(
+                turn_id.as_deref(),
+                format!(
+                    "Upstream requested an MCP server elicitation (serverName={server_name}, mode={mode}); running non-interactively, auto-cancelling."
+                ),
+            );
+            let response = McpServerElicitationRequestResponse {
+                action: McpServerElicitationAction::Cancel,
+                content: None,
+                meta: None,
+            };
+            send_response(stdin, request_id, response).await?;
+        }
+        ServerRequest::PermissionsRequestApproval { params, .. } => {
+            let (turn_id, reason, granted, scope) = match params {
+                Some(params) if recovery.server_request_policy.bypass_approvals_and_sandbox => {
+                    let granted = GrantedPermissionProfile::from(params.permissions);
+                    (
+                        Some(params.turn_id),
+                        params.reason,
+                        granted,
+                        PermissionGrantScope::Session,
+                    )
+                }
+                Some(params) => (
+                    Some(params.turn_id),
+                    params.reason,
+                    GrantedPermissionProfile::default(),
+                    PermissionGrantScope::Turn,
+                ),
+                None => (
+                    None,
+                    None,
+                    GrantedPermissionProfile::default(),
+                    PermissionGrantScope::Turn,
+                ),
+            };
+
+            let note = match recovery.server_request_policy.bypass_approvals_and_sandbox {
+                true => "granting requested permissions",
+                false => "denying requested permissions",
+            };
+            if let Some(reason) = reason.as_deref() {
+                emit_warning(
+                    turn_id.as_deref(),
+                    format!(
+                        "Upstream requested additional permissions (reason={reason}); running non-interactively, {note}."
+                    ),
+                );
+            } else {
+                emit_warning(
+                    turn_id.as_deref(),
+                    format!(
+                        "Upstream requested additional permissions; running non-interactively, {note}."
+                    ),
+                );
+            }
+
+            let response = PermissionsRequestApprovalResponse {
+                permissions: granted,
+                scope,
+            };
+            send_response(stdin, request_id, response).await?;
+        }
+        ServerRequest::DynamicToolCall { params, .. } => {
+            let (turn_id, call_id, tool) = match params {
+                Some(params) => (
+                    Some(params.turn_id),
+                    Some(params.call_id),
+                    Some(params.tool),
+                ),
+                None => (None, None, None),
+            };
+            let call_id = call_id.as_deref().unwrap_or("<unknown>");
+            let tool = tool.as_deref().unwrap_or("<unknown>");
+            emit_warning(
+                turn_id.as_deref(),
+                format!(
+                    "Upstream requested a dynamic tool call (callId={call_id}, tool={tool}); codex-potter does not support dynamic tool calls, returning failure."
+                ),
+            );
+            let response = DynamicToolCallResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "codex-potter does not support dynamic tool calls.".to_string(),
+                }],
+                success: false,
+            };
+            send_response(stdin, request_id, response).await?;
+        }
+        ServerRequest::ChatgptAuthTokensRefresh { params, .. } => {
+            let reason = params
+                .as_ref()
+                .map(|params| format!("{:?}", params.reason))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let message = format!(
+                "Upstream requested a ChatGPT auth token refresh (reason={reason}), but codex-potter does not implement ChatGPT token refresh."
+            );
+            emit_error(None, message.clone());
+            send_message(
+                stdin,
+                &JSONRPCMessage::Error(JSONRPCError {
+                    error: JSONRPCErrorError {
+                        code: -32000,
+                        message,
+                        data: None,
+                    },
+                    id: request_id,
+                }),
+            )
+            .await?;
+        }
+        ServerRequest::ApplyPatchApproval { .. } => {
             let response = ApplyPatchApprovalResponse {
                 decision: ReviewDecision::Approved,
             };
             send_response(stdin, request_id, response).await?;
         }
-        ServerRequest::ExecCommand { .. } => {
+        ServerRequest::ExecCommandApproval { .. } => {
             let response = ExecCommandApprovalResponse {
                 decision: ReviewDecision::Approved,
             };
@@ -1612,7 +1805,7 @@ async fn read_until_response_or_error(
                 }
             }
             JSONRPCMessage::Request(request) => {
-                handle_server_request(stdin, request).await?;
+                handle_server_request(stdin, request, recovery, event_tx).await?;
             }
             _ => {}
         }
@@ -1726,6 +1919,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -1820,6 +2014,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -1857,6 +2052,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         let err = retryable_error_event();
@@ -1919,6 +2115,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -1963,6 +2160,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -1998,6 +2196,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::ExecJson,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -2037,6 +2236,7 @@ mod stream_recovery_tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::ExecJson,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -2172,6 +2372,7 @@ mod tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -2203,6 +2404,7 @@ mod tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -2234,6 +2436,7 @@ mod tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -2265,6 +2468,7 @@ mod tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
@@ -2296,6 +2500,7 @@ mod tests {
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
             event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
         };
 
         handle_codex_event(
