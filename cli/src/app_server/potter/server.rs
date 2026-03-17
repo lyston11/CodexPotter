@@ -1308,7 +1308,7 @@ async fn run_fresh_project(
                 project_started,
                 round_current: current_round,
                 round_total: plan.rounds_total,
-                project_succeeded_rounds: current_round,
+                project_rounds_run: current_round,
             },
         )
         .await;
@@ -1461,7 +1461,7 @@ async fn run_resumed_project(
                 pad_before_first_cell: true,
                 round_current: unfinished.round_current,
                 round_total: total_rounds,
-                project_succeeded_rounds: baseline_rounds.saturating_add(1),
+                project_rounds_run: baseline_rounds.saturating_add(1),
                 resume_thread_id: unfinished.thread_id,
                 replay_event_msgs,
             },
@@ -1522,7 +1522,7 @@ async fn run_resumed_project(
             let current_round = unfinished
                 .round_current
                 .saturating_add(offset.saturating_add(1));
-            let project_succeeded_rounds = baseline_rounds.saturating_add(offset.saturating_add(2));
+            let project_rounds_run = baseline_rounds.saturating_add(offset.saturating_add(2));
             let round_result = crate::workflow::round_runner::run_potter_round(
                 &mut ui,
                 &round_context,
@@ -1531,7 +1531,7 @@ async fn run_resumed_project(
                     project_started: None,
                     round_current: current_round,
                     round_total: total_rounds,
-                    project_succeeded_rounds,
+                    project_rounds_run,
                 },
             )
             .await;
@@ -1587,7 +1587,7 @@ async fn run_resumed_project(
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
     while rounds_run < rounds_total {
         let current_round = rounds_run.saturating_add(1);
-        let project_succeeded_rounds = baseline_rounds.saturating_add(current_round);
+        let project_rounds_run = baseline_rounds.saturating_add(current_round);
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
             &round_context,
@@ -1596,7 +1596,7 @@ async fn run_resumed_project(
                 project_started: None,
                 round_current: current_round,
                 round_total: rounds_total,
-                project_succeeded_rounds,
+                project_rounds_run,
             },
         )
         .await;

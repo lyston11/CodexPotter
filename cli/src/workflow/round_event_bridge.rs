@@ -6,6 +6,8 @@
 //!   `potter-rollout.jsonl`.
 //! - Inject a `PotterProjectSucceeded` event into the UI stream when `finite_incantatem: true` is
 //!   set in the progress file and the current round finishes successfully.
+//! - Inject a `PotterProjectBudgetExhausted` event into the UI stream when the last budgeted
+//!   round finishes successfully without `finite_incantatem: true`.
 //!
 //! The bridge is designed to be strict: persistence failures are treated as fatal so resume never
 //! reads a partially diverged log.
@@ -29,7 +31,9 @@ pub struct PotterRoundEventBridgeConfig {
     pub git_commit_start: String,
     pub potter_rollout_path: PathBuf,
     pub project_started_at: Instant,
-    pub project_succeeded_rounds: u32,
+    pub round_current: u32,
+    pub round_total: u32,
+    pub project_rounds_run: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +44,9 @@ pub struct PotterRoundEventBridge {
     git_commit_start: String,
     potter_rollout_path: PathBuf,
     project_started_at: Instant,
-    project_succeeded_rounds: u32,
+    round_current: u32,
+    round_total: u32,
+    project_rounds_run: u32,
     has_recorded_round_configured: bool,
 }
 
@@ -54,7 +60,9 @@ impl PotterRoundEventBridge {
             git_commit_start: config.git_commit_start,
             potter_rollout_path: config.potter_rollout_path,
             project_started_at: config.project_started_at,
-            project_succeeded_rounds: config.project_succeeded_rounds,
+            round_current: config.round_current,
+            round_total: config.round_total,
+            project_rounds_run: config.project_rounds_run,
         }
     }
 
@@ -68,43 +76,56 @@ impl PotterRoundEventBridge {
         }
 
         let mut injected: Option<Event> = None;
-        if matches!(
-            &event.msg,
-            EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::Completed
-            }
-        ) && crate::workflow::project::progress_file_has_finite_incantatem_true(
-            &self.workdir,
-            &self.progress_file_rel,
-        )
-        .context("check progress file finite_incantatem")?
-        {
-            let git_commit_end = crate::workflow::project::resolve_git_commit(&self.workdir);
-            crate::workflow::rollout::append_line(
-                &self.potter_rollout_path,
-                &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
-                    rounds: self.project_succeeded_rounds,
-                    duration_secs: self.project_started_at.elapsed().as_secs(),
-                    user_prompt_file: self.user_prompt_file.clone(),
-                    git_commit_start: self.git_commit_start.clone(),
-                    git_commit_end: git_commit_end.clone(),
-                },
-            )
-            .context("append potter-rollout project_succeeded")?;
-
-            injected = Some(Event {
-                id: "".to_string(),
-                msg: EventMsg::PotterProjectSucceeded {
-                    rounds: self.project_succeeded_rounds,
-                    duration: self.project_started_at.elapsed(),
-                    user_prompt_file: self.user_prompt_file.clone(),
-                    git_commit_start: self.git_commit_start.clone(),
-                    git_commit_end,
-                },
-            });
-        }
-
         if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+            if matches!(outcome, PotterRoundOutcome::Completed) {
+                let stop_due_to_finite_incantatem =
+                    crate::workflow::project::progress_file_has_finite_incantatem_true(
+                        &self.workdir,
+                        &self.progress_file_rel,
+                    )
+                    .context("check progress file finite_incantatem")?;
+
+                if stop_due_to_finite_incantatem {
+                    let git_commit_end =
+                        crate::workflow::project::resolve_git_commit(&self.workdir);
+                    crate::workflow::rollout::append_line(
+                        &self.potter_rollout_path,
+                        &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                            rounds: self.project_rounds_run,
+                            duration_secs: self.project_started_at.elapsed().as_secs(),
+                            user_prompt_file: self.user_prompt_file.clone(),
+                            git_commit_start: self.git_commit_start.clone(),
+                            git_commit_end: git_commit_end.clone(),
+                        },
+                    )
+                    .context("append potter-rollout project_succeeded")?;
+
+                    injected = Some(Event {
+                        id: "".to_string(),
+                        msg: EventMsg::PotterProjectSucceeded {
+                            rounds: self.project_rounds_run,
+                            duration: self.project_started_at.elapsed(),
+                            user_prompt_file: self.user_prompt_file.clone(),
+                            git_commit_start: self.git_commit_start.clone(),
+                            git_commit_end,
+                        },
+                    });
+                } else if self.round_current == self.round_total {
+                    let git_commit_end =
+                        crate::workflow::project::resolve_git_commit(&self.workdir);
+                    injected = Some(Event {
+                        id: "".to_string(),
+                        msg: EventMsg::PotterProjectBudgetExhausted {
+                            rounds: self.project_rounds_run,
+                            duration: self.project_started_at.elapsed(),
+                            user_prompt_file: self.user_prompt_file.clone(),
+                            git_commit_start: self.git_commit_start.clone(),
+                            git_commit_end,
+                        },
+                    });
+                }
+            }
+
             crate::workflow::rollout::append_line(
                 &self.potter_rollout_path,
                 &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
@@ -198,7 +219,9 @@ finite_incantatem: {finite}
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
             project_started_at: Instant::now(),
-            project_succeeded_rounds: 1,
+            round_current: 1,
+            round_total: 10,
+            project_rounds_run: 1,
         });
 
         let ev = session_configured_event(workdir, PathBuf::from("upstream.jsonl"));
@@ -229,7 +252,9 @@ finite_incantatem: {finite}
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
             project_started_at: Instant::now(),
-            project_succeeded_rounds: 3,
+            round_current: 3,
+            round_total: 10,
+            project_rounds_run: 3,
         });
 
         let finished = Event {
@@ -277,7 +302,9 @@ finite_incantatem: {finite}
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
             project_started_at: Instant::now(),
-            project_succeeded_rounds: 3,
+            round_current: 3,
+            round_total: 10,
+            project_rounds_run: 3,
         });
 
         let finished = Event {
@@ -291,6 +318,52 @@ finite_incantatem: {finite}
             .observe_backend_event(&finished)
             .expect("observe finished");
         assert!(injected.is_none());
+
+        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+        assert_eq!(lines.len(), 1);
+        assert!(matches!(
+            &lines[0],
+            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed
+            }
+        ));
+    }
+
+    #[test]
+    fn observe_backend_event_injects_budget_exhausted_before_round_finished_when_last_round() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+        write_progress_file(workdir, &progress_file_rel, false);
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: false,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            user_prompt_file: progress_file_rel.clone(),
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 10,
+            round_total: 10,
+            project_rounds_run: 10,
+        });
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        };
+
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .expect("observe finished");
+        assert!(matches!(
+            injected.as_ref().map(|event| &event.msg),
+            Some(EventMsg::PotterProjectBudgetExhausted { rounds: 10, .. })
+        ));
 
         let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
         assert_eq!(lines.len(), 1);
@@ -318,7 +391,9 @@ finite_incantatem: {finite}
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
             project_started_at: Instant::now(),
-            project_succeeded_rounds: 1,
+            round_current: 1,
+            round_total: 1,
+            project_rounds_run: 1,
         });
 
         let finished = Event {

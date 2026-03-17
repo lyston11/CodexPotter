@@ -479,11 +479,18 @@ struct AppServerEventProcessor {
     /// compact `Edited ...` summary when `Verbosity::Minimal`.
     pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
     pending_compact_patch_preview: Option<history_cell::PlainHistoryCell>,
-    pending_potter_project_succeeded: Option<PendingPotterProjectSucceeded>,
+    pending_potter_project_summary: Option<PendingPotterProjectSummary>,
 }
 
 #[derive(Debug)]
-struct PendingPotterProjectSucceeded {
+enum PendingPotterProjectSummaryOutcome {
+    Succeeded,
+    BudgetExhausted,
+}
+
+#[derive(Debug)]
+struct PendingPotterProjectSummary {
+    outcome: PendingPotterProjectSummaryOutcome,
     rounds: u32,
     duration: Duration,
     user_prompt_file: PathBuf,
@@ -517,8 +524,46 @@ impl AppServerEventProcessor {
             pending_web_search_queries: Vec::new(),
             pending_compact_patch_changes: Vec::new(),
             pending_compact_patch_preview: None,
-            pending_potter_project_succeeded: None,
+            pending_potter_project_summary: None,
         }
+    }
+
+    fn maybe_emit_potter_project_summary(&mut self) {
+        let Some(done) = self.pending_potter_project_summary.take() else {
+            return;
+        };
+
+        let PendingPotterProjectSummary {
+            outcome,
+            rounds,
+            duration,
+            user_prompt_file,
+            git_commit_start,
+            git_commit_end,
+        } = done;
+
+        let cell = match outcome {
+            PendingPotterProjectSummaryOutcome::Succeeded => {
+                crate::history_cell_potter::new_potter_project_succeeded(
+                    rounds,
+                    duration,
+                    user_prompt_file,
+                    git_commit_start,
+                    git_commit_end,
+                )
+            }
+            PendingPotterProjectSummaryOutcome::BudgetExhausted => {
+                crate::history_cell_potter::new_potter_project_budget_exhausted(
+                    rounds,
+                    duration,
+                    user_prompt_file,
+                    git_commit_start,
+                    git_commit_end,
+                )
+            }
+        };
+
+        self.emit_history_cell(Box::new(cell));
     }
 
     fn handle_retryable_stream_error(&mut self) {
@@ -686,7 +731,25 @@ impl AppServerEventProcessor {
                 git_commit_end,
             } => {
                 self.flush_pending_live_activity_cells();
-                self.pending_potter_project_succeeded = Some(PendingPotterProjectSucceeded {
+                self.pending_potter_project_summary = Some(PendingPotterProjectSummary {
+                    outcome: PendingPotterProjectSummaryOutcome::Succeeded,
+                    rounds,
+                    duration,
+                    user_prompt_file,
+                    git_commit_start,
+                    git_commit_end,
+                });
+            }
+            EventMsg::PotterProjectBudgetExhausted {
+                rounds,
+                duration,
+                user_prompt_file,
+                git_commit_start,
+                git_commit_end,
+            } => {
+                self.flush_pending_live_activity_cells();
+                self.pending_potter_project_summary = Some(PendingPotterProjectSummary {
+                    outcome: PendingPotterProjectSummaryOutcome::BudgetExhausted,
                     rounds,
                     duration,
                     user_prompt_file,
@@ -696,17 +759,7 @@ impl AppServerEventProcessor {
             }
             EventMsg::PotterRoundFinished { .. } => {
                 self.flush_pending_live_activity_cells();
-                if let Some(done) = self.pending_potter_project_succeeded.take() {
-                    self.emit_history_cell(Box::new(
-                        crate::history_cell_potter::new_potter_project_succeeded(
-                            done.rounds,
-                            done.duration,
-                            done.user_prompt_file,
-                            done.git_commit_start,
-                            done.git_commit_end,
-                        ),
-                    ));
-                }
+                self.maybe_emit_potter_project_summary();
                 self.flush_pending_compact_patch_changes();
             }
             EventMsg::TokenCount(ev) => {
@@ -777,17 +830,7 @@ impl AppServerEventProcessor {
                 self.flush_agent_stream();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
-                if let Some(done) = self.pending_potter_project_succeeded.take() {
-                    self.emit_history_cell(Box::new(
-                        crate::history_cell_potter::new_potter_project_succeeded(
-                            done.rounds,
-                            done.duration,
-                            done.user_prompt_file,
-                            done.git_commit_start,
-                            done.git_commit_end,
-                        ),
-                    ));
-                }
+                self.maybe_emit_potter_project_summary();
                 self.flush_pending_compact_patch_changes();
             }
             EventMsg::TurnAborted(ev) => {
@@ -5012,6 +5055,75 @@ mod tests {
 
         assert_snapshot!(
             "round_renderer_potter_project_succeeded_block_vt100",
+            terminal.backend().vt100().screen().contents()
+        );
+    }
+
+    #[tokio::test]
+    async fn round_renderer_renders_potter_project_budget_exhausted_block_vt100() {
+        let width: u16 = 80;
+        let height: u16 = 24;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
+        terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        let mut has_emitted_history_lines = false;
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        proc.current_elapsed_secs = Some(0);
+        proc.handle_codex_event(Event {
+            id: "delta-1".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "- Finished the project.\n".into(),
+            }),
+        });
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+        proc.handle_codex_event(Event {
+            id: "potter-budget-exhausted".into(),
+            msg: EventMsg::PotterProjectBudgetExhausted {
+                rounds: 10,
+                duration: Duration::from_secs(24 * 60 + 34),
+                user_prompt_file: PathBuf::from(".codexpotter/projects/2026/02/01/11/MAIN.md"),
+                git_commit_start: String::from("fb827a203635875b58d7e6792da84f22d723d41b"),
+                git_commit_end: String::from("662d232cafebabedeadbeefdeadbeefdeadbeef"),
+            },
+        });
+        proc.handle_codex_event(Event {
+            id: "round-finished".into(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+            },
+        });
+
+        drain_render_history_events(
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+        drive_stream_to_idle(
+            &mut proc,
+            &mut rx,
+            &mut terminal,
+            width,
+            &mut has_emitted_history_lines,
+        );
+
+        assert_snapshot!(
+            "round_renderer_potter_project_budget_exhausted_block_vt100",
             terminal.backend().vt100().screen().contents()
         );
     }

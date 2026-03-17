@@ -82,7 +82,7 @@ pub struct PotterRoundOptions {
     pub project_started: Option<PotterProjectStartedInfo>,
     pub round_current: u32,
     pub round_total: u32,
-    pub project_succeeded_rounds: u32,
+    pub project_rounds_run: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +91,7 @@ pub struct PotterContinueRoundOptions {
     pub pad_before_first_cell: bool,
     pub round_current: u32,
     pub round_total: u32,
-    pub project_succeeded_rounds: u32,
+    pub project_rounds_run: u32,
     /// Existing Codex thread to resume for this unfinished round.
     pub resume_thread_id: codex_protocol::ThreadId,
     /// Persisted EventMsg items from the upstream rollout to replay before continuing.
@@ -114,7 +114,7 @@ pub async fn run_potter_round(
         project_started,
         round_current,
         round_total,
-        project_succeeded_rounds,
+        project_rounds_run,
     } = options;
 
     run_potter_round_inner(
@@ -125,7 +125,7 @@ pub async fn run_potter_round(
             project_started,
             round_current,
             round_total,
-            project_succeeded_rounds,
+            project_rounds_run,
             prompt: context.turn_prompt.clone(),
             resume_thread_id: None,
             emit_round_started_event: true,
@@ -150,7 +150,7 @@ pub async fn continue_potter_round(
         pad_before_first_cell,
         round_current,
         round_total,
-        project_succeeded_rounds,
+        project_rounds_run,
         resume_thread_id,
         replay_event_msgs,
     } = options;
@@ -163,7 +163,7 @@ pub async fn continue_potter_round(
             project_started: None,
             round_current,
             round_total,
-            project_succeeded_rounds,
+            project_rounds_run,
             prompt: String::from("Continue"),
             resume_thread_id: Some(resume_thread_id),
             emit_round_started_event: false,
@@ -180,7 +180,7 @@ struct PotterRoundInnerOptions {
     project_started: Option<PotterProjectStartedInfo>,
     round_current: u32,
     round_total: u32,
-    project_succeeded_rounds: u32,
+    project_rounds_run: u32,
     prompt: String,
     resume_thread_id: Option<codex_protocol::ThreadId>,
     emit_round_started_event: bool,
@@ -199,7 +199,7 @@ async fn run_potter_round_inner(
         project_started,
         round_current,
         round_total,
-        project_succeeded_rounds,
+        project_rounds_run,
         prompt,
         resume_thread_id,
         emit_round_started_event,
@@ -275,7 +275,9 @@ async fn run_potter_round_inner(
                 git_commit_start: context.git_commit_start.clone(),
                 potter_rollout_path: potter_rollout_path.clone(),
                 project_started_at: context.project_started_at,
-                project_succeeded_rounds,
+                round_current,
+                round_total,
+                project_rounds_run,
             },
         );
 

@@ -4,7 +4,7 @@
 //!
 //! Upstream Codex does not render these cells. They are used to surface CodexPotter-specific
 //! runner behavior, such as multi-round iteration markers, project hints, stream recovery retries,
-//! and the final "project succeeded" summary.
+//! and the final project summary (including round-budget exhaustion).
 //!
 //! See `tui/AGENTS.md` ("Additional CodexPotter items" and "auto retry on stream/network errors").
 
@@ -70,6 +70,7 @@ pub fn new_potter_project_succeeded(
 enum PotterProjectSummaryOutcome {
     Succeeded,
     Interrupted,
+    BudgetExhausted,
 }
 
 /// Render the final multi-round summary block shown when a project is interrupted.
@@ -82,6 +83,24 @@ pub fn new_potter_project_interrupted(
 ) -> PotterProjectSummaryCell {
     PotterProjectSummaryCell {
         outcome: PotterProjectSummaryOutcome::Interrupted,
+        rounds,
+        duration,
+        user_prompt_file,
+        git_commit_start,
+        git_commit_end,
+    }
+}
+
+/// Render the final multi-round summary block shown when a project exhausts its configured rounds.
+pub fn new_potter_project_budget_exhausted(
+    rounds: u32,
+    duration: Duration,
+    user_prompt_file: PathBuf,
+    git_commit_start: String,
+    git_commit_end: String,
+) -> PotterProjectSummaryCell {
+    PotterProjectSummaryCell {
+        outcome: PotterProjectSummaryOutcome::BudgetExhausted,
         rounds,
         duration,
         user_prompt_file,
@@ -122,6 +141,9 @@ impl HistoryCell for PotterProjectSummaryCell {
         if matches!(self.outcome, PotterProjectSummaryOutcome::Interrupted) {
             header_spans.push(" ".into());
             header_spans.push("(Interrupted)".red());
+        } else if matches!(self.outcome, PotterProjectSummaryOutcome::BudgetExhausted) {
+            header_spans.push(" ".into());
+            header_spans.push("(Budget exhausted)".red());
         }
         header_spans.push(Span::styled(" ─", separator_style));
         let header_width = header_spans
@@ -274,6 +296,31 @@ mod tests {
         assert!(
             !interrupted.style.add_modifier.contains(Modifier::BOLD),
             "Interrupted marker should not be bold: {interrupted:?}"
+        );
+    }
+
+    #[test]
+    fn potter_project_summary_budget_exhausted_is_red_and_not_bold() {
+        let cell = new_potter_project_budget_exhausted(
+            10,
+            Duration::from_secs(23),
+            PathBuf::from(".codexpotter/projects/2026/03/07/9/MAIN.md"),
+            String::new(),
+            String::new(),
+        );
+
+        let lines = cell.display_lines(120);
+        let header = &lines[0];
+        let exhausted = header
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "(Budget exhausted)")
+            .unwrap_or_else(|| panic!("expected budget marker in header: {header:?}"));
+
+        assert_eq!(exhausted.style.fg, Some(Color::Red));
+        assert!(
+            !exhausted.style.add_modifier.contains(Modifier::BOLD),
+            "Budget marker should not be bold: {exhausted:?}"
         );
     }
 }

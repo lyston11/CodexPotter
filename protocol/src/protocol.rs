@@ -192,6 +192,23 @@ pub enum EventMsg {
         git_commit_end: String,
     },
 
+    /// `codex-potter` project ran out of the configured round budget (outside of the app-server protocol).
+    ///
+    /// This event exists so interactive UIs can render a final summary block even when the project
+    /// terminates without `finite_incantatem: true` (i.e. without emitting `PotterProjectSucceeded`).
+    PotterProjectBudgetExhausted {
+        /// Total number of rounds rendered for this CodexPotter project.
+        rounds: u32,
+        /// Total wall time spent across all rounds.
+        duration: Duration,
+        /// User prompt file for this CodexPotter project (e.g. `.codexpotter/projects/.../MAIN.md`).
+        user_prompt_file: PathBuf,
+        /// Git commit before CodexPotter started mutating the workspace (empty when unavailable).
+        git_commit_start: String,
+        /// Git commit after CodexPotter finished (empty when unavailable).
+        git_commit_end: String,
+    },
+
     /// `codex-potter` project completed (outside of the app-server protocol).
     ///
     /// This marker is emitted exactly once at the end of a project run so clients can exit a
