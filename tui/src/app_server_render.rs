@@ -500,16 +500,17 @@ struct PendingPotterProjectSummary {
 
 impl AppServerEventProcessor {
     fn new(app_event_tx: AppEventSender, verbosity: Verbosity) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             app_event_tx,
-            stream: StreamController::new(None),
+            stream: StreamController::new(None, &cwd),
             plan_stream: None,
             adaptive_chunking: AdaptiveChunkingPolicy::default(),
             token_usage: TokenUsage::default(),
             context_usage: TokenUsage::default(),
             model_context_window: None,
             thread_id: None,
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cwd,
             verbosity,
             last_rendered_width: None,
             saw_agent_delta: false,
@@ -694,6 +695,7 @@ impl AppServerEventProcessor {
             EventMsg::SessionConfigured(cfg) => {
                 self.thread_id = Some(cfg.session_id);
                 self.cwd = cfg.cwd;
+                self.stream = StreamController::new(None, &self.cwd);
                 if !self.pending_compact_patch_changes.is_empty() {
                     self.pending_compact_patch_preview =
                         Some(history_cell::new_coalesced_compact_patch_event(
@@ -804,7 +806,7 @@ impl AppServerEventProcessor {
                     let width = self
                         .last_rendered_width
                         .map(|width| usize::from(width.saturating_sub(4)));
-                    self.plan_stream = Some(PlanStreamController::new(width));
+                    self.plan_stream = Some(PlanStreamController::new(width, &self.cwd));
                 }
                 if let Some(controller) = self.plan_stream.as_mut()
                     && controller.push(&ev.delta)
@@ -1174,7 +1176,7 @@ impl AppServerEventProcessor {
 
     fn emit_agent_message(&mut self, message: &str, dim: bool) {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        crate::markdown::append_markdown(message, None, &mut lines);
+        crate::markdown::append_markdown(message, None, Some(&self.cwd), &mut lines);
         if lines.is_empty() {
             return;
         }

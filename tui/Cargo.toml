@@ -35,6 +35,7 @@ ratatui = { workspace = true, features = [
     "unstable-rendered-line-info",
     "unstable-widget-ref",
 ] }
+regex-lite = { workspace = true }
 reqwest = { workspace = true }
 shlex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

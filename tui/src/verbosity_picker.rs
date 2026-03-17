@@ -40,7 +40,12 @@ struct VerbosityPreviewWideRenderable {
 
 fn preview_commentary_cell(verbosity: Verbosity) -> history_cell::AgentMessageCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    crate::markdown::append_markdown("I'll first align the rendering pipeline.", None, &mut lines);
+    crate::markdown::append_markdown(
+        "I'll first align the rendering pipeline.",
+        None,
+        None,
+        &mut lines,
+    );
     if verbosity == Verbosity::Minimal {
         dim_lines(&mut lines);
     }
@@ -49,7 +54,12 @@ fn preview_commentary_cell(verbosity: Verbosity) -> history_cell::AgentMessageCe
 
 fn preview_final_answer_cell() -> history_cell::AgentMessageCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    crate::markdown::append_markdown("Final answer text stays fully visible.", None, &mut lines);
+    crate::markdown::append_markdown(
+        "Final answer text stays fully visible.",
+        None,
+        None,
+        &mut lines,
+    );
     history_cell::AgentMessageCell::new(lines, true)
 }
 
