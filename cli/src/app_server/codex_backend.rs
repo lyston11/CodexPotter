@@ -1143,8 +1143,64 @@ fn handle_typed_notification(
             handle_typed_item_completed(ev, recovery, event_tx)?;
         }
         "error" => {
-            let ev: UpstreamErrorNotification =
-                serde_json::from_value(params).context("decode error notification")?;
+            let extracted_message = match &params {
+                serde_json::Value::String(message) => Some(message.clone()),
+                serde_json::Value::Object(obj) => obj
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        obj.get("message")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToString::to_string)
+                    }),
+                _ => None,
+            };
+            let params_repr =
+                serde_json::to_string(&params).unwrap_or_else(|_| "<unserializable>".to_string());
+            let ev: UpstreamErrorNotification = match serde_json::from_value(params) {
+                Ok(ev) => ev,
+                Err(err) => {
+                    let extracted_message = extracted_message
+                        .as_deref()
+                        .unwrap_or("<unknown upstream error message>");
+                    let id = recovery.active_turn_id.clone().unwrap_or_default();
+                    handle_codex_event(
+                        Event {
+                            id,
+                            msg: EventMsg::Warning(WarningEvent {
+                                message: format!(
+                                    "Failed to decode upstream `error` notification (ignored): {err}; extracted_message={extracted_message}; params={params_repr}"
+                                ),
+                            }),
+                        },
+                        recovery,
+                        event_tx,
+                    );
+                    return Ok(());
+                }
+            };
+
+            if ev.turn_id.is_empty()
+                || ev
+                    .error
+                    .message
+                    .contains("failed to refresh available models")
+            {
+                handle_codex_event(
+                    Event {
+                        id: ev.turn_id,
+                        msg: EventMsg::Warning(WarningEvent {
+                            message: format!("Upstream warning: {}", ev.error.message),
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+                return Ok(());
+            }
+
             if ev.will_retry {
                 handle_codex_event(
                     Event {
@@ -2949,6 +3005,133 @@ done
             Ok(true),
             "did not observe TurnStarted + PotterRoundFinished(Completed)"
         );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_ignores_unexpected_error_notification_schema() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{"id":1,"result":{}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"method":"error","params":"Token data is not available."}'
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, mut fatal_exit_rx) = unbounded_channel::<String>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+                &fatal_exit_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_round_finished = timeout(Duration::from_secs(5), async {
+            let mut saw_turn_started = false;
+            let mut saw_decode_warning = false;
+            while let Some(event) = event_rx.recv().await {
+                match event.msg {
+                    EventMsg::TurnStarted(TurnStartedEvent { turn_id, .. }) => {
+                        assert_eq!(turn_id, "turn-1");
+                        saw_turn_started = true;
+                    }
+                    EventMsg::Warning(WarningEvent { message }) => {
+                        if message.contains("Failed to decode upstream `error` notification") {
+                            saw_decode_warning = true;
+                        }
+                    }
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                    } => {
+                        return saw_turn_started && saw_decode_warning;
+                    }
+                    _ => {}
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe Warning + TurnStarted + PotterRoundFinished(Completed)"
+        );
+
+        assert!(fatal_exit_rx.try_recv().is_err(), "expected no fatal exit");
 
         drop(op_tx);
 
