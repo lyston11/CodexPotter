@@ -40,6 +40,8 @@ use crate::app_server::upstream_protocol::FileChangeRequestApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeThreadItem as UpstreamFileChangeThreadItem;
 use crate::app_server::upstream_protocol::FileUpdateChange as UpstreamFileUpdateChange;
 use crate::app_server::upstream_protocol::GrantedPermissionProfile;
+use crate::app_server::upstream_protocol::GuardianApprovalReviewStatus as UpstreamGuardianApprovalReviewStatus;
+use crate::app_server::upstream_protocol::GuardianRiskLevel as UpstreamGuardianRiskLevel;
 use crate::app_server::upstream_protocol::HookCompletedNotification as UpstreamHookCompletedNotification;
 use crate::app_server::upstream_protocol::HookEventName as UpstreamHookEventName;
 use crate::app_server::upstream_protocol::HookExecutionMode as UpstreamHookExecutionMode;
@@ -52,6 +54,8 @@ use crate::app_server::upstream_protocol::HookScope as UpstreamHookScope;
 use crate::app_server::upstream_protocol::HookStartedNotification as UpstreamHookStartedNotification;
 use crate::app_server::upstream_protocol::InitializeParams;
 use crate::app_server::upstream_protocol::ItemCompletedNotification as UpstreamItemCompletedNotification;
+use crate::app_server::upstream_protocol::ItemGuardianApprovalReviewCompletedNotification as UpstreamItemGuardianApprovalReviewCompletedNotification;
+use crate::app_server::upstream_protocol::ItemGuardianApprovalReviewStartedNotification as UpstreamItemGuardianApprovalReviewStartedNotification;
 use crate::app_server::upstream_protocol::ItemStartedNotification as UpstreamItemStartedNotification;
 use crate::app_server::upstream_protocol::JSONRPCError;
 use crate::app_server::upstream_protocol::JSONRPCErrorError;
@@ -86,6 +90,12 @@ use crate::app_server::upstream_protocol::TurnStatus as UpstreamTurnStatus;
 use crate::app_server::upstream_protocol::UserInput as ApiUserInput;
 use anyhow::Context;
 use codex_protocol::ThreadId;
+use codex_protocol::approvals::ElicitationRequest as ProtocolElicitationRequest;
+use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::GuardianAssessmentEvent;
+use codex_protocol::approvals::GuardianAssessmentStatus;
+use codex_protocol::approvals::GuardianRiskLevel as ProtocolGuardianRiskLevel;
+use codex_protocol::mcp::RequestId as McpRequestId;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
@@ -125,6 +135,11 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::request_permissions::RequestPermissionProfile as ProtocolRequestPermissionProfile;
+use codex_protocol::request_permissions::RequestPermissionsEvent;
+use codex_protocol::request_user_input::RequestUserInputEvent;
+use codex_protocol::request_user_input::RequestUserInputQuestion as ProtocolRequestUserInputQuestion;
+use codex_protocol::request_user_input::RequestUserInputQuestionOption as ProtocolRequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput as CodexUserInput;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
@@ -1084,6 +1099,44 @@ fn handle_typed_notification(
                 serde_json::from_value(params).context("decode item/started notification")?;
             handle_typed_item_started(ev, recovery, event_tx)?;
         }
+        "item/autoApprovalReview/started" => {
+            let ev: UpstreamItemGuardianApprovalReviewStartedNotification =
+                serde_json::from_value(params)
+                    .context("decode item/autoApprovalReview/started notification")?;
+            let assessment = guardian_assessment_from_upstream_auto_approval_review(
+                ev.turn_id,
+                ev.target_item_id,
+                ev.review,
+                ev.action,
+            );
+            handle_codex_event(
+                Event {
+                    id: assessment.id.clone(),
+                    msg: EventMsg::GuardianAssessment(assessment),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/autoApprovalReview/completed" => {
+            let ev: UpstreamItemGuardianApprovalReviewCompletedNotification =
+                serde_json::from_value(params)
+                    .context("decode item/autoApprovalReview/completed notification")?;
+            let assessment = guardian_assessment_from_upstream_auto_approval_review(
+                ev.turn_id,
+                ev.target_item_id,
+                ev.review,
+                ev.action,
+            );
+            handle_codex_event(
+                Event {
+                    id: assessment.id.clone(),
+                    msg: EventMsg::GuardianAssessment(assessment),
+                },
+                recovery,
+                event_tx,
+            );
+        }
         "item/completed" => {
             let ev: UpstreamItemCompletedNotification =
                 serde_json::from_value(params).context("decode item/completed notification")?;
@@ -1312,6 +1365,127 @@ fn hook_output_entry_from_upstream(entry: UpstreamHookOutputEntry) -> HookOutput
             UpstreamHookOutputEntryKind::Error => HookOutputEntryKind::Error,
         },
         text: entry.text,
+    }
+}
+
+fn jsonrpc_request_id_to_string(request_id: &RequestId) -> String {
+    match request_id {
+        RequestId::String(value) => value.clone(),
+        RequestId::Integer(value) => value.to_string(),
+    }
+}
+
+fn mcp_request_id_from_jsonrpc_request_id(request_id: &RequestId) -> McpRequestId {
+    match request_id {
+        RequestId::String(value) => McpRequestId::String(value.clone()),
+        RequestId::Integer(value) => McpRequestId::Integer(*value),
+    }
+}
+
+fn elicitation_request_from_upstream(
+    request: crate::app_server::upstream_protocol::McpServerElicitationRequest,
+) -> ProtocolElicitationRequest {
+    match request {
+        crate::app_server::upstream_protocol::McpServerElicitationRequest::Form {
+            meta,
+            message,
+            requested_schema,
+        } => ProtocolElicitationRequest::Form {
+            meta,
+            message,
+            requested_schema,
+        },
+        crate::app_server::upstream_protocol::McpServerElicitationRequest::Url {
+            meta,
+            message,
+            url,
+            elicitation_id,
+        } => ProtocolElicitationRequest::Url {
+            meta,
+            message,
+            url,
+            elicitation_id,
+        },
+    }
+}
+
+fn request_user_input_questions_from_upstream(
+    questions: Vec<crate::app_server::upstream_protocol::ToolRequestUserInputQuestion>,
+) -> Vec<ProtocolRequestUserInputQuestion> {
+    questions
+        .into_iter()
+        .map(|question| ProtocolRequestUserInputQuestion {
+            id: question.id,
+            header: question.header,
+            question: question.question,
+            is_other: question.is_other,
+            is_secret: question.is_secret,
+            options: question.options.map(|options| {
+                options
+                    .into_iter()
+                    .map(|option| ProtocolRequestUserInputQuestionOption {
+                        label: option.label,
+                        description: option.description,
+                    })
+                    .collect()
+            }),
+        })
+        .collect()
+}
+
+fn request_permission_profile_from_upstream(
+    profile: crate::app_server::upstream_protocol::RequestPermissionProfile,
+) -> ProtocolRequestPermissionProfile {
+    ProtocolRequestPermissionProfile {
+        network: profile
+            .network
+            .map(|network| codex_protocol::models::NetworkPermissions {
+                enabled: network.enabled,
+            }),
+        file_system: profile.file_system.map(|profile| {
+            codex_protocol::models::FileSystemPermissions {
+                read: profile.read,
+                write: profile.write,
+            }
+        }),
+    }
+}
+
+fn guardian_assessment_status_from_upstream(
+    status: UpstreamGuardianApprovalReviewStatus,
+) -> GuardianAssessmentStatus {
+    match status {
+        UpstreamGuardianApprovalReviewStatus::InProgress => GuardianAssessmentStatus::InProgress,
+        UpstreamGuardianApprovalReviewStatus::Approved => GuardianAssessmentStatus::Approved,
+        UpstreamGuardianApprovalReviewStatus::Denied => GuardianAssessmentStatus::Denied,
+        UpstreamGuardianApprovalReviewStatus::Aborted => GuardianAssessmentStatus::Aborted,
+    }
+}
+
+fn guardian_risk_level_from_upstream(
+    level: UpstreamGuardianRiskLevel,
+) -> ProtocolGuardianRiskLevel {
+    match level {
+        UpstreamGuardianRiskLevel::Low => ProtocolGuardianRiskLevel::Low,
+        UpstreamGuardianRiskLevel::Medium => ProtocolGuardianRiskLevel::Medium,
+        UpstreamGuardianRiskLevel::High => ProtocolGuardianRiskLevel::High,
+    }
+}
+
+fn guardian_assessment_from_upstream_auto_approval_review(
+    turn_id: String,
+    target_item_id: String,
+    review: crate::app_server::upstream_protocol::GuardianApprovalReview,
+    action: Option<serde_json::Value>,
+) -> GuardianAssessmentEvent {
+    GuardianAssessmentEvent {
+        id: target_item_id,
+        turn_id,
+        status: guardian_assessment_status_from_upstream(review.status),
+        risk_score: review.risk_score,
+        risk_level: review.risk_level.map(guardian_risk_level_from_upstream),
+        rationale: review.rationale,
+        action,
     }
 }
 
@@ -1607,7 +1781,7 @@ fn handle_codex_event(
 async fn handle_server_request(
     stdin: &mut ChildStdin,
     request: crate::app_server::upstream_protocol::JSONRPCRequest,
-    recovery: &StreamRecoveryContext,
+    recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<()> {
     let request_id = request.id.clone();
@@ -1632,12 +1806,18 @@ async fn handle_server_request(
         }
     };
 
-    let emit_warning = |turn_id: Option<&str>, message: String| {
-        let id = turn_id
+    let bypass_approvals_and_sandbox = recovery.server_request_policy.bypass_approvals_and_sandbox;
+    let active_turn_id = recovery.active_turn_id.clone();
+    let resolve_event_id = |turn_id: Option<&str>| {
+        turn_id
             .filter(|id| !id.is_empty())
             .map(ToString::to_string)
-            .or_else(|| recovery.active_turn_id.clone())
-            .unwrap_or_default();
+            .or_else(|| active_turn_id.clone())
+            .unwrap_or_default()
+    };
+
+    let emit_warning = |turn_id: Option<&str>, message: String| {
+        let id = resolve_event_id(turn_id);
         let _ = event_tx.send(Event {
             id,
             msg: EventMsg::Warning(WarningEvent { message }),
@@ -1645,11 +1825,7 @@ async fn handle_server_request(
     };
 
     let emit_error = |turn_id: Option<&str>, message: String| {
-        let id = turn_id
-            .filter(|id| !id.is_empty())
-            .map(ToString::to_string)
-            .or_else(|| recovery.active_turn_id.clone())
-            .unwrap_or_default();
+        let id = resolve_event_id(turn_id);
         let _ = event_tx.send(Event {
             id,
             msg: EventMsg::Error(ErrorEvent {
@@ -1673,44 +1849,77 @@ async fn handle_server_request(
             send_response(stdin, request_id, response).await?;
         }
         ServerRequest::ToolRequestUserInput { params, .. } => {
-            let (turn_id, item_id, questions) = match params {
-                Some(params) => (
-                    Some(params.turn_id),
-                    Some(params.item_id),
-                    params.questions.len(),
-                ),
-                None => (None, None, 0),
-            };
-            let item_id = item_id.as_deref().unwrap_or("<unknown>");
+            let mut warning_turn_id: Option<String> = None;
+            let mut warning_item_id: Option<String> = None;
+            let mut warning_questions: usize = 0;
+
+            if let Some(params) = params {
+                warning_questions = params.questions.len();
+                warning_turn_id = Some(params.turn_id.clone());
+                warning_item_id = Some(params.item_id.clone());
+
+                handle_codex_event(
+                    Event {
+                        id: params.item_id.clone(),
+                        msg: EventMsg::RequestUserInput(RequestUserInputEvent {
+                            call_id: params.item_id,
+                            turn_id: params.turn_id,
+                            questions: request_user_input_questions_from_upstream(params.questions),
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            }
+
+            let item_id = warning_item_id.as_deref().unwrap_or("<unknown>");
             emit_warning(
-                turn_id.as_deref(),
+                warning_turn_id.as_deref(),
                 format!(
-                    "Upstream requested request_user_input (itemId={item_id}, questions={questions}); running non-interactively, returning empty answers."
+                    "Upstream requested request_user_input (itemId={item_id}, questions={warning_questions}); running non-interactively, returning empty answers."
                 ),
             );
             let response = ToolRequestUserInputResponse::default();
             send_response(stdin, request_id, response).await?;
         }
         ServerRequest::McpServerElicitationRequest { params, .. } => {
-            let (turn_id, server_name, mode) = match params {
-                Some(params) => {
-                    let mode = match params.request {
-                        crate::app_server::upstream_protocol::McpServerElicitationRequest::Form {
-                            ..
-                        } => "form",
-                        crate::app_server::upstream_protocol::McpServerElicitationRequest::Url {
-                            ..
-                        } => "url",
-                    };
-                    (params.turn_id, Some(params.server_name), mode)
-                }
-                None => (None, None, "<unknown>"),
-            };
-            let server_name = server_name.as_deref().unwrap_or("<unknown>");
+            let mut warning_turn_id: Option<String> = None;
+            let mut warning_server_name: Option<String> = None;
+            let mut warning_mode: &'static str = "<unknown>";
+
+            if let Some(params) = params {
+                warning_turn_id = params.turn_id.clone();
+                warning_server_name = Some(params.server_name.clone());
+                warning_mode = match &params.request {
+                    crate::app_server::upstream_protocol::McpServerElicitationRequest::Form {
+                        ..
+                    } => "form",
+                    crate::app_server::upstream_protocol::McpServerElicitationRequest::Url {
+                        ..
+                    } => "url",
+                };
+
+                handle_codex_event(
+                    Event {
+                        id: jsonrpc_request_id_to_string(&request_id),
+                        msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
+                            turn_id: params.turn_id,
+                            server_name: params.server_name,
+                            id: mcp_request_id_from_jsonrpc_request_id(&request_id),
+                            request: Some(elicitation_request_from_upstream(params.request)),
+                            message: None,
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            }
+
+            let server_name = warning_server_name.as_deref().unwrap_or("<unknown>");
             emit_warning(
-                turn_id.as_deref(),
+                warning_turn_id.as_deref(),
                 format!(
-                    "Upstream requested an MCP server elicitation (serverName={server_name}, mode={mode}); running non-interactively, auto-cancelling."
+                    "Upstream requested an MCP server elicitation (serverName={server_name}, mode={warning_mode}); running non-interactively, auto-cancelling."
                 ),
             );
             let response = McpServerElicitationRequestResponse {
@@ -1721,31 +1930,39 @@ async fn handle_server_request(
             send_response(stdin, request_id, response).await?;
         }
         ServerRequest::PermissionsRequestApproval { params, .. } => {
-            let (turn_id, reason, granted, scope) = match params {
-                Some(params) if recovery.server_request_policy.bypass_approvals_and_sandbox => {
-                    let granted = GrantedPermissionProfile::from(params.permissions);
-                    (
-                        Some(params.turn_id),
-                        params.reason,
-                        granted,
-                        PermissionGrantScope::Session,
-                    )
-                }
-                Some(params) => (
-                    Some(params.turn_id),
-                    params.reason,
-                    GrantedPermissionProfile::default(),
-                    PermissionGrantScope::Turn,
-                ),
-                None => (
-                    None,
-                    None,
-                    GrantedPermissionProfile::default(),
-                    PermissionGrantScope::Turn,
-                ),
-            };
+            let mut turn_id: Option<String> = None;
+            let mut reason: Option<String> = None;
+            let mut granted = GrantedPermissionProfile::default();
+            let mut scope = PermissionGrantScope::Turn;
 
-            let note = match recovery.server_request_policy.bypass_approvals_and_sandbox {
+            if let Some(params) = params {
+                let permissions_for_grant = params.permissions.clone();
+                turn_id = Some(params.turn_id.clone());
+                reason = params.reason.clone();
+
+                handle_codex_event(
+                    Event {
+                        id: params.item_id.clone(),
+                        msg: EventMsg::RequestPermissions(RequestPermissionsEvent {
+                            call_id: params.item_id,
+                            turn_id: params.turn_id,
+                            reason: params.reason,
+                            permissions: request_permission_profile_from_upstream(
+                                params.permissions,
+                            ),
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+
+                if bypass_approvals_and_sandbox {
+                    granted = GrantedPermissionProfile::from(permissions_for_grant);
+                    scope = PermissionGrantScope::Session;
+                }
+            }
+
+            let note = match bypass_approvals_and_sandbox {
                 true => "granting requested permissions",
                 false => "denying requested permissions",
             };
@@ -2731,6 +2948,174 @@ done
             saw_round_finished,
             Ok(true),
             "did not observe TurnStarted + PotterRoundFinished(Completed)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_surfaces_server_requests_and_guardian_review_notifications() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{"id":1,"result":{}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+
+# item/tool/requestUserInput server request
+echo '{"id":10,"method":"item/tool/requestUserInput","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","itemId":"tool-req-user-input","questions":[{"id":"q1","header":"Choice","question":"Pick one","options":[{"label":"A","description":"Option A"}]}]}}'
+IFS= read -r response
+echo "$response" | grep -q '"id":10' || { echo "missing response id 10: $response" >&2; exit 1; }
+echo "$response" | grep -q '"answers":{}' || { echo "missing empty answers: $response" >&2; exit 1; }
+
+# item/permissions/requestApproval server request
+echo '{"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","itemId":"tool-req-perms","reason":"need permissions","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp"],"write":[]}}}}'
+IFS= read -r response
+echo "$response" | grep -q '"id":11' || { echo "missing response id 11: $response" >&2; exit 1; }
+echo "$response" | grep -q '"scope":"turn"' || { echo "missing scope=turn: $response" >&2; exit 1; }
+
+# mcpServer/elicitation/request server request
+echo '{"id":12,"method":"mcpServer/elicitation/request","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","serverName":"example-server","mode":"form","_meta":null,"message":"Please fill this","requestedSchema":{"type":"object","properties":{}}}}'
+IFS= read -r response
+echo "$response" | grep -q '"id":12' || { echo "missing response id 12: $response" >&2; exit 1; }
+echo "$response" | grep -q '"action":"cancel"' || { echo "missing action=cancel: $response" >&2; exit 1; }
+
+# item/autoApprovalReview notifications
+echo '{"method":"item/autoApprovalReview/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","targetItemId":"tool-req-perms","review":{"status":"inProgress","riskScore":null,"riskLevel":null,"rationale":null},"action":{"type":"example"}}}'
+echo '{"method":"item/autoApprovalReview/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","targetItemId":"tool-req-perms","review":{"status":"approved","riskScore":10,"riskLevel":"low","rationale":"ok"},"action":{"type":"example"}}}'
+
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+                &fatal_exit_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_events = timeout(Duration::from_secs(10), async {
+            let mut saw_request_user_input = false;
+            let mut saw_request_permissions = false;
+            let mut saw_elicitation_request = false;
+            let mut saw_guardian_in_progress = false;
+            let mut saw_guardian_approved = false;
+
+            while let Some(event) = event_rx.recv().await {
+                match event.msg {
+                    EventMsg::RequestUserInput(ev) => {
+                        assert_eq!(ev.call_id, "tool-req-user-input");
+                        saw_request_user_input = true;
+                    }
+                    EventMsg::RequestPermissions(ev) => {
+                        assert_eq!(ev.call_id, "tool-req-perms");
+                        saw_request_permissions = true;
+                    }
+                    EventMsg::ElicitationRequest(ev) => {
+                        assert_eq!(ev.server_name, "example-server");
+                        saw_elicitation_request = true;
+                    }
+                    EventMsg::GuardianAssessment(ev) => match ev.status {
+                        GuardianAssessmentStatus::InProgress => {
+                            saw_guardian_in_progress = true;
+                        }
+                        GuardianAssessmentStatus::Approved => {
+                            saw_guardian_approved = true;
+                        }
+                        _ => {}
+                    },
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                    } => {
+                        return saw_request_user_input
+                            && saw_request_permissions
+                            && saw_elicitation_request
+                            && saw_guardian_in_progress
+                            && saw_guardian_approved;
+                    }
+                    _ => {}
+                }
+            }
+
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_events,
+            Ok(true),
+            "did not observe tool request events + guardian review + PotterRoundFinished"
         );
 
         drop(op_tx);
