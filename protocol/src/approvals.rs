@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 
 use crate::mcp::RequestId;
 use crate::parse_command::ParsedCommand;
@@ -44,11 +45,102 @@ impl ExecApprovalRequestEvent {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GuardianRiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardianAssessmentStatus {
+    InProgress,
+    Approved,
+    Denied,
+    Aborted,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct GuardianAssessmentEvent {
+    /// Stable identifier for this guardian review lifecycle.
+    pub id: String,
+    /// Turn ID that this assessment belongs to.
+    /// Uses `#[serde(default)]` for backwards compatibility.
+    #[serde(default)]
+    pub turn_id: String,
+    pub status: GuardianAssessmentStatus,
+    /// Numeric risk score from 0-100. Omitted while the assessment is in progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_score: Option<u8>,
+    /// Coarse risk label paired with `risk_score`. Omitted while in progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<GuardianRiskLevel>,
+    /// Human-readable explanation of the final assessment. Omitted while in progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    /// Canonical action payload that was reviewed, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ElicitationRequest {
+    Form {
+        #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+        meta: Option<JsonValue>,
+        message: String,
+        requested_schema: JsonValue,
+    },
+    Url {
+        #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+        meta: Option<JsonValue>,
+        message: String,
+        url: String,
+        elicitation_id: String,
+    },
+}
+
+impl ElicitationRequest {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Form { message, .. } | Self::Url { message, .. } => message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ElicitationRequestEvent {
+    /// Turn ID that this elicitation belongs to, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub server_name: String,
     pub id: RequestId,
-    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<ElicitationRequest>,
+    /// Backward-compatible message field (pre-request schema).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl ElicitationRequestEvent {
+    pub fn message(&self) -> Option<&str> {
+        match (&self.request, &self.message) {
+            (Some(request), _) => Some(request.message()),
+            (None, Some(message)) => Some(message),
+            (None, None) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ElicitationAction {
+    Accept,
+    Decline,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -5,6 +5,9 @@
 
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+
+use crate::AbsolutePathBuf;
 
 /// Classifies an assistant message as interim commentary or final answer text.
 ///
@@ -28,4 +31,41 @@ pub enum MessagePhase {
 /// prompt rendering and placeholder replacement stay unchanged.
 pub fn local_image_label_text(label_number: usize) -> String {
     format!("[Image #{label_number}]")
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FileSystemPermissions {
+    pub read: Option<Vec<AbsolutePathBuf>>,
+    pub write: Option<Vec<AbsolutePathBuf>>,
+}
+
+impl FileSystemPermissions {
+    pub fn is_empty(&self) -> bool {
+        self.read.is_none() && self.write.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NetworkPermissions {
+    pub enabled: Option<bool>,
+}
+
+impl NetworkPermissions {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PermissionProfile {
+    pub network: Option<NetworkPermissions>,
+    pub file_system: Option<FileSystemPermissions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<JsonValue>,
+}
+
+impl PermissionProfile {
+    pub fn is_empty(&self) -> bool {
+        self.network.is_none() && self.file_system.is_none() && self.macos.is_none()
+    }
 }

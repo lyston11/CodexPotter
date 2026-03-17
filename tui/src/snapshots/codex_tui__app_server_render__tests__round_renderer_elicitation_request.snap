@@ -1,0 +1,8 @@
+---
+source: tui/src/app_server_render.rs
+expression: lines_to_plain_text(&cell.display_lines(width))
+---
+• Elicitation requested (mcp-server)
+  └ Mode: url
+    Message: Please log in.
+    URL: https://example.com/auth

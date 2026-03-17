@@ -12,11 +12,13 @@ use crate::ThreadId;
 use crate::approvals::ApplyPatchApprovalRequestEvent;
 use crate::approvals::ElicitationRequestEvent;
 use crate::approvals::ExecApprovalRequestEvent;
+use crate::approvals::GuardianAssessmentEvent;
 use crate::models::MessagePhase;
 use crate::num_format::format_with_separators;
 use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
+use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_user_input::RequestUserInputEvent;
 use crate::user_input::UserInput;
 use serde::Deserialize;
@@ -245,11 +247,16 @@ pub enum EventMsg {
 
     ExecApprovalRequest(ExecApprovalRequestEvent),
 
+    RequestPermissions(RequestPermissionsEvent),
+
     RequestUserInput(RequestUserInputEvent),
 
     ElicitationRequest(ElicitationRequestEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
+
+    /// Structured lifecycle event for a guardian-reviewed approval request.
+    GuardianAssessment(GuardianAssessmentEvent),
 
     /// Notification advising the user that something they are using has been
     /// deprecated and should be phased out.

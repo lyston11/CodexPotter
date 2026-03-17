@@ -7,10 +7,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_protocol::approvals::ElicitationRequest;
+use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::GuardianAssessmentEvent;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::FileChange;
+use codex_protocol::request_permissions::RequestPermissionsEvent;
+use codex_protocol::request_user_input::RequestUserInputEvent;
 use ratatui::prelude::*;
 use ratatui::style::Style;
 use ratatui::style::Styled;
@@ -382,6 +387,248 @@ impl HistoryCell for WebSearchToolCallsCell {
                 .subsequent_indent("    ".dim().into());
             let wrapped = adaptive_wrap_lines(query.lines(), opts);
             out.extend(wrapped);
+        }
+
+        out
+    }
+}
+
+#[derive(Debug)]
+pub struct RequestPermissionsCell {
+    reason: Option<String>,
+    network: Option<codex_protocol::models::NetworkPermissions>,
+    file_system: Option<codex_protocol::models::FileSystemPermissions>,
+}
+
+pub fn new_request_permissions_event(event: RequestPermissionsEvent) -> RequestPermissionsCell {
+    RequestPermissionsCell {
+        reason: event.reason,
+        network: event.permissions.network,
+        file_system: event.permissions.file_system,
+    }
+}
+
+impl HistoryCell for RequestPermissionsCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width.max(1) as usize;
+        let mut out: Vec<Line<'static>> =
+            vec![vec!["• ".dim(), "Requested permissions".bold()].into()];
+
+        let mut details: Vec<String> = Vec::new();
+        if let Some(reason) = &self.reason {
+            details.push(format!("Reason: {reason}"));
+        }
+        if let Some(network) = &self.network {
+            let label = match network.enabled {
+                Some(true) => "Network: enabled",
+                Some(false) => "Network: disabled",
+                None => "Network: <unspecified>",
+            };
+            details.push(label.to_string());
+        }
+        if let Some(file_system) = &self.file_system {
+            if let Some(write) = &file_system.write {
+                for root in write {
+                    details.push(format!("FileSystem write: {}", root.display()));
+                }
+            }
+            if let Some(read) = &file_system.read {
+                for root in read {
+                    details.push(format!("FileSystem read: {}", root.display()));
+                }
+            }
+        }
+
+        for (idx, detail) in details.iter().enumerate() {
+            let initial_prefix: Line<'static> = if idx == 0 {
+                "  └ ".dim().into()
+            } else {
+                "    ".dim().into()
+            };
+            let opts = RtOptions::new(wrap_width)
+                .initial_indent(initial_prefix)
+                .subsequent_indent("    ".dim().into());
+            out.extend(adaptive_wrap_lines(detail.lines(), opts));
+        }
+
+        out
+    }
+}
+
+#[derive(Debug)]
+pub struct RequestUserInputCell {
+    question_summaries: Vec<String>,
+}
+
+pub fn new_request_user_input_event(event: RequestUserInputEvent) -> RequestUserInputCell {
+    let question_summaries = event
+        .questions
+        .into_iter()
+        .map(|question| format!("{}: {}", question.header, question.question))
+        .collect();
+    RequestUserInputCell { question_summaries }
+}
+
+impl HistoryCell for RequestUserInputCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width.max(1) as usize;
+        let mut out: Vec<Line<'static>> =
+            vec![vec!["• ".dim(), "User input requested".bold()].into()];
+
+        for (idx, summary) in self.question_summaries.iter().enumerate() {
+            let initial_prefix: Line<'static> = if idx == 0 {
+                "  └ ".dim().into()
+            } else {
+                "    ".dim().into()
+            };
+            let opts = RtOptions::new(wrap_width)
+                .initial_indent(initial_prefix)
+                .subsequent_indent("    ".dim().into());
+            out.extend(adaptive_wrap_lines(summary.lines(), opts));
+        }
+
+        out
+    }
+}
+
+#[derive(Debug)]
+pub struct ElicitationRequestCell {
+    server_name: String,
+    mode: Option<&'static str>,
+    message: Option<String>,
+    url: Option<String>,
+}
+
+pub fn new_elicitation_request_event(event: ElicitationRequestEvent) -> ElicitationRequestCell {
+    let mut mode = None;
+    let mut message = event.message;
+    let mut url = None;
+
+    if let Some(request) = event.request {
+        match request {
+            ElicitationRequest::Form { message: msg, .. } => {
+                mode = Some("form");
+                message = Some(msg);
+            }
+            ElicitationRequest::Url {
+                message: msg,
+                url: link,
+                ..
+            } => {
+                mode = Some("url");
+                message = Some(msg);
+                url = Some(link);
+            }
+        }
+    }
+
+    ElicitationRequestCell {
+        server_name: event.server_name,
+        mode,
+        message,
+        url,
+    }
+}
+
+impl HistoryCell for ElicitationRequestCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width.max(1) as usize;
+        let mut out: Vec<Line<'static>> = vec![
+            vec![
+                "• ".dim(),
+                "Elicitation requested".bold(),
+                format!(" ({})", self.server_name).dim(),
+            ]
+            .into(),
+        ];
+
+        let mut details: Vec<String> = Vec::new();
+        if let Some(mode) = self.mode {
+            details.push(format!("Mode: {mode}"));
+        }
+        if let Some(message) = &self.message {
+            details.push(format!("Message: {message}"));
+        }
+        if let Some(url) = &self.url {
+            details.push(format!("URL: {url}"));
+        }
+
+        for (idx, detail) in details.iter().enumerate() {
+            let initial_prefix: Line<'static> = if idx == 0 {
+                "  └ ".dim().into()
+            } else {
+                "    ".dim().into()
+            };
+            let opts = RtOptions::new(wrap_width)
+                .initial_indent(initial_prefix)
+                .subsequent_indent("    ".dim().into());
+            out.extend(adaptive_wrap_lines(detail.lines(), opts));
+        }
+
+        out
+    }
+}
+
+#[derive(Debug)]
+pub struct GuardianAssessmentCell {
+    status: String,
+    risk_score: Option<u8>,
+    risk_level: Option<String>,
+    rationale: Option<String>,
+}
+
+pub fn new_guardian_assessment_event(event: GuardianAssessmentEvent) -> GuardianAssessmentCell {
+    GuardianAssessmentCell {
+        status: format!("{:?}", event.status),
+        risk_score: event.risk_score,
+        risk_level: event.risk_level.map(|level| format!("{level:?}")),
+        rationale: event.rationale,
+    }
+}
+
+impl HistoryCell for GuardianAssessmentCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width.max(1) as usize;
+        let mut out: Vec<Line<'static>> =
+            vec![vec!["• ".dim(), "Guardian assessment".bold()].into()];
+
+        let mut details: Vec<String> = vec![format!("Status: {}", self.status)];
+        if let Some(score) = self.risk_score {
+            details.push(format!("Risk score: {score}"));
+        }
+        if let Some(level) = &self.risk_level {
+            details.push(format!("Risk level: {level}"));
+        }
+        if let Some(rationale) = &self.rationale {
+            details.push(format!("Rationale: {rationale}"));
+        }
+
+        for (idx, detail) in details.iter().enumerate() {
+            let initial_prefix: Line<'static> = if idx == 0 {
+                "  └ ".dim().into()
+            } else {
+                "    ".dim().into()
+            };
+            let opts = RtOptions::new(wrap_width)
+                .initial_indent(initial_prefix)
+                .subsequent_indent("    ".dim().into());
+            out.extend(adaptive_wrap_lines(detail.lines(), opts));
         }
 
         out

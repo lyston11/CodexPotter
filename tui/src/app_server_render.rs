@@ -862,6 +862,48 @@ impl AppServerEventProcessor {
                     ev.summary, ev.details,
                 )));
             }
+            EventMsg::RequestPermissions(ev) => {
+                // Align with upstream behavior: flush any newline-gated agent output before
+                // rendering the tool result so ordering matches "agent explains -> tool runs -> agent continues".
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+                self.flush_pending_live_activity_cells();
+                self.flush_pending_compact_patch_changes();
+
+                self.needs_final_message_separator = true;
+                self.had_work_activity = true;
+                self.emit_history_cell(Box::new(history_cell::new_request_permissions_event(ev)));
+            }
+            EventMsg::RequestUserInput(ev) => {
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+                self.flush_pending_live_activity_cells();
+                self.flush_pending_compact_patch_changes();
+
+                self.needs_final_message_separator = true;
+                self.had_work_activity = true;
+                self.emit_history_cell(Box::new(history_cell::new_request_user_input_event(ev)));
+            }
+            EventMsg::ElicitationRequest(ev) => {
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+                self.flush_pending_live_activity_cells();
+                self.flush_pending_compact_patch_changes();
+
+                self.needs_final_message_separator = true;
+                self.had_work_activity = true;
+                self.emit_history_cell(Box::new(history_cell::new_elicitation_request_event(ev)));
+            }
+            EventMsg::GuardianAssessment(ev) => {
+                self.flush_agent_stream();
+                self.flush_plan_stream();
+                self.flush_pending_live_activity_cells();
+                self.flush_pending_compact_patch_changes();
+
+                self.needs_final_message_separator = true;
+                self.had_work_activity = true;
+                self.emit_history_cell(Box::new(history_cell::new_guardian_assessment_event(ev)));
+            }
             EventMsg::PlanUpdate(ev) => {
                 self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
@@ -2228,7 +2270,16 @@ mod tests {
     use super::*;
     use crate::insert_history::insert_history_lines;
     use crate::test_backend::VT100Backend;
+    use codex_protocol::AbsolutePathBuf;
     use codex_protocol::ThreadId;
+    use codex_protocol::approvals::ElicitationRequest;
+    use codex_protocol::approvals::ElicitationRequestEvent;
+    use codex_protocol::approvals::GuardianAssessmentEvent;
+    use codex_protocol::approvals::GuardianAssessmentStatus;
+    use codex_protocol::approvals::GuardianRiskLevel;
+    use codex_protocol::mcp::RequestId as McpRequestId;
+    use codex_protocol::models::FileSystemPermissions;
+    use codex_protocol::models::NetworkPermissions;
     use codex_protocol::parse_command::ParsedCommand;
     use codex_protocol::protocol::AgentMessageDeltaEvent;
     use codex_protocol::protocol::AgentMessageEvent;
@@ -2254,6 +2305,11 @@ mod tests {
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::ViewImageToolCallEvent;
     use codex_protocol::protocol::WebSearchEndEvent;
+    use codex_protocol::request_permissions::RequestPermissionProfile;
+    use codex_protocol::request_permissions::RequestPermissionsEvent;
+    use codex_protocol::request_user_input::RequestUserInputEvent;
+    use codex_protocol::request_user_input::RequestUserInputQuestion;
+    use codex_protocol::request_user_input::RequestUserInputQuestionOption;
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
@@ -4119,6 +4175,132 @@ mod tests {
 
         let cells = drain_history_cell_strings(&mut rx, width);
         pretty_assertions::assert_eq!(cells, vec![vec!["• hello".to_string()]]);
+    }
+
+    #[test]
+    fn round_renderer_renders_request_permissions() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        let write_root =
+            AbsolutePathBuf::from_absolute_path("/Users/me/project").expect("write root");
+        proc.handle_codex_event(Event {
+            id: "request-permissions".into(),
+            msg: EventMsg::RequestPermissions(RequestPermissionsEvent {
+                call_id: "call-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                reason: Some("Select a workspace root".to_string()),
+                permissions: RequestPermissionProfile {
+                    network: Some(NetworkPermissions {
+                        enabled: Some(true),
+                    }),
+                    file_system: Some(FileSystemPermissions {
+                        read: None,
+                        write: Some(vec![write_root]),
+                    }),
+                },
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        assert_snapshot!(
+            "round_renderer_request_permissions",
+            lines_to_plain_text(&cell.display_lines(width))
+        );
+    }
+
+    #[test]
+    fn round_renderer_renders_request_user_input() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "request-user-input".into(),
+            msg: EventMsg::RequestUserInput(RequestUserInputEvent {
+                call_id: "call-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                questions: vec![RequestUserInputQuestion {
+                    id: "confirm_path".to_string(),
+                    header: "Confirm".to_string(),
+                    question: "Proceed with the plan?".to_string(),
+                    is_other: true,
+                    is_secret: false,
+                    options: Some(vec![
+                        RequestUserInputQuestionOption {
+                            label: "Yes (Recommended)".to_string(),
+                            description: "Continue the current plan.".to_string(),
+                        },
+                        RequestUserInputQuestionOption {
+                            label: "No".to_string(),
+                            description: "Stop and revisit the approach.".to_string(),
+                        },
+                    ]),
+                }],
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        assert_snapshot!(
+            "round_renderer_request_user_input",
+            lines_to_plain_text(&cell.display_lines(width))
+        );
+    }
+
+    #[test]
+    fn round_renderer_renders_elicitation_request() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "elicitation".into(),
+            msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
+                turn_id: Some("turn-1".to_string()),
+                server_name: "mcp-server".to_string(),
+                id: McpRequestId::String("req-1".to_string()),
+                request: Some(ElicitationRequest::Url {
+                    meta: None,
+                    message: "Please log in.".to_string(),
+                    url: "https://example.com/auth".to_string(),
+                    elicitation_id: "elicitation-1".to_string(),
+                }),
+                message: None,
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        assert_snapshot!(
+            "round_renderer_elicitation_request",
+            lines_to_plain_text(&cell.display_lines(width))
+        );
+    }
+
+    #[test]
+    fn round_renderer_renders_guardian_assessment() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "guardian".into(),
+            msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                id: "assessment-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                status: GuardianAssessmentStatus::Approved,
+                risk_score: Some(15),
+                risk_level: Some(GuardianRiskLevel::Low),
+                rationale: Some("Looks safe.".to_string()),
+                action: None,
+            }),
+        });
+
+        let cell = recv_inserted_history_cell(&mut rx);
+        assert_snapshot!(
+            "round_renderer_guardian_assessment",
+            lines_to_plain_text(&cell.display_lines(width))
+        );
     }
 
     #[test]

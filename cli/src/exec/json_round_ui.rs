@@ -308,9 +308,11 @@ mod tests {
             .send(Event {
                 id: "elicitation".to_string(),
                 msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
+                    turn_id: None,
                     server_name: "mcp-server".to_string(),
                     id: RequestId::String("req-1".to_string()),
-                    message: "need input".to_string(),
+                    request: None,
+                    message: Some("need input".to_string()),
                 }),
             })
             .expect("send ElicitationRequest");
