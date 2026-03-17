@@ -191,7 +191,8 @@ The UI uses `EventMsg::TokenCount` (and `TurnStarted`) events to keep a best-eff
 Round renderer behavior:
 
 - When `model_context_window` is known and > 0: show **percent remaining**.
-- Otherwise: show **used tokens** as a raw count.
+- Otherwise: show **used tokens** as a raw count (but avoid rendering a confusing initial `0 used`;
+  keep the default `100% context left` until the count becomes non-zero).
 
 Code:
 

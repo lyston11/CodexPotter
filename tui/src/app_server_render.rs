@@ -2251,16 +2251,16 @@ impl RenderAppState {
     }
 
     fn update_bottom_pane_context_window(&mut self) {
-        let Some(context_window) = self.processor.model_context_window else {
+        let Some(context_window) = self
+            .processor
+            .model_context_window
+            .filter(|context_window| *context_window > 0)
+        else {
+            let used_tokens = self.processor.token_usage.total_tokens;
             self.bottom_pane
-                .set_context_window(None, Some(self.processor.token_usage.total_tokens));
+                .set_context_window(None, (used_tokens > 0).then_some(used_tokens));
             return;
         };
-        if context_window <= 0 {
-            self.bottom_pane
-                .set_context_window(None, Some(self.processor.token_usage.total_tokens));
-            return;
-        }
 
         let percent_left = self
             .processor
@@ -3272,6 +3272,41 @@ mod tests {
 
         assert_eq!(app.bottom_pane.context_window_percent(), None);
         assert_eq!(app.bottom_pane.context_window_used_tokens(), Some(123_456));
+    }
+
+    #[test]
+    fn round_renderer_context_window_fallback_does_not_render_zero_used_tokens() {
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.processor.token_usage = TokenUsage::default();
+        app.processor.model_context_window = None;
+
+        app.update_bottom_pane_context_window();
+
+        assert_eq!(app.bottom_pane.context_window_percent(), None);
+        assert_eq!(app.bottom_pane.context_window_used_tokens(), None);
     }
 
     #[test]
