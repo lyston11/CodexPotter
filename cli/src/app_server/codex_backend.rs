@@ -22,12 +22,14 @@ use std::sync::atomic::Ordering;
 use crate::app_server::stream_recovery::ContinueRetryDecision;
 use crate::app_server::stream_recovery::ContinueRetryPlan;
 use crate::app_server::stream_recovery::PotterStreamRecovery;
+use crate::app_server::upstream_protocol::AgentMessageDeltaNotification as UpstreamAgentMessageDeltaNotification;
 use crate::app_server::upstream_protocol::ApplyPatchApprovalResponse;
 use crate::app_server::upstream_protocol::ClientInfo;
 use crate::app_server::upstream_protocol::ClientNotification;
 use crate::app_server::upstream_protocol::ClientRequest;
 use crate::app_server::upstream_protocol::CommandExecutionApprovalDecision;
 use crate::app_server::upstream_protocol::CommandExecutionRequestApprovalResponse;
+use crate::app_server::upstream_protocol::ErrorNotification as UpstreamErrorNotification;
 use crate::app_server::upstream_protocol::ExecCommandApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeApprovalDecision;
 use crate::app_server::upstream_protocol::FileChangeRequestApprovalResponse;
@@ -35,28 +37,50 @@ use crate::app_server::upstream_protocol::InitializeParams;
 use crate::app_server::upstream_protocol::JSONRPCError;
 use crate::app_server::upstream_protocol::JSONRPCErrorError;
 use crate::app_server::upstream_protocol::JSONRPCMessage;
+use crate::app_server::upstream_protocol::JSONRPCNotification;
 use crate::app_server::upstream_protocol::JSONRPCResponse;
+use crate::app_server::upstream_protocol::PlanDeltaNotification as UpstreamPlanDeltaNotification;
+use crate::app_server::upstream_protocol::ReasoningSummaryTextDeltaNotification as UpstreamReasoningSummaryTextDeltaNotification;
+use crate::app_server::upstream_protocol::ReasoningTextDeltaNotification as UpstreamReasoningTextDeltaNotification;
 use crate::app_server::upstream_protocol::RequestId;
 use crate::app_server::upstream_protocol::ServerRequest;
+use crate::app_server::upstream_protocol::TerminalInteractionNotification as UpstreamTerminalInteractionNotification;
 use crate::app_server::upstream_protocol::ThreadResumeParams;
 use crate::app_server::upstream_protocol::ThreadResumeResponse;
 use crate::app_server::upstream_protocol::ThreadRollbackParams;
 use crate::app_server::upstream_protocol::ThreadRollbackResponse;
 use crate::app_server::upstream_protocol::ThreadStartParams;
 use crate::app_server::upstream_protocol::ThreadStartResponse;
+use crate::app_server::upstream_protocol::ThreadTokenUsageUpdatedNotification as UpstreamThreadTokenUsageUpdatedNotification;
+use crate::app_server::upstream_protocol::TurnCompletedNotification as UpstreamTurnCompletedNotification;
 use crate::app_server::upstream_protocol::TurnStartParams;
 use crate::app_server::upstream_protocol::TurnStartResponse;
+use crate::app_server::upstream_protocol::TurnStartedNotification as UpstreamTurnStartedNotification;
+use crate::app_server::upstream_protocol::TurnStatus as UpstreamTurnStatus;
 use crate::app_server::upstream_protocol::UserInput as ApiUserInput;
 use anyhow::Context;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AgentMessageDeltaEvent;
+use codex_protocol::protocol::AgentReasoningDeltaEvent;
+use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::StreamErrorEvent;
+use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_protocol::protocol::TokenCountEvent;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TokenUsageInfo;
+use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnAbortedEvent;
+use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput as CodexUserInput;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
@@ -725,12 +749,16 @@ async fn handle_app_server_message(
 ) -> anyhow::Result<()> {
     match msg {
         JSONRPCMessage::Notification(notification) => {
-            handle_codex_event_notification(
-                &notification.method,
-                notification.params,
-                recovery,
-                event_tx,
-            )?;
+            if notification.method.starts_with("codex/event/") {
+                handle_codex_event_notification(
+                    &notification.method,
+                    notification.params,
+                    recovery,
+                    event_tx,
+                )?;
+            } else {
+                handle_typed_notification(notification, recovery, event_tx)?;
+            }
         }
         JSONRPCMessage::Request(request) => {
             if let Some(stdin) = stdin.as_mut() {
@@ -738,6 +766,265 @@ async fn handle_app_server_message(
             }
         }
         JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_) => {}
+    }
+
+    Ok(())
+}
+
+fn handle_typed_notification(
+    notification: JSONRPCNotification,
+    recovery: &mut StreamRecoveryContext,
+    event_tx: &UnboundedSender<Event>,
+) -> anyhow::Result<()> {
+    let JSONRPCNotification { method, params } = notification;
+    let Some(params) = params else {
+        return Ok(());
+    };
+
+    match method.as_str() {
+        "turn/started" => {
+            let ev: UpstreamTurnStartedNotification =
+                serde_json::from_value(params).context("decode turn/started notification")?;
+            let turn_id = ev.turn.id;
+            handle_codex_event(
+                Event {
+                    id: turn_id.clone(),
+                    msg: EventMsg::TurnStarted(TurnStartedEvent {
+                        turn_id,
+                        model_context_window: None,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "turn/completed" => {
+            let ev: UpstreamTurnCompletedNotification =
+                serde_json::from_value(params).context("decode turn/completed notification")?;
+            let turn_id = ev.turn.id;
+            match ev.turn.status {
+                UpstreamTurnStatus::Completed => {
+                    handle_codex_event(
+                        Event {
+                            id: turn_id.clone(),
+                            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                turn_id,
+                                last_agent_message: None,
+                            }),
+                        },
+                        recovery,
+                        event_tx,
+                    );
+                }
+                UpstreamTurnStatus::Interrupted => {
+                    handle_codex_event(
+                        Event {
+                            id: turn_id.clone(),
+                            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                                turn_id: Some(turn_id),
+                                reason: TurnAbortReason::Interrupted,
+                            }),
+                        },
+                        recovery,
+                        event_tx,
+                    );
+                }
+                UpstreamTurnStatus::Failed => {
+                    // Newer upstream transports represent turn failures via `turn/completed` with
+                    // a `Failed` status. CodexPotter's stream recovery needs an error signal plus
+                    // a follow-up empty TurnComplete to schedule the retrying `Continue` turn.
+                    if recovery.pending_continue_retry.is_some() {
+                        handle_codex_event(
+                            Event {
+                                id: turn_id.clone(),
+                                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                    turn_id,
+                                    last_agent_message: None,
+                                }),
+                            },
+                            recovery,
+                            event_tx,
+                        );
+                        return Ok(());
+                    }
+
+                    let message = ev
+                        .turn
+                        .error
+                        .as_ref()
+                        .map(|error| error.message.clone())
+                        .unwrap_or_else(|| "turn failed".to_string());
+                    let codex_error_info = ev
+                        .turn
+                        .error
+                        .as_ref()
+                        .and_then(|error| error.codex_error_info.clone());
+                    let error_event = ErrorEvent {
+                        message,
+                        codex_error_info,
+                    };
+                    let retryable =
+                        codex_protocol::potter_stream_recovery::is_retryable_stream_error(
+                            &error_event,
+                        );
+
+                    handle_codex_event(
+                        Event {
+                            id: turn_id.clone(),
+                            msg: EventMsg::Error(error_event),
+                        },
+                        recovery,
+                        event_tx,
+                    );
+
+                    if retryable {
+                        handle_codex_event(
+                            Event {
+                                id: turn_id.clone(),
+                                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                    turn_id,
+                                    last_agent_message: None,
+                                }),
+                            },
+                            recovery,
+                            event_tx,
+                        );
+                    }
+                }
+                UpstreamTurnStatus::InProgress => {}
+            }
+        }
+        "thread/tokenUsage/updated" => {
+            let ev: UpstreamThreadTokenUsageUpdatedNotification = serde_json::from_value(params)
+                .context("decode thread/tokenUsage/updated notification")?;
+            let info = TokenUsageInfo {
+                total_token_usage: TokenUsage {
+                    input_tokens: ev.token_usage.total.input_tokens,
+                    cached_input_tokens: ev.token_usage.total.cached_input_tokens,
+                    output_tokens: ev.token_usage.total.output_tokens,
+                    reasoning_output_tokens: ev.token_usage.total.reasoning_output_tokens,
+                    total_tokens: ev.token_usage.total.total_tokens,
+                },
+                last_token_usage: TokenUsage {
+                    input_tokens: ev.token_usage.last.input_tokens,
+                    cached_input_tokens: ev.token_usage.last.cached_input_tokens,
+                    output_tokens: ev.token_usage.last.output_tokens,
+                    reasoning_output_tokens: ev.token_usage.last.reasoning_output_tokens,
+                    total_tokens: ev.token_usage.last.total_tokens,
+                },
+                model_context_window: ev.token_usage.model_context_window,
+            };
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::TokenCount(TokenCountEvent {
+                        info: Some(info),
+                        rate_limits: None,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/agentMessage/delta" => {
+            let ev: UpstreamAgentMessageDeltaNotification = serde_json::from_value(params)
+                .context("decode item/agentMessage/delta notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta: ev.delta }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/plan/delta" => {
+            let ev: UpstreamPlanDeltaNotification =
+                serde_json::from_value(params).context("decode item/plan/delta notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::PlanDelta(PlanDeltaEvent { delta: ev.delta }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/reasoning/summaryTextDelta" => {
+            let ev: UpstreamReasoningSummaryTextDeltaNotification = serde_json::from_value(params)
+                .context("decode item/reasoning/summaryTextDelta notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                        delta: ev.delta,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/reasoning/textDelta" => {
+            let ev: UpstreamReasoningTextDeltaNotification = serde_json::from_value(params)
+                .context("decode item/reasoning/textDelta notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::AgentReasoningRawContentDelta(
+                        AgentReasoningRawContentDeltaEvent { delta: ev.delta },
+                    ),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "item/commandExecution/terminalInteraction" => {
+            let ev: UpstreamTerminalInteractionNotification = serde_json::from_value(params)
+                .context("decode item/commandExecution/terminalInteraction notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::TerminalInteraction(TerminalInteractionEvent {
+                        call_id: ev.item_id,
+                        process_id: ev.process_id,
+                        stdin: ev.stdin,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "error" => {
+            let ev: UpstreamErrorNotification =
+                serde_json::from_value(params).context("decode error notification")?;
+            if ev.will_retry {
+                handle_codex_event(
+                    Event {
+                        id: ev.turn_id,
+                        msg: EventMsg::StreamError(StreamErrorEvent {
+                            message: ev.error.message,
+                            codex_error_info: ev.error.codex_error_info,
+                            additional_details: ev.error.additional_details,
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            } else {
+                handle_codex_event(
+                    Event {
+                        id: ev.turn_id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: ev.error.message,
+                            codex_error_info: ev.error.codex_error_info,
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            }
+        }
+        _ => {}
     }
 
     Ok(())
@@ -1079,12 +1366,16 @@ async fn read_until_response_or_error(
             }
             JSONRPCMessage::Error(err) if &err.id == request_id => return Ok(Err(err.error)),
             JSONRPCMessage::Notification(notification) => {
-                handle_codex_event_notification(
-                    &notification.method,
-                    notification.params,
-                    recovery,
-                    event_tx,
-                )?;
+                if notification.method.starts_with("codex/event/") {
+                    handle_codex_event_notification(
+                        &notification.method,
+                        notification.params,
+                        recovery,
+                        event_tx,
+                    )?;
+                } else {
+                    handle_typed_notification(notification, recovery, event_tx)?;
+                }
             }
             JSONRPCMessage::Request(request) => {
                 handle_server_request(stdin, request).await?;
@@ -1790,6 +2081,234 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn backend_emits_round_finished_for_typed_turn_completed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{"id":1,"result":{}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+                &fatal_exit_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_round_finished = timeout(Duration::from_secs(5), async {
+            let mut saw_turn_started = false;
+            while let Some(event) = event_rx.recv().await {
+                match event.msg {
+                    EventMsg::TurnStarted(TurnStartedEvent { turn_id, .. }) => {
+                        assert_eq!(turn_id, "turn-1");
+                        saw_turn_started = true;
+                    }
+                    EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                    } => {
+                        return saw_turn_started;
+                    }
+                    _ => {}
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe TurnStarted + PotterRoundFinished(Completed)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_emits_round_finished_for_typed_turn_failed_status() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{"id":1,"result":{}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"failed","error":{"message":"fatal error"}}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+                &fatal_exit_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_round_finished_message = timeout(Duration::from_secs(5), async {
+            while let Some(event) = event_rx.recv().await {
+                if let EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Fatal { message },
+                } = event.msg
+                {
+                    return Some(message);
+                }
+            }
+            None
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished_message,
+            Ok(Some("fatal error".to_string())),
+            "did not observe PotterRoundFinished(Fatal)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn backend_allows_another_turn_after_turn_complete() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1823,8 +2342,8 @@ echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000"
 IFS= read -r _line
 echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
 
-# signal completion for the first turn
-echo '{{"method":"codex/event/test","params":{{"id":"1","msg":{{"type":"turn_complete","last_agent_message":null}}}}}}'
+	# signal completion for the first turn
+	echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"completed","error":null}}}}}}'
 
 # second turn/start request (should still be accepted)
 IFS= read -r _line
@@ -1981,7 +2500,7 @@ touch "$MARKER"
 echo '{{"id":4,"result":{{}}}}'
 
 # signal interruption for the turn
-echo '{{"method":"codex/event/test","params":{{"id":"abort-1","msg":{{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted"}}}}}}'
+echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"interrupted","error":null}}}}}}'
 
 # Wait for the client to close stdin to request shutdown.
 while IFS= read -r _line; do
