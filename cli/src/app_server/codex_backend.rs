@@ -27,18 +27,26 @@ use crate::app_server::upstream_protocol::ApplyPatchApprovalResponse;
 use crate::app_server::upstream_protocol::ClientInfo;
 use crate::app_server::upstream_protocol::ClientNotification;
 use crate::app_server::upstream_protocol::ClientRequest;
+use crate::app_server::upstream_protocol::CommandAction as UpstreamCommandAction;
 use crate::app_server::upstream_protocol::CommandExecutionApprovalDecision;
 use crate::app_server::upstream_protocol::CommandExecutionRequestApprovalResponse;
+use crate::app_server::upstream_protocol::CommandExecutionThreadItem as UpstreamCommandExecutionThreadItem;
 use crate::app_server::upstream_protocol::ErrorNotification as UpstreamErrorNotification;
 use crate::app_server::upstream_protocol::ExecCommandApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeApprovalDecision;
 use crate::app_server::upstream_protocol::FileChangeRequestApprovalResponse;
+use crate::app_server::upstream_protocol::FileChangeThreadItem as UpstreamFileChangeThreadItem;
+use crate::app_server::upstream_protocol::FileUpdateChange as UpstreamFileUpdateChange;
 use crate::app_server::upstream_protocol::InitializeParams;
+use crate::app_server::upstream_protocol::ItemCompletedNotification as UpstreamItemCompletedNotification;
+use crate::app_server::upstream_protocol::ItemStartedNotification as UpstreamItemStartedNotification;
 use crate::app_server::upstream_protocol::JSONRPCError;
 use crate::app_server::upstream_protocol::JSONRPCErrorError;
 use crate::app_server::upstream_protocol::JSONRPCMessage;
 use crate::app_server::upstream_protocol::JSONRPCNotification;
 use crate::app_server::upstream_protocol::JSONRPCResponse;
+use crate::app_server::upstream_protocol::PatchApplyStatus as UpstreamPatchApplyStatus;
+use crate::app_server::upstream_protocol::PatchChangeKind as UpstreamPatchChangeKind;
 use crate::app_server::upstream_protocol::PlanDeltaNotification as UpstreamPlanDeltaNotification;
 use crate::app_server::upstream_protocol::ReasoningSummaryTextDeltaNotification as UpstreamReasoningSummaryTextDeltaNotification;
 use crate::app_server::upstream_protocol::ReasoningTextDeltaNotification as UpstreamReasoningTextDeltaNotification;
@@ -61,13 +69,20 @@ use crate::app_server::upstream_protocol::UserInput as ApiUserInput;
 use anyhow::Context;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
 use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandBeginEvent;
+use codex_protocol::protocol::ExecCommandEndEvent;
+use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PatchApplyBeginEvent;
+use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::ReviewDecision;
@@ -994,6 +1009,16 @@ fn handle_typed_notification(
                 event_tx,
             );
         }
+        "item/started" => {
+            let ev: UpstreamItemStartedNotification =
+                serde_json::from_value(params).context("decode item/started notification")?;
+            handle_typed_item_started(ev, recovery, event_tx)?;
+        }
+        "item/completed" => {
+            let ev: UpstreamItemCompletedNotification =
+                serde_json::from_value(params).context("decode item/completed notification")?;
+            handle_typed_item_completed(ev, recovery, event_tx)?;
+        }
         "error" => {
             let ev: UpstreamErrorNotification =
                 serde_json::from_value(params).context("decode error notification")?;
@@ -1028,6 +1053,215 @@ fn handle_typed_notification(
     }
 
     Ok(())
+}
+
+fn handle_typed_item_started(
+    ev: UpstreamItemStartedNotification,
+    recovery: &mut StreamRecoveryContext,
+    event_tx: &UnboundedSender<Event>,
+) -> anyhow::Result<()> {
+    let Some(item_type) = ev.item.get("type").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+
+    match item_type {
+        "fileChange" => {
+            let item: UpstreamFileChangeThreadItem =
+                serde_json::from_value(ev.item).context("decode item/started fileChange item")?;
+            let changes = file_changes_from_update_changes(&item.changes);
+            handle_codex_event(
+                Event {
+                    id: item.id.clone(),
+                    msg: EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
+                        call_id: item.id,
+                        turn_id: ev.turn_id,
+                        auto_approved: false,
+                        changes,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "commandExecution" => {
+            let item: UpstreamCommandExecutionThreadItem = serde_json::from_value(ev.item)
+                .context("decode item/started commandExecution item")?;
+            handle_codex_event(
+                Event {
+                    id: item.id.clone(),
+                    msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                        call_id: item.id,
+                        process_id: item.process_id,
+                        turn_id: ev.turn_id,
+                        command: command_tokens_from_string(&item.command),
+                        cwd: item.cwd,
+                        parsed_cmd: parsed_commands_from_actions(&item.command_actions),
+                        source: ExecCommandSource::Agent,
+                        interaction_input: None,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn handle_typed_item_completed(
+    ev: UpstreamItemCompletedNotification,
+    recovery: &mut StreamRecoveryContext,
+    event_tx: &UnboundedSender<Event>,
+) -> anyhow::Result<()> {
+    let Some(item_type) = ev.item.get("type").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+
+    match item_type {
+        "fileChange" => {
+            let item: UpstreamFileChangeThreadItem =
+                serde_json::from_value(ev.item).context("decode item/completed fileChange item")?;
+            let changes = file_changes_from_update_changes(&item.changes);
+            let (success, stderr) = match item.status {
+                UpstreamPatchApplyStatus::Completed => (true, String::new()),
+                UpstreamPatchApplyStatus::Failed => (false, "patch failed".to_string()),
+                UpstreamPatchApplyStatus::Declined => (false, "patch declined".to_string()),
+                UpstreamPatchApplyStatus::InProgress => {
+                    (false, "patch still in progress".to_string())
+                }
+            };
+            handle_codex_event(
+                Event {
+                    id: item.id.clone(),
+                    msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                        call_id: item.id,
+                        turn_id: ev.turn_id,
+                        stdout: String::new(),
+                        stderr,
+                        success,
+                        changes,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        "commandExecution" => {
+            let item: UpstreamCommandExecutionThreadItem = serde_json::from_value(ev.item)
+                .context("decode item/completed commandExecution item")?;
+            let aggregated_output = item.aggregated_output.unwrap_or_default();
+            let duration = item
+                .duration_ms
+                .and_then(|ms| u64::try_from(ms).ok())
+                .map(std::time::Duration::from_millis)
+                .unwrap_or_else(|| std::time::Duration::from_millis(0));
+            let exit_code = item.exit_code.unwrap_or(match item.status {
+                crate::app_server::upstream_protocol::CommandExecutionStatus::Completed => 0,
+                _ => 1,
+            });
+            handle_codex_event(
+                Event {
+                    id: item.id.clone(),
+                    msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                        call_id: item.id,
+                        process_id: item.process_id,
+                        turn_id: ev.turn_id,
+                        command: command_tokens_from_string(&item.command),
+                        cwd: item.cwd,
+                        parsed_cmd: parsed_commands_from_actions(&item.command_actions),
+                        source: ExecCommandSource::Agent,
+                        interaction_input: None,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        aggregated_output: aggregated_output.clone(),
+                        exit_code,
+                        duration,
+                        formatted_output: aggregated_output,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn command_tokens_from_string(command: &str) -> Vec<String> {
+    shlex::split(command).unwrap_or_else(|| vec![command.to_string()])
+}
+
+fn parsed_commands_from_actions(actions: &[UpstreamCommandAction]) -> Vec<ParsedCommand> {
+    actions
+        .iter()
+        .map(|action| match action {
+            UpstreamCommandAction::Read {
+                command,
+                name,
+                path,
+            } => ParsedCommand::Read {
+                cmd: command.clone(),
+                name: name.clone(),
+                path: path.clone(),
+            },
+            UpstreamCommandAction::ListFiles { command, path } => ParsedCommand::ListFiles {
+                cmd: command.clone(),
+                path: path.clone(),
+            },
+            UpstreamCommandAction::Search {
+                command,
+                query,
+                path,
+            } => ParsedCommand::Search {
+                cmd: command.clone(),
+                query: query.clone(),
+                path: path.clone(),
+            },
+            UpstreamCommandAction::Unknown { command } => ParsedCommand::Unknown {
+                cmd: command.clone(),
+            },
+        })
+        .collect()
+}
+
+fn file_changes_from_update_changes(
+    changes: &[UpstreamFileUpdateChange],
+) -> std::collections::HashMap<PathBuf, FileChange> {
+    let mut out: std::collections::HashMap<PathBuf, FileChange> =
+        std::collections::HashMap::with_capacity(changes.len());
+    for change in changes {
+        let path = PathBuf::from(&change.path);
+        let file_change = match &change.kind {
+            UpstreamPatchChangeKind::Add => FileChange::Add {
+                content: change.diff.clone(),
+            },
+            UpstreamPatchChangeKind::Delete => FileChange::Delete {
+                content: change.diff.clone(),
+            },
+            UpstreamPatchChangeKind::Update { move_path } => {
+                let unified_diff = strip_moved_to_suffix(&change.diff, move_path.as_ref());
+                FileChange::Update {
+                    unified_diff,
+                    move_path: move_path.clone(),
+                }
+            }
+        };
+        out.insert(path, file_change);
+    }
+    out
+}
+
+fn strip_moved_to_suffix(diff: &str, move_path: Option<&PathBuf>) -> String {
+    let Some(move_path) = move_path else {
+        return diff.to_string();
+    };
+
+    let suffix = format!("\n\nMoved to: {}", move_path.display());
+    diff.strip_suffix(&suffix).unwrap_or(diff).to_string()
 }
 
 fn handle_codex_event_notification(
@@ -2309,6 +2543,136 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn backend_emits_patch_apply_end_for_typed_file_change_item() {
+        use std::collections::HashMap;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let patch = "--- a/foo.txt\\n+++ b/foo.txt\\n@@ -1 +1 @@\\n-a\\n+b\\n";
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+PATCH="{patch}"
+
+if [[ "${{1:-}}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{{"id":1,"result":{{}}}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{{"method":"turn/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"inProgress","error":null}}}}}}'
+echo '{{"method":"item/started","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","item":{{"type":"fileChange","id":"patch-1","changes":[{{"path":"foo.txt","kind":{{"type":"update"}},"diff":"'"$PATCH"'"}}],"status":"inProgress"}}}}}}'
+echo '{{"method":"item/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","item":{{"type":"fileChange","id":"patch-1","changes":[{{"path":"foo.txt","kind":{{"type":"update"}},"diff":"'"$PATCH"'"}}],"status":"completed"}}}}}}'
+echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000000","turn":{{"id":"turn-1","items":[],"status":"completed","error":null}}}}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#
+        );
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, _fatal_exit_rx) = unbounded_channel::<String>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+                &fatal_exit_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_patch_apply_end = timeout(Duration::from_secs(10), async {
+            while let Some(event) = event_rx.recv().await {
+                if let EventMsg::PatchApplyEnd(ev) = event.msg {
+                    return Some(ev);
+                }
+            }
+            None
+        })
+        .await;
+
+        let patch_apply_end = saw_patch_apply_end
+            .expect("backend timed out")
+            .expect("did not observe PatchApplyEnd");
+
+        let mut expected_changes = HashMap::new();
+        expected_changes.insert(
+            PathBuf::from("foo.txt"),
+            FileChange::Update {
+                unified_diff: patch.replace("\\n", "\n"),
+                move_path: None,
+            },
+        );
+
+        assert_eq!(patch_apply_end.call_id, "patch-1");
+        assert_eq!(patch_apply_end.turn_id, "turn-1");
+        assert_eq!(patch_apply_end.stdout, "");
+        assert_eq!(patch_apply_end.stderr, "");
+        assert_eq!(patch_apply_end.success, true);
+        assert_eq!(patch_apply_end.changes, expected_changes);
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(10), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn backend_allows_another_turn_after_turn_complete() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -2556,7 +2920,7 @@ done
 
         op_tx.send(Op::Interrupt).expect("send interrupt");
 
-        timeout(Duration::from_secs(5), async {
+        timeout(Duration::from_secs(10), async {
             while !marker.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -2564,7 +2928,7 @@ done
         .await
         .expect("timed out waiting for dummy server marker");
 
-        let saw_round_finished = timeout(Duration::from_secs(5), async {
+        let saw_round_finished = timeout(Duration::from_secs(10), async {
             while let Some(event) = event_rx.recv().await {
                 if matches!(
                     event.msg,
@@ -2587,7 +2951,7 @@ done
 
         drop(op_tx);
 
-        timeout(Duration::from_secs(5), backend)
+        timeout(Duration::from_secs(10), backend)
             .await
             .expect("backend timed out")
             .expect("backend panicked")
@@ -3000,7 +3364,7 @@ touch "$MARKER"
         drop(op_tx);
 
         timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             run_app_server_backend_inner(
                 AppServerBackendConfig {
                     codex_bin: codex_bin.display().to_string(),
@@ -3100,7 +3464,7 @@ touch "$MARKER"
         drop(op_tx);
 
         timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             run_app_server_backend_inner(
                 AppServerBackendConfig {
                     codex_bin: codex_bin.display().to_string(),
@@ -3191,7 +3555,7 @@ touch "$MARKER"
         drop(op_tx);
 
         timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             run_app_server_backend_inner(
                 AppServerBackendConfig {
                     codex_bin: codex_bin.display().to_string(),

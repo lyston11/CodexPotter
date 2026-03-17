@@ -447,3 +447,99 @@ pub struct TerminalInteractionNotification {
     pub process_id: String,
     pub stdin: String,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemStartedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemCompletedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChangeThreadItem {
+    pub id: String,
+    #[serde(default)]
+    pub changes: Vec<FileUpdateChange>,
+    pub status: PatchApplyStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUpdateChange {
+    pub path: String,
+    pub kind: PatchChangeKind,
+    pub diff: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PatchChangeKind {
+    Add,
+    Delete,
+    Update { move_path: Option<PathBuf> },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PatchApplyStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Declined,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExecutionThreadItem {
+    pub id: String,
+    pub command: String,
+    pub cwd: PathBuf,
+    pub process_id: Option<String>,
+    pub status: CommandExecutionStatus,
+    #[serde(default)]
+    pub command_actions: Vec<CommandAction>,
+    pub aggregated_output: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandExecutionStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Declined,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CommandAction {
+    Read {
+        command: String,
+        name: String,
+        path: PathBuf,
+    },
+    ListFiles {
+        command: String,
+        path: Option<String>,
+    },
+    Search {
+        command: String,
+        query: Option<String>,
+        path: Option<String>,
+    },
+    Unknown {
+        command: String,
+    },
+}
