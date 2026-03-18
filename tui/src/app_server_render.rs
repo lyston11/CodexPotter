@@ -4741,6 +4741,55 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_minimal_flushes_pending_agent_message_before_stream_recovery_retry_block() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "inspect".to_string(),
+                phase: None,
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected completed message to stay pending before stream recovery"
+        );
+        assert_line_with_text_dimmed(&app.build_transient_lines(width), "inspect", true);
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "recovery".into(),
+                msg: EventMsg::PotterStreamRecoveryUpdate {
+                    attempt: 1,
+                    max_attempts: 10,
+                    error_message:
+                        "stream disconnected before completion: error sending request for url (...)"
+                            .to_string(),
+                },
+            },
+        )
+        .expect("handle stream recovery update");
+
+        let agent_message = recv_inserted_history_cell(&mut rx_app);
+        assert_line_with_text_dimmed(&agent_message.display_lines(width), "inspect", true);
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("• CodexPotter: retry 1/10"),
+            "missing stream recovery retry block: {transient_blob:?}"
+        );
+        assert!(
+            !transient_blob.contains("inspect"),
+            "expected pending agent preview to be cleared after recovery barrier: {transient_blob:?}"
+        );
+    }
+
+    #[test]
     fn round_renderer_minimal_buffers_streamed_agent_message_until_completion_and_keeps_it_pending()
     {
         let width: u16 = 80;
