@@ -2,7 +2,6 @@
 
 use crate::history_cell::HistoryCell;
 use crate::history_cell::{self};
-use crate::render::line_utils::dim_lines;
 use crate::render::line_utils::prefix_lines;
 use crate::style::proposed_plan_style;
 use ratatui::prelude::Stylize;
@@ -46,25 +45,25 @@ impl StreamController {
     }
 
     /// Finalize the active stream. Drain and emit now.
+    #[cfg(test)]
     pub fn finalize(&mut self) -> Option<Box<dyn HistoryCell>> {
-        self.finalize_agent_message(false)
+        let lines = self.take_finalized_lines();
+        self.emit(lines)
     }
 
-    /// Finalize the active stream as an agent message, optionally dimming the content.
-    pub fn finalize_agent_message(&mut self, dim: bool) -> Option<Box<dyn HistoryCell>> {
-        let mut out_lines = self.finalize_lines();
-        if dim {
-            dim_lines(&mut out_lines);
-        }
-
-        let cell = self.emit(out_lines);
+    /// Finalize the active stream and return the collected lines without emitting a history cell.
+    ///
+    /// This lets higher layers decide whether the completed stream should become a committed
+    /// history cell immediately or stay pending until a later transcript barrier.
+    pub fn take_finalized_lines(&mut self) -> Vec<Line<'static>> {
+        let out_lines = self.finalize_lines();
 
         // `finalize` ends the current "answer stream". Reset state so a subsequent stream starts
         // a fresh transcript bullet (matching upstream behavior where the stream controller is
         // dropped and recreated at tool boundaries).
         self.header_emitted = false;
 
-        cell
+        out_lines
     }
 
     fn finalize_lines(&mut self) -> Vec<Line<'static>> {

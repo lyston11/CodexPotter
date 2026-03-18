@@ -1,7 +1,8 @@
 /// Controls how much interim transcript detail is shown in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verbosity {
-    /// Most compact view: dims commentary and suppresses low-signal tool chatter.
+    /// Most compact view: only the final agent message stays fully visible, while low-signal tool
+    /// chatter is suppressed.
     #[default]
     Minimal,
     /// Friendly default view: shows interim items without aggressive suppression.

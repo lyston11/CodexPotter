@@ -41,8 +41,8 @@ Divergences must be documented in places below to avoid regression when syncing 
   - `Explored` items are more aggressively collapsed.
   Minimal mode:
   - With all the above Simple-mode suppressions, plus:
-  - `commentary` agent messages are dimmed
-  - Streamed agent text is committed only after completion, so `commentary` can be dimmed phase-aware and streamed final answers stay normal
+  - Only the final agent message in a turn stays normal; earlier completed agent messages stay dim
+  - Streamed agent text is committed only after completion, then kept pending until a later visible event or `TurnComplete` confirms whether it is final
   - All `Ran` and `Explored` items are hidden
   - `Worked for ...` separators are hidden
   - Consecutive Change (Edited, Created, Deleted) items are coalesced into one, and provide file list only, no diff body.
