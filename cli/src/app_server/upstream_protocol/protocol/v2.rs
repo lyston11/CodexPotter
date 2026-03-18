@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use codex_protocol::AbsolutePathBuf;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::ByteRange as CoreByteRange;
@@ -869,6 +870,15 @@ pub struct ItemCompletedNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub item: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageThreadItem {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub phase: Option<MessagePhase>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

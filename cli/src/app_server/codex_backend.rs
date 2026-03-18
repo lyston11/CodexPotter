@@ -23,6 +23,7 @@ use crate::app_server::stream_recovery::ContinueRetryDecision;
 use crate::app_server::stream_recovery::ContinueRetryPlan;
 use crate::app_server::stream_recovery::PotterStreamRecovery;
 use crate::app_server::upstream_protocol::AgentMessageDeltaNotification as UpstreamAgentMessageDeltaNotification;
+use crate::app_server::upstream_protocol::AgentMessageThreadItem as UpstreamAgentMessageThreadItem;
 use crate::app_server::upstream_protocol::ApplyPatchApprovalResponse;
 use crate::app_server::upstream_protocol::ClientInfo;
 use crate::app_server::upstream_protocol::ClientNotification;
@@ -99,6 +100,7 @@ use codex_protocol::mcp::RequestId as McpRequestId;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
+use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
 use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::ErrorEvent;
@@ -1307,6 +1309,21 @@ fn handle_typed_item_completed(
     };
 
     match item_type {
+        "agentMessage" => {
+            let item: UpstreamAgentMessageThreadItem = serde_json::from_value(ev.item)
+                .context("decode item/completed agentMessage item")?;
+            handle_codex_event(
+                Event {
+                    id: item.id.clone(),
+                    msg: EventMsg::AgentMessage(AgentMessageEvent {
+                        message: item.text,
+                        phase: item.phase,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
         "fileChange" => {
             let item: UpstreamFileChangeThreadItem =
                 serde_json::from_value(ev.item).context("decode item/completed fileChange item")?;
@@ -2706,6 +2723,7 @@ mod stream_recovery_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::MessagePhase;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
@@ -2743,6 +2761,51 @@ mod tests {
 
         assert_eq!(params.thread_id, thread_id.to_string());
         assert_eq!(params.model.as_deref(), Some("o3"));
+    }
+
+    #[test]
+    fn typed_agent_message_item_completed_emits_agent_message_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_item_completed(
+            UpstreamItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: serde_json::json!({
+                    "type": "agentMessage",
+                    "id": "msg-1",
+                    "text": "bridge completed commentary",
+                    "phase": "commentary"
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge agent message item");
+
+        let event = event_rx.try_recv().expect("expected bridged agent message");
+        assert_eq!(event.id, "msg-1");
+        let EventMsg::AgentMessage(agent_message) = event.msg else {
+            panic!("expected AgentMessage event");
+        };
+        assert_eq!(agent_message.message, "bridge completed commentary");
+        assert_eq!(agent_message.phase, Some(MessagePhase::Commentary));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for completed agent message"
+        );
     }
 
     #[test]
