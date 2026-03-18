@@ -70,10 +70,17 @@ codex-potter --yolo
 CodexPotter is not suitable for such tasks:
 
 - Front-end development with human UI feedback
-
 - Question-answering
-
 - Brainstorming sessions
+
+### Howto: Ask followup questions in codex
+
+Just pass the project file to codex, like:
+
+```plain
+based on .codexpotter/projects/2026/03/18/1/MAIN.md,
+please explain more about the root cause of the issue
+```
 
 &ensp;
 
