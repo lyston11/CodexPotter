@@ -342,6 +342,7 @@ pub enum PotterProjectOutcome {
 pub enum CodexErrorInfo {
     ContextWindowExceeded,
     UsageLimitExceeded,
+    ServerOverloaded,
     HttpConnectionFailed {
         http_status_code: Option<u16>,
     },

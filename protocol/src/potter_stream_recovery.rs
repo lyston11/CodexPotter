@@ -35,6 +35,7 @@ pub fn is_retryable_stream_error(event: &ErrorEvent) -> bool {
         | Some(CodexErrorInfo::ResponseStreamConnectionFailed { .. })
         | Some(CodexErrorInfo::ResponseStreamDisconnected { .. })
         | Some(CodexErrorInfo::ResponseTooManyFailedAttempts { .. })
+        | Some(CodexErrorInfo::ServerOverloaded)
         | Some(CodexErrorInfo::InternalServerError) => true,
         _ => {
             // Best-effort fallback for older/partial servers that do not populate `codex_error_info`.

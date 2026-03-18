@@ -17,8 +17,82 @@ use codex_protocol::user_input::ByteRange as CoreByteRange;
 use codex_protocol::user_input::TextElement as CoreTextElement;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+
+fn deserialize_upstream_codex_error_info_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<CodexErrorInfo>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<JsonValue>::deserialize(deserializer)?;
+    Ok(value.and_then(upstream_codex_error_info_from_value))
+}
+
+fn upstream_codex_error_info_from_value(value: JsonValue) -> Option<CodexErrorInfo> {
+    serde_json::from_value::<CodexErrorInfo>(value.clone())
+        .ok()
+        .or_else(|| upstream_codex_error_info_from_camel_case_value(value))
+}
+
+fn upstream_codex_error_info_from_camel_case_value(value: JsonValue) -> Option<CodexErrorInfo> {
+    match value {
+        JsonValue::String(name) => match name.as_str() {
+            "contextWindowExceeded" => Some(CodexErrorInfo::ContextWindowExceeded),
+            "usageLimitExceeded" => Some(CodexErrorInfo::UsageLimitExceeded),
+            "serverOverloaded" => Some(CodexErrorInfo::ServerOverloaded),
+            "internalServerError" => Some(CodexErrorInfo::InternalServerError),
+            "unauthorized" => Some(CodexErrorInfo::Unauthorized),
+            "badRequest" => Some(CodexErrorInfo::BadRequest),
+            "threadRollbackFailed" => Some(CodexErrorInfo::ThreadRollbackFailed),
+            "sandboxError" => Some(CodexErrorInfo::SandboxError),
+            "other" => Some(CodexErrorInfo::Other),
+            _ => None,
+        },
+        JsonValue::Object(fields) => {
+            let mut entries = fields.into_iter();
+            let (name, payload) = entries.next()?;
+            if entries.next().is_some() {
+                return None;
+            }
+
+            match name.as_str() {
+                "httpConnectionFailed" => Some(CodexErrorInfo::HttpConnectionFailed {
+                    http_status_code: upstream_http_status_code(payload),
+                }),
+                "responseStreamConnectionFailed" => {
+                    Some(CodexErrorInfo::ResponseStreamConnectionFailed {
+                        http_status_code: upstream_http_status_code(payload),
+                    })
+                }
+                "responseStreamDisconnected" => Some(CodexErrorInfo::ResponseStreamDisconnected {
+                    http_status_code: upstream_http_status_code(payload),
+                }),
+                "responseTooManyFailedAttempts" => {
+                    Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+                        http_status_code: upstream_http_status_code(payload),
+                    })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn upstream_http_status_code(value: JsonValue) -> Option<u16> {
+    let JsonValue::Object(mut fields) = value else {
+        return None;
+    };
+
+    fields
+        .remove("httpStatusCode")
+        .or_else(|| fields.remove("http_status_code"))
+        .and_then(|status| status.as_u64())
+        .and_then(|status| u16::try_from(status).ok())
+}
 
 /// Upstream approval policy for agent tool executions.
 ///
@@ -640,7 +714,11 @@ pub enum TurnStatus {
 #[serde(rename_all = "camelCase")]
 pub struct TurnError {
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_upstream_codex_error_info_opt"
+    )]
     pub codex_error_info: Option<CodexErrorInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_details: Option<String>,
@@ -871,4 +949,63 @@ pub enum CommandAction {
     Unknown {
         command: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use codex_protocol::protocol::CodexErrorInfo;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use super::TurnError;
+
+    #[test]
+    fn turn_error_deserializes_known_camel_case_codex_error_info() {
+        let error: TurnError = serde_json::from_value(json!({
+            "message": "exceeded retry limit, last status: 429 Too Many Requests",
+            "codexErrorInfo": {
+                "responseTooManyFailedAttempts": {
+                    "httpStatusCode": 429
+                }
+            }
+        }))
+        .expect("deserialize turn error");
+
+        assert_eq!(
+            error.codex_error_info,
+            Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+                http_status_code: Some(429),
+            })
+        );
+    }
+
+    #[test]
+    fn turn_error_deserializes_server_overloaded_codex_error_info() {
+        let error: TurnError = serde_json::from_value(json!({
+            "message": "server overloaded",
+            "codexErrorInfo": "serverOverloaded"
+        }))
+        .expect("deserialize turn error");
+
+        assert_eq!(
+            error.codex_error_info,
+            Some(CodexErrorInfo::ServerOverloaded)
+        );
+    }
+
+    #[test]
+    fn turn_error_ignores_unknown_codex_error_info_variant() {
+        let error: TurnError = serde_json::from_value(json!({
+            "message": "fatal error",
+            "codexErrorInfo": {
+                "brandNewProblem": {
+                    "httpStatusCode": 503
+                }
+            }
+        }))
+        .expect("deserialize turn error");
+
+        assert_eq!(error.message, "fatal error");
+        assert_eq!(error.codex_error_info, None);
+    }
 }

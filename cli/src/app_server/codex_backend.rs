@@ -3490,6 +3490,114 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn backend_ignores_unknown_turn_completed_codex_error_info() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _line
+echo '{"id":1,"result":{}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"failed","error":{"message":"fatal error","codexErrorInfo":{"brandNewProblem":{"httpStatusCode":503}}}}}}'
+
+# Wait for the client to close stdin to request shutdown.
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_round_finished_message = timeout(Duration::from_secs(5), async {
+            while let Some(event) = event_rx.recv().await {
+                if let EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Fatal { message },
+                } = event.msg
+                {
+                    return Some(message);
+                }
+            }
+            None
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished_message,
+            Ok(Some("fatal error".to_string())),
+            "did not observe PotterRoundFinished(Fatal)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn backend_emits_patch_apply_end_for_typed_file_change_item() {
         use std::collections::HashMap;
         use std::os::unix::fs::PermissionsExt;
