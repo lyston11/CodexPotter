@@ -66,6 +66,11 @@ impl StreamController {
         out_lines
     }
 
+    /// Render the current stream buffer as a live preview without mutating controller state.
+    pub fn preview_lines(&self) -> Vec<Line<'static>> {
+        self.state.collector.preview_lines()
+    }
+
     fn finalize_lines(&mut self) -> Vec<Line<'static>> {
         // Finalize collector first.
         let remaining = {

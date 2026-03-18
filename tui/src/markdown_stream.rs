@@ -50,8 +50,7 @@ impl MarkdownStreamCollector {
         } else {
             return Vec::new();
         };
-        let mut rendered: Vec<Line<'static>> = Vec::new();
-        markdown::append_markdown(&source, self.width, Some(self.cwd.as_path()), &mut rendered);
+        let rendered = self.render_markdown(&source);
         let mut complete_line_count = rendered.len();
         if complete_line_count > 0
             && crate::render::line_utils::is_blank_line_spaces_only(
@@ -70,6 +69,23 @@ impl MarkdownStreamCollector {
         let out = out_slice.to_vec();
         self.committed_line_count = complete_line_count;
         out
+    }
+
+    /// Render the current stream buffer as if the stream ended now, without mutating state.
+    ///
+    /// This is used for transient live preview in `Verbosity::Minimal`: the latest agent text
+    /// must be visible immediately, but still stay out of committed transcript history until a
+    /// later barrier confirms whether it is final.
+    pub fn preview_lines(&self) -> Vec<Line<'static>> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let mut source = self.buffer.clone();
+        if !source.ends_with('\n') {
+            source.push('\n');
+        }
+        self.render_markdown(&source)
     }
 
     /// Finalize the stream: emit all remaining lines beyond the last commit.
@@ -91,8 +107,7 @@ impl MarkdownStreamCollector {
         );
         tracing::trace!("markdown finalize (raw source):\n---\n{source}\n---");
 
-        let mut rendered: Vec<Line<'static>> = Vec::new();
-        markdown::append_markdown(&source, self.width, Some(self.cwd.as_path()), &mut rendered);
+        let rendered = self.render_markdown(&source);
 
         let out = if self.committed_line_count >= rendered.len() {
             Vec::new()
@@ -103,6 +118,12 @@ impl MarkdownStreamCollector {
         // Reset collector state for next stream.
         self.clear();
         out
+    }
+
+    fn render_markdown(&self, source: &str) -> Vec<Line<'static>> {
+        let mut rendered: Vec<Line<'static>> = Vec::new();
+        markdown::append_markdown(source, self.width, Some(self.cwd.as_path()), &mut rendered);
+        rendered
     }
 }
 

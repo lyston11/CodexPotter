@@ -1476,15 +1476,24 @@ impl RenderAppState {
             );
         }
 
-        if self.processor.verbosity == Verbosity::Minimal
-            && let Some(lines) = self.processor.pending_minimal_agent_message_lines.as_ref()
-        {
-            let mut preview_lines = lines.clone();
-            dim_lines(&mut preview_lines);
-            transient_lines.push(Line::from(""));
-            transient_lines.extend(
-                history_cell::AgentMessageCell::new(preview_lines, true).display_lines(width),
-            );
+        if self.processor.verbosity == Verbosity::Minimal {
+            let preview_lines =
+                if let Some(lines) = self.processor.pending_minimal_agent_message_lines.as_ref() {
+                    Some(lines.clone())
+                } else if self.processor.saw_agent_delta {
+                    let lines = self.processor.stream.preview_lines();
+                    (!lines.is_empty()).then_some(lines)
+                } else {
+                    None
+                };
+
+            if let Some(mut preview_lines) = preview_lines {
+                dim_lines(&mut preview_lines);
+                transient_lines.push(Line::from(""));
+                transient_lines.extend(
+                    history_cell::AgentMessageCell::new(preview_lines, true).display_lines(width),
+                );
+            }
         }
 
         if self.processor.verbosity == Verbosity::Minimal
@@ -4787,6 +4796,28 @@ mod tests {
             !transient_blob.contains("inspect"),
             "expected pending agent preview to be cleared after recovery barrier: {transient_blob:?}"
         );
+    }
+
+    #[test]
+    fn round_renderer_minimal_renders_live_streamed_agent_message_in_transient_lines() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "agent-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "inspect workspace".to_string(),
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected active streamed message to stay out of history before completion"
+        );
+
+        let transient_lines = app.build_transient_lines(width);
+        assert_line_with_text_dimmed(&transient_lines, "inspect workspace", true);
     }
 
     #[test]
