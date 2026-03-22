@@ -457,7 +457,6 @@ where
         .await?;
 
         pad_before_first_cell = false;
-        initial_status_header_prefix = None;
 
         match exit {
             crate::workflow::project_render_loop::PotterProjectRenderExit::Completed { .. } => {
@@ -465,6 +464,7 @@ where
             }
             crate::workflow::project_render_loop::PotterProjectRenderExit::Interrupted {
                 user_prompt_file,
+                status_header_prefix,
             } => {
                 let action = ui
                     .prompt_interrupted_project_action(user_prompt_file)
@@ -510,6 +510,7 @@ where
                             "internal error: resolve_interrupt(continue) returned summary"
                         );
                         buffered_events = buffered;
+                        initial_status_header_prefix = Some(status_header_prefix);
                     }
                 }
             }
@@ -1148,7 +1149,7 @@ mod tests {
     enum MockUiOp {
         Clear,
         SetProjectStartedAt(Instant),
-        RenderRound,
+        RenderRound(Option<String>),
         PromptActionPicker(Vec<String>),
         PromptInterruptedProjectAction(PathBuf),
         InsertInterruptedProjectSummary(crate::app_server::potter::InterruptedProjectSummary),
@@ -1169,7 +1170,8 @@ mod tests {
             &'a mut self,
             params: codex_tui::RenderRoundParams,
         ) -> crate::workflow::round_runner::UiFuture<'a, codex_tui::AppExitInfo> {
-            self.ops.push(MockUiOp::RenderRound);
+            self.ops
+                .push(MockUiOp::RenderRound(params.status_header_prefix.clone()));
 
             Box::pin(async move {
                 let codex_tui::RenderRoundParams {
@@ -1496,10 +1498,10 @@ mod tests {
             vec![
                 MockUiOp::Clear,
                 MockUiOp::SetProjectStartedAt(replay_started_at),
-                MockUiOp::RenderRound,
+                MockUiOp::RenderRound(None),
                 MockUiOp::PromptActionPicker(vec![String::from("Continue & iterate 1 more round")]),
                 MockUiOp::SetProjectStartedAt(continue_started_at),
-                MockUiOp::RenderRound,
+                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
             ]
         );
     }
@@ -1558,13 +1560,6 @@ mod tests {
                 vec![
                     Event {
                         id: String::new(),
-                        msg: EventMsg::PotterRoundStarted {
-                            current: 1,
-                            total: 1,
-                        },
-                    },
-                    Event {
-                        id: String::new(),
                         msg: EventMsg::PotterRoundFinished {
                             outcome: PotterRoundOutcome::Completed,
                         },
@@ -1612,9 +1607,9 @@ mod tests {
                 MockUiOp::SetProjectStartedAt(replay_started_at),
                 MockUiOp::PromptActionPicker(vec![String::from("Iterate 1 more round")]),
                 MockUiOp::SetProjectStartedAt(continue_started_at),
-                MockUiOp::RenderRound,
+                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
                 MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
-                MockUiOp::RenderRound,
+                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
             ]
         );
     }
@@ -1717,7 +1712,7 @@ mod tests {
                 MockUiOp::SetProjectStartedAt(replay_started_at),
                 MockUiOp::PromptActionPicker(vec![String::from("Iterate 1 more round")]),
                 MockUiOp::SetProjectStartedAt(continue_started_at),
-                MockUiOp::RenderRound,
+                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
                 MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
                 MockUiOp::InsertInterruptedProjectSummary(summary),
             ]

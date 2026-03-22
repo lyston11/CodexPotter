@@ -96,7 +96,17 @@ struct InterruptedProject {
     project_id: String,
     user_prompt_file: PathBuf,
     rounds_run: u32,
-    plan: FreshProjectPlan,
+    workdir: PathBuf,
+    git_commit_start: String,
+    project_started_at: Instant,
+    continue_round: ContinueRoundPlan,
+    plan: InterruptedProjectPlan,
+}
+
+#[derive(Debug, Clone)]
+enum InterruptedProjectPlan {
+    Fresh(FreshProjectPlan),
+    Resumed(ResumedProjectPlan),
 }
 
 struct ServerState {
@@ -480,7 +490,8 @@ async fn start_project(
             project_started_at: Instant::now(),
             round_start_index: 0,
             emit_project_started_event: true,
-            initial_turn_prompt_override: None,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
         },
     )?;
 
@@ -610,6 +621,8 @@ async fn start_rounds(
             resume_policy,
             event_mode: mode,
             project_started_at: Instant::now(),
+            initial_continue_round: None,
+            initial_continue_prompt: None,
         },
     )?;
 
@@ -694,16 +707,12 @@ fn resolve_interrupt_project(
             let InterruptedProject {
                 rounds_run,
                 user_prompt_file,
-                plan,
-                ..
-            } = interrupted;
-
-            let FreshProjectPlan {
                 workdir,
                 git_commit_start,
                 project_started_at,
+                plan: _plan,
                 ..
-            } = plan;
+            } = interrupted;
 
             let git_commit_end = crate::workflow::project::resolve_git_commit(&workdir);
             emit_potter_event(
@@ -739,23 +748,40 @@ fn resolve_interrupt_project(
                 .take()
                 .context("take interrupted project after id match")?;
 
-            let mut plan = interrupted.plan;
-            anyhow::ensure!(
-                plan.round_start_index < plan.rounds_total,
-                "no rounds remaining to continue (round_start_index={} rounds_total={})",
-                plan.round_start_index,
-                plan.rounds_total
-            );
-            plan.initial_turn_prompt_override = Some(turn_prompt_override);
-            spawn_fresh_project(
-                &mut state.running,
-                &mut state.resumed,
-                state.config.clone(),
-                writer_tx.clone(),
-                internal_tx.clone(),
-                project_id,
-                plan,
-            )?;
+            match interrupted.plan {
+                InterruptedProjectPlan::Fresh(mut plan) => {
+                    anyhow::ensure!(
+                        plan.round_start_index < plan.rounds_total,
+                        "no rounds remaining to continue (round_start_index={} rounds_total={})",
+                        plan.round_start_index,
+                        plan.rounds_total
+                    );
+                    plan.initial_continue_round = Some(interrupted.continue_round);
+                    plan.initial_continue_prompt = Some(turn_prompt_override);
+                    spawn_fresh_project(
+                        &mut state.running,
+                        &mut state.resumed,
+                        state.config.clone(),
+                        writer_tx.clone(),
+                        internal_tx.clone(),
+                        project_id,
+                        plan,
+                    )?;
+                }
+                InterruptedProjectPlan::Resumed(mut plan) => {
+                    plan.initial_continue_round = Some(interrupted.continue_round);
+                    plan.initial_continue_prompt = Some(turn_prompt_override);
+                    spawn_resumed_project(
+                        &mut state.running,
+                        &mut state.resumed,
+                        state.config.clone(),
+                        writer_tx.clone(),
+                        internal_tx.clone(),
+                        project_id,
+                        plan,
+                    )?;
+                }
+            }
 
             Ok(ProjectResolveInterruptResponse { summary: None })
         }
@@ -1107,6 +1133,15 @@ fn read_upstream_rollout_event_msgs(rollout_path: &Path) -> anyhow::Result<Vec<E
 }
 
 #[derive(Debug, Clone)]
+struct ContinueRoundPlan {
+    round_current: u32,
+    round_total: u32,
+    project_rounds_run: u32,
+    resume_thread_id: ThreadId,
+    replay_event_msgs: Vec<EventMsg>,
+}
+
+#[derive(Debug, Clone)]
 struct FreshProjectPlan {
     workdir: PathBuf,
     user_message: String,
@@ -1119,7 +1154,8 @@ struct FreshProjectPlan {
     project_started_at: Instant,
     round_start_index: u32,
     emit_project_started_event: bool,
-    initial_turn_prompt_override: Option<String>,
+    initial_continue_round: Option<ContinueRoundPlan>,
+    initial_continue_prompt: Option<String>,
 }
 
 impl FreshProjectPlan {
@@ -1132,7 +1168,8 @@ impl FreshProjectPlan {
             // index (and do not consume round budget) just because we interrupted.
             round_start_index: interrupted_round_index,
             emit_project_started_event: false,
-            initial_turn_prompt_override: None,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
             ..self.clone()
         }
     }
@@ -1148,6 +1185,8 @@ struct ResumedProjectPlan {
     resume_policy: ResumePolicy,
     event_mode: PotterEventMode,
     project_started_at: Instant,
+    initial_continue_round: Option<ContinueRoundPlan>,
+    initial_continue_prompt: Option<String>,
 }
 
 fn spawn_fresh_project(
@@ -1234,6 +1273,52 @@ fn spawn_resumed_project(
     Ok(())
 }
 
+fn interrupted_continue_round(
+    thread_id: Option<ThreadId>,
+    round_current: u32,
+    round_total: u32,
+    project_rounds_run: u32,
+) -> anyhow::Result<ContinueRoundPlan> {
+    let resume_thread_id = thread_id.context(format!(
+        "interrupted round {round_current}/{round_total} is missing a thread id"
+    ))?;
+
+    Ok(ContinueRoundPlan {
+        round_current,
+        round_total,
+        project_rounds_run,
+        resume_thread_id,
+        replay_event_msgs: Vec::new(),
+    })
+}
+
+async fn run_continue_round(
+    ui: &mut EventForwardingRoundUi,
+    round_context: &crate::workflow::round_runner::PotterRoundContext,
+    continue_round: &ContinueRoundPlan,
+    continue_prompt: &str,
+    pad_before_first_cell: bool,
+) -> anyhow::Result<crate::workflow::round_runner::PotterRoundResult> {
+    let continue_context = crate::workflow::round_runner::PotterRoundContext {
+        turn_prompt: continue_prompt.to_string(),
+        ..round_context.clone()
+    };
+
+    crate::workflow::round_runner::continue_potter_round(
+        ui,
+        &continue_context,
+        crate::workflow::round_runner::PotterContinueRoundOptions {
+            pad_before_first_cell,
+            round_current: continue_round.round_current,
+            round_total: continue_round.round_total,
+            project_rounds_run: continue_round.project_rounds_run,
+            resume_thread_id: continue_round.resume_thread_id,
+            replay_event_msgs: continue_round.replay_event_msgs.clone(),
+        },
+    )
+    .await
+}
+
 async fn run_fresh_project(
     config: PotterAppServerConfig,
     writer_tx: UnboundedSender<JSONRPCMessage>,
@@ -1265,21 +1350,91 @@ async fn run_fresh_project(
         project_started_at: plan.project_started_at,
     };
 
-    let round_context_with_override =
-        plan.initial_turn_prompt_override
-            .clone()
-            .map(
-                |turn_prompt| crate::workflow::round_runner::PotterRoundContext {
-                    turn_prompt,
-                    ..round_context.clone()
-                },
-            );
-
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
-
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
+    let mut next_round_index = plan.round_start_index;
 
-    for round_index in plan.round_start_index..plan.rounds_total {
+    if let Some(initial_continue_round) = plan.initial_continue_round.clone() {
+        let continue_prompt = plan
+            .initial_continue_prompt
+            .as_deref()
+            .context("missing initial continue prompt for interrupted fresh round")?;
+
+        let round_result = run_continue_round(
+            &mut ui,
+            &round_context,
+            &initial_continue_round,
+            continue_prompt,
+            false,
+        )
+        .await;
+
+        let round_result = match round_result {
+            Ok(result) => result,
+            Err(err) => {
+                let message = format!("{err:#}");
+                ui.synthesize_round_fatal_closure(&message);
+                outcome = PotterProjectOutcome::Fatal { message };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(ProjectRunExit::Completed);
+            }
+        };
+
+        match round_result.exit_reason {
+            codex_tui::ExitReason::Completed => {
+                if round_result.stop_due_to_finite_incantatem {
+                    outcome = PotterProjectOutcome::Succeeded;
+                    ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                    return Ok(ProjectRunExit::Completed);
+                }
+                next_round_index = initial_continue_round.round_current;
+            }
+            codex_tui::ExitReason::Interrupted => {
+                let continuation_plan = plan.continuation_after_interrupt(
+                    initial_continue_round.round_current.saturating_sub(1),
+                );
+                let continue_round = interrupted_continue_round(
+                    round_result.thread_id,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    initial_continue_round.project_rounds_run,
+                )?;
+                return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
+                    project_id: plan
+                        .workdir
+                        .join(&plan.progress_file_rel)
+                        .to_string_lossy()
+                        .to_string(),
+                    user_prompt_file: plan.progress_file_rel.clone(),
+                    rounds_run: initial_continue_round.project_rounds_run,
+                    workdir: plan.workdir.clone(),
+                    git_commit_start: plan.git_commit_start.clone(),
+                    project_started_at: plan.project_started_at,
+                    continue_round,
+                    plan: InterruptedProjectPlan::Fresh(continuation_plan.clone()),
+                })));
+            }
+            codex_tui::ExitReason::TaskFailed(message) => {
+                outcome = PotterProjectOutcome::TaskFailed { message };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(ProjectRunExit::Completed);
+            }
+            codex_tui::ExitReason::Fatal(message) => {
+                outcome = PotterProjectOutcome::Fatal { message };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(ProjectRunExit::Completed);
+            }
+            codex_tui::ExitReason::UserRequested => {
+                outcome = PotterProjectOutcome::Fatal {
+                    message: String::from("user requested"),
+                };
+                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                return Ok(ProjectRunExit::Completed);
+            }
+        }
+    }
+
+    for round_index in next_round_index..plan.rounds_total {
         let current_round = round_index.saturating_add(1);
         let project_started = if plan.emit_project_started_event && round_index == 0 {
             Some(crate::workflow::round_runner::PotterProjectStartedInfo {
@@ -1292,19 +1447,12 @@ async fn run_fresh_project(
             None
         };
 
-        let round_context = if round_index == plan.round_start_index {
-            round_context_with_override
-                .as_ref()
-                .unwrap_or(&round_context)
-        } else {
-            &round_context
-        };
-
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
-            round_context,
+            &round_context,
             crate::workflow::round_runner::PotterRoundOptions {
-                pad_before_first_cell: round_index != plan.round_start_index,
+                pad_before_first_cell: round_index != plan.round_start_index
+                    || plan.initial_continue_round.is_some(),
                 project_started,
                 round_current: current_round,
                 round_total: plan.rounds_total,
@@ -1335,6 +1483,12 @@ async fn run_fresh_project(
             }
             codex_tui::ExitReason::Interrupted => {
                 let continuation_plan = plan.continuation_after_interrupt(round_index);
+                let continue_round = interrupted_continue_round(
+                    round_result.thread_id,
+                    current_round,
+                    plan.rounds_total,
+                    current_round,
+                )?;
                 return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
                     project_id: plan
                         .workdir
@@ -1343,7 +1497,11 @@ async fn run_fresh_project(
                         .to_string(),
                     user_prompt_file: plan.progress_file_rel.clone(),
                     rounds_run: current_round,
-                    plan: continuation_plan,
+                    workdir: plan.workdir.clone(),
+                    git_commit_start: plan.git_commit_start.clone(),
+                    project_started_at: plan.project_started_at,
+                    continue_round,
+                    plan: InterruptedProjectPlan::Fresh(continuation_plan.clone()),
                 })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
@@ -1382,7 +1540,8 @@ async fn run_resumed_project(
         resume_policy,
         event_mode,
         project_started_at,
-        ..
+        initial_continue_round,
+        initial_continue_prompt,
     } = plan;
 
     let developer_prompt =
@@ -1405,27 +1564,35 @@ async fn run_resumed_project(
         workdir: resumed.resolved.workdir.clone(),
         progress_file_rel: resumed.progress_file_rel.clone(),
         user_prompt_file: resumed.progress_file_rel.clone(),
-        git_commit_start,
-        potter_rollout_path,
+        git_commit_start: git_commit_start.clone(),
+        potter_rollout_path: potter_rollout_path.clone(),
         project_started_at,
     };
 
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+    let continuation_plan = ResumedProjectPlan {
+        resumed: resumed.clone(),
+        baseline_rounds,
+        git_commit_start: git_commit_start.clone(),
+        potter_rollout_path: round_context.potter_rollout_path.clone(),
+        rounds_total,
+        resume_policy,
+        event_mode,
+        project_started_at,
+        initial_continue_round: None,
+        initial_continue_prompt: None,
+    };
 
-    if let Some(unfinished) = resumed.index.unfinished_round.clone()
+    let mut initial_continue_round = initial_continue_round;
+    let mut initial_continue_prompt = initial_continue_prompt;
+
+    if initial_continue_round.is_none()
+        && let Some(unfinished) = resumed.index.unfinished_round.clone()
         && matches!(resume_policy, ResumePolicy::ContinueUnfinishedRound)
     {
-        let total_rounds = unfinished.round_total;
-
         let rollout_path =
             resolve_rollout_path_for_replay(&resumed.resolved, &unfinished.rollout_path);
-        let (remaining_after_continue, replay_event_msgs) = match (|| {
-            let remaining = remaining_rounds_including_current(
-                unfinished.round_current,
-                unfinished.round_total,
-            )?;
-            let remaining_after_continue = remaining.saturating_sub(1);
-
+        let replay_event_msgs = match (|| {
             let mut replay_event_msgs = Vec::new();
             if let Some(cfg) =
                 synthesize_session_configured_event(unfinished.thread_id, rollout_path.clone())?
@@ -1435,9 +1602,9 @@ async fn run_resumed_project(
             let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
                 .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
             replay_event_msgs.append(&mut rollout_events);
-            Ok::<(u32, Vec<EventMsg>), anyhow::Error>((remaining_after_continue, replay_event_msgs))
+            Ok::<Vec<EventMsg>, anyhow::Error>(replay_event_msgs)
         })() {
-            Ok(values) => values,
+            Ok(events) => events,
             Err(err) => {
                 let message = format!("{err:#}");
                 ui.emit_marker(EventMsg::Error(ErrorEvent {
@@ -1451,20 +1618,34 @@ async fn run_resumed_project(
             }
         };
 
-        let mut rounds_run = 0u32;
-        let mut outcome = PotterProjectOutcome::BudgetExhausted;
+        initial_continue_round = Some(ContinueRoundPlan {
+            round_current: unfinished.round_current,
+            round_total: unfinished.round_total,
+            project_rounds_run: baseline_rounds.saturating_add(1),
+            resume_thread_id: unfinished.thread_id,
+            replay_event_msgs,
+        });
+        initial_continue_prompt = Some(String::from("Continue"));
+    }
 
-        let round_result = crate::workflow::round_runner::continue_potter_round(
+    let mut rounds_run = 0u32;
+    let mut next_round_current = 1u32;
+    let mut display_round_total = rounds_total;
+    let mut outcome = PotterProjectOutcome::BudgetExhausted;
+
+    if let Some(initial_continue_round) = initial_continue_round.clone() {
+        let continue_prompt = initial_continue_prompt
+            .as_deref()
+            .context("missing initial continue prompt for resumed round")?;
+
+        display_round_total = initial_continue_round.round_total;
+
+        let round_result = run_continue_round(
             &mut ui,
             &round_context,
-            crate::workflow::round_runner::PotterContinueRoundOptions {
-                pad_before_first_cell: true,
-                round_current: unfinished.round_current,
-                round_total: total_rounds,
-                project_rounds_run: baseline_rounds.saturating_add(1),
-                resume_thread_id: unfinished.thread_id,
-                replay_event_msgs,
-            },
+            &initial_continue_round,
+            continue_prompt,
+            true,
         )
         .await;
 
@@ -1479,8 +1660,6 @@ async fn run_resumed_project(
             }
         };
 
-        rounds_run = rounds_run.saturating_add(1);
-
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
@@ -1488,13 +1667,33 @@ async fn run_resumed_project(
                     ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
                     return Ok(ProjectRunExit::Completed);
                 }
+                rounds_run = initial_continue_round
+                    .project_rounds_run
+                    .checked_sub(baseline_rounds)
+                    .context("continued resumed round predates baseline_rounds")?;
+                anyhow::ensure!(
+                    rounds_run <= rounds_total,
+                    "continued resumed round exceeded configured rounds_total: rounds_run={rounds_run} rounds_total={rounds_total}"
+                );
+                next_round_current = initial_continue_round.round_current.saturating_add(1);
             }
             codex_tui::ExitReason::Interrupted => {
-                outcome = PotterProjectOutcome::Fatal {
-                    message: String::from("interrupted"),
-                };
-                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(ProjectRunExit::Completed);
+                let continue_round = interrupted_continue_round(
+                    round_result.thread_id,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    initial_continue_round.project_rounds_run,
+                )?;
+                return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
+                    project_id: resumed.project_id.clone(),
+                    user_prompt_file: resumed.progress_file_rel.clone(),
+                    rounds_run: initial_continue_round.project_rounds_run,
+                    workdir: resumed.resolved.workdir.clone(),
+                    git_commit_start: git_commit_start.clone(),
+                    project_started_at,
+                    continue_round,
+                    plan: InterruptedProjectPlan::Resumed(continuation_plan.clone()),
+                })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
                 outcome = PotterProjectOutcome::TaskFailed { message };
@@ -1514,80 +1713,11 @@ async fn run_resumed_project(
                 return Ok(ProjectRunExit::Completed);
             }
         }
-
-        for offset in 0..remaining_after_continue {
-            if rounds_run >= rounds_total {
-                break;
-            }
-            let current_round = unfinished
-                .round_current
-                .saturating_add(offset.saturating_add(1));
-            let project_rounds_run = baseline_rounds.saturating_add(offset.saturating_add(2));
-            let round_result = crate::workflow::round_runner::run_potter_round(
-                &mut ui,
-                &round_context,
-                crate::workflow::round_runner::PotterRoundOptions {
-                    pad_before_first_cell: true,
-                    project_started: None,
-                    round_current: current_round,
-                    round_total: total_rounds,
-                    project_rounds_run,
-                },
-            )
-            .await;
-
-            let round_result = match round_result {
-                Ok(result) => result,
-                Err(err) => {
-                    let message = format!("{err:#}");
-                    ui.synthesize_round_fatal_closure(&message);
-                    outcome = PotterProjectOutcome::Fatal { message };
-                    break;
-                }
-            };
-
-            rounds_run = rounds_run.saturating_add(1);
-
-            match round_result.exit_reason {
-                codex_tui::ExitReason::Completed => {
-                    if round_result.stop_due_to_finite_incantatem {
-                        outcome = PotterProjectOutcome::Succeeded;
-                        break;
-                    }
-                }
-                codex_tui::ExitReason::Interrupted => {
-                    outcome = PotterProjectOutcome::Fatal {
-                        message: String::from("interrupted"),
-                    };
-                    break;
-                }
-                codex_tui::ExitReason::TaskFailed(message) => {
-                    outcome = PotterProjectOutcome::TaskFailed { message };
-                    break;
-                }
-                codex_tui::ExitReason::Fatal(message) => {
-                    outcome = PotterProjectOutcome::Fatal { message };
-                    break;
-                }
-                codex_tui::ExitReason::UserRequested => {
-                    outcome = PotterProjectOutcome::Fatal {
-                        message: String::from("user requested"),
-                    };
-                    break;
-                }
-            }
-        }
-
-        ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-        return Ok(ProjectRunExit::Completed);
     }
 
-    // No unfinished round to continue (or policy says to start new rounds).
-    let mut rounds_run = 0u32;
-    let mut outcome = PotterProjectOutcome::BudgetExhausted;
     while rounds_run < rounds_total {
-        let current_round = rounds_run.saturating_add(1);
-        let project_rounds_run = baseline_rounds.saturating_add(current_round);
+        let current_round = next_round_current;
+        let project_rounds_run = baseline_rounds.saturating_add(rounds_run.saturating_add(1));
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
             &round_context,
@@ -1595,7 +1725,7 @@ async fn run_resumed_project(
                 pad_before_first_cell: true,
                 project_started: None,
                 round_current: current_round,
-                round_total: rounds_total,
+                round_total: display_round_total,
                 project_rounds_run,
             },
         )
@@ -1612,6 +1742,7 @@ async fn run_resumed_project(
         };
 
         rounds_run = rounds_run.saturating_add(1);
+        next_round_current = next_round_current.saturating_add(1);
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
@@ -1623,10 +1754,22 @@ async fn run_resumed_project(
                 }
             }
             codex_tui::ExitReason::Interrupted => {
-                outcome = PotterProjectOutcome::Fatal {
-                    message: String::from("interrupted"),
-                };
-                break;
+                let continue_round = interrupted_continue_round(
+                    round_result.thread_id,
+                    current_round,
+                    display_round_total,
+                    project_rounds_run,
+                )?;
+                return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
+                    project_id: resumed.project_id.clone(),
+                    user_prompt_file: resumed.progress_file_rel.clone(),
+                    rounds_run: project_rounds_run,
+                    workdir: resumed.resolved.workdir.clone(),
+                    git_commit_start: git_commit_start.clone(),
+                    project_started_at,
+                    continue_round,
+                    plan: InterruptedProjectPlan::Resumed(continuation_plan.clone()),
+                })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
                 outcome = PotterProjectOutcome::TaskFailed { message };
@@ -2068,6 +2211,8 @@ mod tests {
             resume_policy: ResumePolicy::ContinueUnfinishedRound,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
+            initial_continue_round: None,
+            initial_continue_prompt: None,
         };
 
         let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
@@ -2408,14 +2553,25 @@ mod tests {
             project_started_at: Instant::now(),
             round_start_index: 0,
             emit_project_started_event: true,
-            initial_turn_prompt_override: None,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
         };
 
         let interrupted_project = InterruptedProject {
             project_id: "project_1".to_string(),
             user_prompt_file: plan.progress_file_rel.clone(),
             rounds_run: 1,
-            plan,
+            workdir: plan.workdir.clone(),
+            git_commit_start: plan.git_commit_start.clone(),
+            project_started_at: plan.project_started_at,
+            continue_round: ContinueRoundPlan {
+                round_current: 1,
+                round_total: 1,
+                project_rounds_run: 1,
+                resume_thread_id: ThreadId::default(),
+                replay_event_msgs: Vec::new(),
+            },
+            plan: InterruptedProjectPlan::Fresh(plan),
         };
 
         let mut state = ServerState {
@@ -2467,13 +2623,21 @@ mod tests {
             project_started_at: Instant::now(),
             round_start_index: 0,
             emit_project_started_event: true,
-            initial_turn_prompt_override: Some(String::from("override")),
+            initial_continue_round: Some(ContinueRoundPlan {
+                round_current: 1,
+                round_total: 3,
+                project_rounds_run: 1,
+                resume_thread_id: ThreadId::default(),
+                replay_event_msgs: Vec::new(),
+            }),
+            initial_continue_prompt: Some(String::from("override")),
         };
 
         let continuation = plan.continuation_after_interrupt(0);
         assert_eq!(continuation.round_start_index, 0);
         assert!(!continuation.emit_project_started_event);
-        assert!(continuation.initial_turn_prompt_override.is_none());
+        assert!(continuation.initial_continue_round.is_none());
+        assert!(continuation.initial_continue_prompt.is_none());
         assert_eq!(continuation.rounds_total, 3);
         assert_eq!(continuation.workdir, plan.workdir);
         assert_eq!(continuation.progress_file_rel, plan.progress_file_rel);
@@ -2496,7 +2660,8 @@ mod tests {
             project_started_at: Instant::now(),
             round_start_index: 0,
             emit_project_started_event: true,
-            initial_turn_prompt_override: None,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
         };
 
         let continuation = plan.continuation_after_interrupt(0);
@@ -2541,14 +2706,25 @@ mod tests {
             project_started_at: Instant::now(),
             round_start_index: 1,
             emit_project_started_event: false,
-            initial_turn_prompt_override: None,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
         };
 
         let interrupted_project = InterruptedProject {
             project_id: "project_1".to_string(),
             user_prompt_file: progress_file_rel.clone(),
             rounds_run: 2,
-            plan,
+            workdir: plan.workdir.clone(),
+            git_commit_start: plan.git_commit_start.clone(),
+            project_started_at: plan.project_started_at,
+            continue_round: ContinueRoundPlan {
+                round_current: 2,
+                round_total: 3,
+                project_rounds_run: 2,
+                resume_thread_id: ThreadId::default(),
+                replay_event_msgs: Vec::new(),
+            },
+            plan: InterruptedProjectPlan::Fresh(plan),
         };
 
         let mut state = ServerState {

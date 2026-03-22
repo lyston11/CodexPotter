@@ -60,7 +60,10 @@ pub enum PotterProjectRenderExit {
     /// The project ended normally, and the completion marker was observed.
     Completed { outcome: PotterProjectOutcome },
     /// The project was interrupted and is waiting for user action.
-    Interrupted { user_prompt_file: PathBuf },
+    Interrupted {
+        user_prompt_file: PathBuf,
+        status_header_prefix: String,
+    },
     /// The user requested exit while a round UI was running.
     UserRequested,
     /// The UI requested a fatal exit.
@@ -129,7 +132,7 @@ where
         let mut render = Box::pin(ui.render_round(codex_tui::RenderRoundParams {
             prompt: turn_prompt.clone(),
             pad_before_first_cell,
-            status_header_prefix: Some(status_header_prefix),
+            status_header_prefix: Some(status_header_prefix.clone()),
             prompt_footer: prompt_footer.clone(),
             codex_op_tx: op_tx.clone(),
             codex_event_rx: event_rx,
@@ -159,6 +162,7 @@ where
                             ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
                                 return Ok(PotterProjectRenderExit::Interrupted {
                                     user_prompt_file,
+                                    status_header_prefix,
                                 });
                             }
                             ProjectInterruptedMarkerOutcome::Completed { outcome } => {
@@ -205,7 +209,10 @@ where
                         ExitReason::Interrupted => {
                             match wait_for_project_interrupted_marker(project_id, event_source, &mut pending_events).await? {
                                 ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
-                                    return Ok(PotterProjectRenderExit::Interrupted { user_prompt_file });
+                                    return Ok(PotterProjectRenderExit::Interrupted {
+                                        user_prompt_file,
+                                        status_header_prefix,
+                                    });
                                 }
                                 ProjectInterruptedMarkerOutcome::Completed { outcome } => {
                                     return Ok(PotterProjectRenderExit::Completed { outcome });
@@ -473,6 +480,7 @@ mod tests {
             exit,
             PotterProjectRenderExit::Interrupted {
                 user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/06/4/MAIN.md"),
+                status_header_prefix: String::from("Round 1/2"),
             }
         );
     }

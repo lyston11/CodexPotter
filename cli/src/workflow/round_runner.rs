@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::time::Instant;
 
 use anyhow::Context;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -102,6 +103,7 @@ pub struct PotterContinueRoundOptions {
 pub struct PotterRoundResult {
     pub exit_reason: ExitReason,
     pub stop_due_to_finite_incantatem: bool,
+    pub thread_id: Option<ThreadId>,
 }
 
 pub async fn run_potter_round(
@@ -164,7 +166,7 @@ pub async fn continue_potter_round(
             round_current,
             round_total,
             project_rounds_run,
-            prompt: String::from("Continue"),
+            prompt: context.turn_prompt.clone(),
             resume_thread_id: Some(resume_thread_id),
             emit_round_started_event: false,
             record_round_started: false,
@@ -341,6 +343,7 @@ async fn run_potter_round_inner(
         })
         .await?;
 
+    let thread_id = exit_info.thread_id;
     let exit_reason = exit_info.exit_reason;
     match &exit_reason {
         ExitReason::Completed => {}
@@ -355,6 +358,7 @@ async fn run_potter_round_inner(
             return Ok(PotterRoundResult {
                 exit_reason,
                 stop_due_to_finite_incantatem: false,
+                thread_id,
             });
         }
     }
@@ -374,5 +378,6 @@ async fn run_potter_round_inner(
     Ok(PotterRoundResult {
         exit_reason,
         stop_due_to_finite_incantatem,
+        thread_id,
     })
 }

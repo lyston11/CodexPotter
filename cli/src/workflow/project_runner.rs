@@ -261,6 +261,7 @@ where
 
         let project_id = start_response.project_id.clone();
         let mut buffered_events = buffered_events;
+        let mut initial_status_header_prefix = None;
         loop {
             let exit = crate::workflow::project_render_loop::run_potter_project_render_loop(
                 ui,
@@ -270,7 +271,7 @@ where
                     turn_prompt: options.turn_prompt.clone(),
                     prompt_footer: prompt_footer.clone(),
                     pad_before_first_cell: false,
-                    initial_status_header_prefix: None,
+                    initial_status_header_prefix: initial_status_header_prefix.take(),
                 },
                 buffered_events,
             )
@@ -282,6 +283,7 @@ where
                 }
                 crate::workflow::project_render_loop::PotterProjectRenderExit::Interrupted {
                     user_prompt_file,
+                    status_header_prefix,
                 } => {
                     let action = ui
                         .prompt_interrupted_project_action(user_prompt_file)
@@ -325,6 +327,7 @@ where
                                 "internal error: resolve_interrupt(continue) returned summary"
                             );
                             buffered_events = buffered;
+                            initial_status_header_prefix = Some(status_header_prefix);
                         }
                     }
                 }
@@ -364,6 +367,7 @@ mod tests {
         prompt_interrupted_project_action_calls: usize,
         clear_calls: usize,
         project_started_at_calls: usize,
+        render_status_header_prefixes: Vec<Option<String>>,
     }
 
     impl MockUi {
@@ -376,6 +380,7 @@ mod tests {
                 prompt_interrupted_project_action_calls: 0,
                 clear_calls: 0,
                 project_started_at_calls: 0,
+                render_status_header_prefixes: Vec::new(),
             }
         }
     }
@@ -389,6 +394,8 @@ mod tests {
             &'a mut self,
             params: codex_tui::RenderRoundParams,
         ) -> crate::workflow::round_runner::UiFuture<'a, codex_tui::AppExitInfo> {
+            self.render_status_header_prefixes
+                .push(params.status_header_prefix.clone());
             Box::pin(async move {
                 let codex_tui::RenderRoundParams {
                     mut codex_event_rx, ..
@@ -582,13 +589,6 @@ mod tests {
                 Ok((
                     crate::app_server::potter::ProjectResolveInterruptResponse { summary: None },
                     vec![
-                        Event {
-                            id: String::new(),
-                            msg: EventMsg::PotterRoundStarted {
-                                current: 1,
-                                total: 2,
-                            },
-                        },
                         Event {
                             id: String::new(),
                             msg: EventMsg::PotterRoundFinished {
@@ -831,6 +831,13 @@ mod tests {
                 action: crate::app_server::potter::ResolveInterruptAction::Continue,
                 turn_prompt_override: Some(PROGRESS_FILE_CHANGED_TURN_PROMPT_OVERRIDE.to_string(),),
             }
+        );
+        assert_eq!(
+            ui.render_status_header_prefixes,
+            vec![
+                Some(String::from("Round 1/2")),
+                Some(String::from("Round 1/2")),
+            ]
         );
     }
 }

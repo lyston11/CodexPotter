@@ -2,8 +2,8 @@
 //!
 //! While a round is running, CodexPotter forwards backend `EventMsg` items to the UI. This bridge
 //! observes the same events to:
-//! - Record `RoundConfigured` / `RoundFinished` (and optional `ProjectSucceeded`) entries into
-//!   `potter-rollout.jsonl`.
+//! - Record `RoundConfigured` / terminal `RoundFinished` (and optional `ProjectSucceeded`)
+//!   entries into `potter-rollout.jsonl`.
 //! - Inject a `PotterProjectSucceeded` event into the UI stream when `finite_incantatem: true` is
 //!   set in the progress file and the current round finishes successfully.
 //! - Inject a `PotterProjectBudgetExhausted` event into the UI stream when the last budgeted
@@ -77,6 +77,13 @@ impl PotterRoundEventBridge {
 
         let mut injected: Option<Event> = None;
         if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+            if matches!(outcome, PotterRoundOutcome::Interrupted) {
+                // Interrupted rounds stay open in `potter-rollout.jsonl` so a later
+                // `continue iterate` can resume the same Codex thread and eventually append a
+                // single terminal `RoundFinished` entry for that round.
+                return Ok(None);
+            }
+
             if matches!(outcome, PotterRoundOutcome::Completed) {
                 let stop_due_to_finite_incantatem =
                     crate::workflow::project::progress_file_has_finite_incantatem_true(
@@ -373,6 +380,44 @@ finite_incantatem: {finite}
                 outcome: PotterRoundOutcome::Completed
             }
         ));
+    }
+
+    #[test]
+    fn observe_backend_event_does_not_record_interrupted_round_finish() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+        write_progress_file(workdir, &progress_file_rel, false);
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: false,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            user_prompt_file: progress_file_rel,
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 3,
+            round_total: 10,
+            project_rounds_run: 3,
+        });
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Interrupted,
+            },
+        };
+
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .expect("observe finished");
+        assert!(injected.is_none());
+        assert!(
+            !potter_rollout_path.exists(),
+            "interrupted rounds should remain unfinished in potter-rollout"
+        );
     }
 
     #[test]
