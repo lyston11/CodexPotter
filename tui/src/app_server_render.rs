@@ -846,6 +846,10 @@ impl AppServerEventProcessor {
             }
             EventMsg::PlanDelta(ev) => {
                 self.flush_pending_live_activity_cells();
+                if self.verbosity == Verbosity::Minimal {
+                    self.discard_plan_output();
+                    return;
+                }
                 if !self.saw_agent_delta && !self.saw_plan_delta {
                     self.maybe_emit_final_message_separator();
                 }
@@ -972,6 +976,10 @@ impl AppServerEventProcessor {
             }
             EventMsg::PlanUpdate(ev) => {
                 self.flush_pending_live_activity_cells();
+                if self.verbosity == Verbosity::Minimal {
+                    self.discard_plan_output();
+                    return;
+                }
                 self.flush_agent_output(false);
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_plan_update(ev)));
@@ -1266,7 +1274,24 @@ impl AppServerEventProcessor {
         self.emit_history_cell(Box::new(cell));
     }
 
+    /// Drop plan tool transcript state that `Verbosity::Minimal` intentionally suppresses.
+    ///
+    /// # Divergence (codex-potter)
+    ///
+    /// Upstream Codex keeps rendering plan tool output. CodexPotter hides both streamed
+    /// `PlanDelta` (`Proposed Plan`) and committed `PlanUpdate` (`Updated Plan`) in
+    /// `Verbosity::Minimal`.
+    fn discard_plan_output(&mut self) {
+        self.plan_stream = None;
+        self.saw_plan_delta = false;
+    }
+
     fn flush_plan_stream(&mut self) {
+        if self.verbosity == Verbosity::Minimal {
+            self.discard_plan_output();
+            return;
+        }
+
         let Some(mut controller) = self.plan_stream.take() else {
             return;
         };
@@ -1978,6 +2003,9 @@ impl RenderAppState {
                 match crate::potter_config::persist_potter_tui_verbosity(verbosity) {
                     Ok(()) => {
                         self.processor.verbosity = verbosity;
+                        if verbosity == Verbosity::Minimal {
+                            self.processor.discard_plan_output();
+                        }
                     }
                     Err(err) => {
                         self.processor
@@ -2422,6 +2450,9 @@ mod tests {
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
     use codex_protocol::parse_command::ParsedCommand;
+    use codex_protocol::plan_tool::PlanItemArg;
+    use codex_protocol::plan_tool::StepStatus;
+    use codex_protocol::plan_tool::UpdatePlanArgs;
     use codex_protocol::protocol::AgentMessageDeltaEvent;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::AgentReasoningDeltaEvent;
@@ -4979,6 +5010,98 @@ mod tests {
 
         let cells = drain_history_cell_strings(&mut rx, width);
         pretty_assertions::assert_eq!(cells, vec![vec!["   ".to_string()]]);
+    }
+
+    #[test]
+    fn round_renderer_minimal_suppresses_streaming_plan_delta() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+        proc.verbosity = Verbosity::Minimal;
+
+        proc.handle_codex_event(Event {
+            id: "plan-1".into(),
+            msg: EventMsg::PlanDelta(PlanDeltaEvent {
+                delta: "- first\n".to_string(),
+            }),
+        });
+        proc.on_commit_tick();
+
+        assert!(
+            drain_history_cell_strings(&mut rx, width).is_empty(),
+            "expected minimal mode to suppress streamed plan deltas"
+        );
+
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx, width).is_empty(),
+            "expected minimal mode to suppress finalized proposed plan output"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_suppresses_plan_update() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+        proc.verbosity = Verbosity::Minimal;
+
+        proc.handle_codex_event(Event {
+            id: "plan-update".into(),
+            msg: EventMsg::PlanUpdate(UpdatePlanArgs {
+                explanation: Some("inspect then patch".to_string()),
+                plan: vec![
+                    PlanItemArg {
+                        step: "Inspect docs".to_string(),
+                        status: StepStatus::Completed,
+                    },
+                    PlanItemArg {
+                        step: "Patch renderer".to_string(),
+                        status: StepStatus::InProgress,
+                    },
+                ],
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx, width).is_empty(),
+            "expected minimal mode to suppress updated plan cells"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_discards_pending_plan_stream_on_turn_complete() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "plan-1".into(),
+            msg: EventMsg::PlanDelta(PlanDeltaEvent {
+                delta: "- first\n".to_string(),
+            }),
+        });
+
+        proc.verbosity = Verbosity::Minimal;
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx, width).is_empty(),
+            "expected minimal mode to drop buffered plan stream on turn completion"
+        );
     }
 
     #[tokio::test]

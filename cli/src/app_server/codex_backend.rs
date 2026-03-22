@@ -84,6 +84,8 @@ use crate::app_server::upstream_protocol::ThreadStartResponse;
 use crate::app_server::upstream_protocol::ThreadTokenUsageUpdatedNotification as UpstreamThreadTokenUsageUpdatedNotification;
 use crate::app_server::upstream_protocol::ToolRequestUserInputResponse;
 use crate::app_server::upstream_protocol::TurnCompletedNotification as UpstreamTurnCompletedNotification;
+use crate::app_server::upstream_protocol::TurnPlanStepStatus as UpstreamTurnPlanStepStatus;
+use crate::app_server::upstream_protocol::TurnPlanUpdatedNotification as UpstreamTurnPlanUpdatedNotification;
 use crate::app_server::upstream_protocol::TurnStartParams;
 use crate::app_server::upstream_protocol::TurnStartResponse;
 use crate::app_server::upstream_protocol::TurnStartedNotification as UpstreamTurnStartedNotification;
@@ -99,6 +101,9 @@ use codex_protocol::approvals::GuardianRiskLevel as ProtocolGuardianRiskLevel;
 use codex_protocol::mcp::RequestId as McpRequestId;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand;
+use codex_protocol::plan_tool::PlanItemArg;
+use codex_protocol::plan_tool::StepStatus;
+use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
@@ -1036,6 +1041,28 @@ fn handle_typed_notification(
                 event_tx,
             );
         }
+        "turn/plan/updated" => {
+            let ev: UpstreamTurnPlanUpdatedNotification =
+                serde_json::from_value(params).context("decode turn/plan/updated notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id.clone(),
+                    msg: EventMsg::PlanUpdate(UpdatePlanArgs {
+                        explanation: ev.explanation,
+                        plan: ev
+                            .plan
+                            .into_iter()
+                            .map(|step| PlanItemArg {
+                                step: step.step,
+                                status: step_status_from_upstream(step.status),
+                            })
+                            .collect(),
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
         "item/agentMessage/delta" => {
             let ev: UpstreamAgentMessageDeltaNotification = serde_json::from_value(params)
                 .context("decode item/agentMessage/delta notification")?;
@@ -1242,6 +1269,14 @@ fn handle_typed_notification(
     }
 
     Ok(())
+}
+
+fn step_status_from_upstream(status: UpstreamTurnPlanStepStatus) -> StepStatus {
+    match status {
+        UpstreamTurnPlanStepStatus::Pending => StepStatus::Pending,
+        UpstreamTurnPlanStepStatus::InProgress => StepStatus::InProgress,
+        UpstreamTurnPlanStepStatus::Completed => StepStatus::Completed,
+    }
 }
 
 fn handle_typed_item_started(
@@ -2805,6 +2840,63 @@ mod tests {
         assert!(
             event_rx.try_recv().is_err(),
             "expected no extra events for completed agent message"
+        );
+    }
+
+    #[test]
+    fn typed_turn_plan_updated_notification_emits_plan_update_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: Some("turn-1".to_string()),
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "turn/plan/updated".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "explanation": "bridge plan updates",
+                    "plan": [
+                        {
+                            "step": "Inspect docs",
+                            "status": "inProgress"
+                        },
+                        {
+                            "step": "Patch bridge",
+                            "status": "pending"
+                        }
+                    ]
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge turn plan update");
+
+        let event = event_rx.try_recv().expect("expected bridged plan update");
+        assert_eq!(event.id, "turn-1");
+        let EventMsg::PlanUpdate(update) = event.msg else {
+            panic!("expected PlanUpdate event");
+        };
+        assert_eq!(update.explanation.as_deref(), Some("bridge plan updates"));
+        assert_eq!(update.plan.len(), 2);
+        assert_eq!(update.plan[0].step, "Inspect docs");
+        assert!(matches!(update.plan[0].status, StepStatus::InProgress));
+        assert_eq!(update.plan[1].step, "Patch bridge");
+        assert!(matches!(update.plan[1].status, StepStatus::Pending));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for plan update notification"
         );
     }
 
