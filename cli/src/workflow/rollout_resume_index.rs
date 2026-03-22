@@ -247,6 +247,50 @@ mod tests {
     }
 
     #[test]
+    fn build_resume_index_treats_interrupted_round_finish_as_completed_round() {
+        let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md");
+        let lines = vec![
+            PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: user_prompt_file.clone(),
+            },
+            PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+            PotterRolloutLine::RoundConfigured {
+                thread_id: thread_id(),
+                rollout_path: PathBuf::from("rollout.jsonl"),
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+            PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Interrupted,
+            },
+        ];
+
+        let index = build_resume_index(&lines).expect("build resume index");
+        assert_eq!(
+            index,
+            PotterRolloutResumeIndex {
+                project_started: ProjectStartedIndex {
+                    user_message: Some("hello".to_string()),
+                    user_prompt_file: user_prompt_file.clone(),
+                },
+                completed_rounds: vec![CompletedRoundIndex {
+                    round_current: 1,
+                    round_total: 10,
+                    thread_id: thread_id(),
+                    rollout_path: PathBuf::from("rollout.jsonl"),
+                    project_succeeded: None,
+                    outcome: PotterRoundOutcome::Interrupted,
+                }],
+                unfinished_round: None,
+            }
+        );
+    }
+
+    #[test]
     fn build_resume_index_attaches_project_succeeded_to_completed_round() {
         let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md");
         let lines = vec![

@@ -109,6 +109,15 @@ enum InterruptedProjectPlan {
     Resumed(ResumedProjectPlan),
 }
 
+impl InterruptedProjectPlan {
+    fn potter_rollout_path(&self) -> &Path {
+        match self {
+            InterruptedProjectPlan::Fresh(plan) => &plan.potter_rollout_path,
+            InterruptedProjectPlan::Resumed(plan) => &plan.potter_rollout_path,
+        }
+    }
+}
+
 struct ServerState {
     config: PotterAppServerConfig,
     running: Option<RunningProject>,
@@ -699,6 +708,14 @@ fn resolve_interrupt_project(
 
     match action {
         ResolveInterruptAction::Stop => {
+            crate::workflow::rollout::append_line(
+                interrupted.plan.potter_rollout_path(),
+                &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                    outcome: PotterRoundOutcome::Interrupted,
+                },
+            )
+            .context("append interrupted round_finished after resolve_interrupt(stop)")?;
+
             let interrupted = state
                 .interrupted
                 .take()
@@ -864,8 +881,10 @@ fn load_potter_rollout_lines(
 }
 
 fn count_completed_rounds(lines: &[crate::workflow::rollout::PotterRolloutLine]) -> usize {
-    // `Op::Interrupt` intentionally does not consume round budget: we may retry the interrupted
-    // round (same round index / round_current) without advancing.
+    // Interrupted rounds may still be persisted for replay/audit purposes when the user confirms
+    // stop, but `Op::Interrupt` intentionally does not consume future iteration budget: we may
+    // retry the same round/thread before the stop decision, and later resumes should not treat a
+    // stopped interrupted round as having consumed a new round slot.
     lines
         .iter()
         .filter(|line| match line {
@@ -2673,7 +2692,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_interrupt_stop_returns_summary_and_emits_completed_marker() {
+    fn resolve_interrupt_stop_records_round_finish_and_emits_completed_marker() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path().to_path_buf();
 
@@ -2759,6 +2778,16 @@ mod tests {
         assert_eq!(summary.user_prompt_file, progress_file_rel);
         assert_eq!(summary.git_commit_start, "start");
         assert_eq!(summary.git_commit_end, expected_git_commit_end);
+
+        let rollout_lines =
+            crate::workflow::rollout::read_lines(&workdir.join("potter-rollout.jsonl"))
+                .expect("read potter-rollout");
+        assert_eq!(
+            rollout_lines,
+            vec![crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Interrupted,
+            }]
+        );
 
         let events = drain_potter_events(writer_rx);
         let completed = events

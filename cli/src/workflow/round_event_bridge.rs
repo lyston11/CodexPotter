@@ -78,9 +78,11 @@ impl PotterRoundEventBridge {
         let mut injected: Option<Event> = None;
         if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
             if matches!(outcome, PotterRoundOutcome::Interrupted) {
-                // Interrupted rounds stay open in `potter-rollout.jsonl` so a later
-                // `continue iterate` can resume the same Codex thread and eventually append a
-                // single terminal `RoundFinished` entry for that round.
+                // Live ESC interruptions do not immediately finalize the round in
+                // `potter-rollout.jsonl`. The round stays open until the user resolves the paused
+                // project: `continue iterate` reuses the same thread and later appends a terminal
+                // `RoundFinished`, while `stop iterate` records `RoundFinished(Interrupted)` when
+                // the stop action is confirmed.
                 return Ok(None);
             }
 
