@@ -4969,6 +4969,7 @@ mod tests {
         let width: u16 = 80;
 
         let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+        proc.verbosity = Verbosity::Simple;
 
         proc.handle_codex_event(Event {
             id: "plan-1".into(),
