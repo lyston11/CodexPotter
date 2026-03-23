@@ -2218,7 +2218,12 @@ impl RenderAppState {
                 self.reasoning_status.on_section_break();
                 return Ok(());
             }
-            EventMsg::AgentReasoning(_) => {
+            EventMsg::AgentReasoning(ev) => {
+                if let Some(header) = self.reasoning_status.on_delta(&ev.text)
+                    && self.unified_exec_wait.is_none()
+                {
+                    self.bottom_pane.update_status_header(header);
+                }
                 self.reasoning_status.on_final();
                 return Ok(());
             }
@@ -2456,6 +2461,7 @@ mod tests {
     use codex_protocol::protocol::AgentMessageDeltaEvent;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::AgentReasoningDeltaEvent;
+    use codex_protocol::protocol::AgentReasoningEvent;
     use codex_protocol::protocol::BackgroundEventEvent;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ContextCompactedEvent;
@@ -2711,6 +2717,48 @@ mod tests {
 
         let status = bottom_pane.status_widget().expect("status indicator");
         assert_eq!(status.header(), "Inspecting for code duplication");
+    }
+
+    #[test]
+    fn reasoning_final_updates_status_header_without_prior_deltas() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            None,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "reasoning-1".into(),
+                msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+                    text: "**Inspecting for code duplication**\n\nSearch duplicated helpers."
+                        .into(),
+                }),
+            },
+        )
+        .expect("handle reasoning final");
+
+        let status = app.bottom_pane.status_widget().expect("status indicator");
+        pretty_assertions::assert_eq!(status.header(), "Inspecting for code duplication");
     }
 
     #[test]

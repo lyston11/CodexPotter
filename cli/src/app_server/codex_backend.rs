@@ -72,8 +72,10 @@ use crate::app_server::upstream_protocol::PatchChangeKind as UpstreamPatchChange
 use crate::app_server::upstream_protocol::PermissionGrantScope;
 use crate::app_server::upstream_protocol::PermissionsRequestApprovalResponse;
 use crate::app_server::upstream_protocol::PlanDeltaNotification as UpstreamPlanDeltaNotification;
+use crate::app_server::upstream_protocol::ReasoningSummaryPartAddedNotification as UpstreamReasoningSummaryPartAddedNotification;
 use crate::app_server::upstream_protocol::ReasoningSummaryTextDeltaNotification as UpstreamReasoningSummaryTextDeltaNotification;
 use crate::app_server::upstream_protocol::ReasoningTextDeltaNotification as UpstreamReasoningTextDeltaNotification;
+use crate::app_server::upstream_protocol::ReasoningThreadItem as UpstreamReasoningThreadItem;
 use crate::app_server::upstream_protocol::RequestId;
 use crate::app_server::upstream_protocol::ServerRequest;
 use crate::app_server::upstream_protocol::TerminalInteractionNotification as UpstreamTerminalInteractionNotification;
@@ -109,7 +111,10 @@ use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
+use codex_protocol::protocol::AgentReasoningEvent;
 use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
+use codex_protocol::protocol::AgentReasoningRawContentEvent;
+use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -1111,6 +1116,21 @@ fn handle_typed_notification(
                 event_tx,
             );
         }
+        "item/reasoning/summaryPartAdded" => {
+            let ev: UpstreamReasoningSummaryPartAddedNotification = serde_json::from_value(params)
+                .context("decode item/reasoning/summaryPartAdded notification")?;
+            handle_codex_event(
+                Event {
+                    id: ev.turn_id,
+                    msg: EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {
+                        item_id: ev.item_id,
+                        summary_index: ev.summary_index,
+                    }),
+                },
+                recovery,
+                event_tx,
+            );
+        }
         "item/reasoning/textDelta" => {
             let ev: UpstreamReasoningTextDeltaNotification = serde_json::from_value(params)
                 .context("decode item/reasoning/textDelta notification")?;
@@ -1368,6 +1388,37 @@ fn handle_typed_item_completed(
                 recovery,
                 event_tx,
             );
+        }
+        "reasoning" => {
+            let item: UpstreamReasoningThreadItem =
+                serde_json::from_value(ev.item).context("decode item/completed reasoning item")?;
+            let UpstreamReasoningThreadItem {
+                id,
+                summary,
+                content,
+            } = item;
+            for (index, summary) in summary.into_iter().enumerate() {
+                handle_codex_event(
+                    Event {
+                        id: format!("{id}:summary:{index}"),
+                        msg: EventMsg::AgentReasoning(AgentReasoningEvent { text: summary }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            }
+            for (index, content) in content.into_iter().enumerate() {
+                handle_codex_event(
+                    Event {
+                        id: format!("{id}:content:{index}"),
+                        msg: EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent {
+                            text: content,
+                        }),
+                    },
+                    recovery,
+                    event_tx,
+                );
+            }
         }
         "contextCompaction" => {
             let item: UpstreamContextCompactionThreadItem = serde_json::from_value(ev.item)
@@ -2885,6 +2936,126 @@ mod tests {
         assert!(
             event_rx.try_recv().is_err(),
             "expected no extra events for completed agent message"
+        );
+    }
+
+    #[test]
+    fn typed_reasoning_item_completed_emits_legacy_reasoning_events() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_item_completed(
+            UpstreamItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: serde_json::json!({
+                    "type": "reasoning",
+                    "id": "reasoning-1",
+                    "summary": [
+                        "**Inspecting for code duplication**\n\nSearch duplicated helpers.",
+                        "**Planning next edit**\n\nKeep the seam minimal."
+                    ],
+                    "content": [
+                        "raw chain of thought"
+                    ]
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge reasoning item");
+
+        let first = event_rx
+            .try_recv()
+            .expect("expected first reasoning summary");
+        assert_eq!(first.id, "reasoning-1:summary:0");
+        let EventMsg::AgentReasoning(summary) = first.msg else {
+            panic!("expected AgentReasoning summary event");
+        };
+        assert_eq!(
+            summary.text,
+            "**Inspecting for code duplication**\n\nSearch duplicated helpers."
+        );
+
+        let second = event_rx
+            .try_recv()
+            .expect("expected second reasoning summary");
+        assert_eq!(second.id, "reasoning-1:summary:1");
+        let EventMsg::AgentReasoning(summary) = second.msg else {
+            panic!("expected AgentReasoning summary event");
+        };
+        assert_eq!(
+            summary.text,
+            "**Planning next edit**\n\nKeep the seam minimal."
+        );
+
+        let third = event_rx.try_recv().expect("expected raw reasoning content");
+        assert_eq!(third.id, "reasoning-1:content:0");
+        let EventMsg::AgentReasoningRawContent(content) = third.msg else {
+            panic!("expected AgentReasoningRawContent event");
+        };
+        assert_eq!(content.text, "raw chain of thought");
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for completed reasoning item"
+        );
+    }
+
+    #[test]
+    fn typed_reasoning_summary_part_added_emits_section_break_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "item/reasoning/summaryPartAdded".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "summaryIndex": 2
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge reasoning summary part boundary");
+
+        let event = event_rx.try_recv().expect("expected section break event");
+        assert_eq!(event.id, "turn-1");
+        let EventMsg::AgentReasoningSectionBreak(section_break) = event.msg else {
+            panic!("expected AgentReasoningSectionBreak event");
+        };
+        assert_eq!(section_break.item_id, "reasoning-1");
+        assert_eq!(section_break.summary_index, 2);
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for reasoning summary boundary"
         );
     }
 

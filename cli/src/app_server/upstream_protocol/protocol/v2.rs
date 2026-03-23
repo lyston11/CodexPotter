@@ -835,6 +835,15 @@ pub struct ReasoningSummaryTextDeltaNotification {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ReasoningSummaryPartAddedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub summary_index: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ReasoningTextDeltaNotification {
     pub thread_id: String,
     pub turn_id: String,
@@ -931,6 +940,16 @@ pub struct AgentMessageThreadItem {
     pub text: String,
     #[serde(default)]
     pub phase: Option<MessagePhase>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningThreadItem {
+    pub id: String,
+    #[serde(default)]
+    pub summary: Vec<String>,
+    #[serde(default)]
+    pub content: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
