@@ -30,6 +30,28 @@ For agents: This file is carefully maintained and polished for better readabilit
 
 &ensp;
 
+## How does it work
+
+```plain
+
+                                                  𝒀𝑶𝑼𝑹 𝑷𝑹𝑶𝑴𝑷𝑻:
+                                                  𝘚𝘪𝘮𝘱𝘭𝘪𝘧𝘺 𝘵𝘩𝘦 𝘲𝘶𝘦𝘳𝘺 𝘦𝘯𝘨𝘪𝘯𝘦 𝘣𝘺 𝘧𝘰𝘭𝘭𝘰𝘸𝘪𝘯𝘨 ...
+                                                                 │
+                                                                 │
+     codex: Work or review according to MAIN.md                  │
+            ┌──────────────────────────┐                         │
+            │                          │                         ▼
+  ┌─────────┴─────────┐     ┌──────────▼────────┐       ┌───────────────────┐
+  │    CodexPotter    │     │       codex       │◄─────►│      MAIN.md      │
+  └─────────▲─────────┘     └──────────┬────────┘       └───────────────────┘
+            │                          │
+            │      Work finished       │
+            └──────────────────────────┘
+
+```
+
+&ensp;
+
 ## ⚡️ Getting started
 
 **1. Prerequisites:** ensure you have [codex CLI](https://developers.openai.com/codex/quickstart?setup=cli) locally. CodexPotter drives your local codex to perform tasks.
@@ -90,11 +112,9 @@ please explain more about the root cause of the issue
 - [x] Resume (history replay + continue iterating)
 - [x] Better handling of stream disconnect / similar network issues
 - [x] Agent-call friendly (non-interactive exec and resume)
+- [x] Interoperability with codex CLI sessions (for follow-up prompts)
 - [ ] Better plan / user selection support
 - [ ] Better sandbox support
-- [ ] Interoperability with codex CLI sessions (for follow-up prompts)
-- [ ] Allow opting out knowledge base
-- [ ] Recommended skills for PRD and code review
 
 &ensp;
 
