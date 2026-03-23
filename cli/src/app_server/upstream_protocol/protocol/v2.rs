@@ -917,6 +917,13 @@ pub struct ItemCompletedNotification {
     pub item: JsonValue,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCompactedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMessageThreadItem {
@@ -973,6 +980,12 @@ pub struct CommandExecutionThreadItem {
     pub aggregated_output: Option<String>,
     pub exit_code: Option<i32>,
     pub duration_ms: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCompactionThreadItem {
+    pub id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

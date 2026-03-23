@@ -32,6 +32,8 @@ use crate::app_server::upstream_protocol::CommandAction as UpstreamCommandAction
 use crate::app_server::upstream_protocol::CommandExecutionApprovalDecision;
 use crate::app_server::upstream_protocol::CommandExecutionRequestApprovalResponse;
 use crate::app_server::upstream_protocol::CommandExecutionThreadItem as UpstreamCommandExecutionThreadItem;
+use crate::app_server::upstream_protocol::ContextCompactedNotification as UpstreamContextCompactedNotification;
+use crate::app_server::upstream_protocol::ContextCompactionThreadItem as UpstreamContextCompactionThreadItem;
 use crate::app_server::upstream_protocol::DynamicToolCallOutputContentItem;
 use crate::app_server::upstream_protocol::DynamicToolCallResponse;
 use crate::app_server::upstream_protocol::ErrorNotification as UpstreamErrorNotification;
@@ -108,6 +110,7 @@ use codex_protocol::protocol::AgentMessageDeltaEvent;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
 use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
+use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -180,6 +183,7 @@ struct StreamRecoveryContext {
     recovery_action_tx: UnboundedSender<RecoveryAction>,
     pending_continue_retry: Option<ContinueRetryPlan>,
     active_turn_id: Option<String>,
+    last_context_compaction_turn_id: Option<String>,
     has_sent_turn_start: bool,
     has_finished_round: bool,
     last_turn_start_was_recovery_continue: bool,
@@ -339,6 +343,7 @@ async fn run_app_server_backend_inner(
         recovery_action_tx,
         pending_continue_retry: None,
         active_turn_id: None,
+        last_context_compaction_turn_id: None,
         has_sent_turn_start: false,
         has_finished_round: false,
         last_turn_start_was_recovery_continue: false,
@@ -1041,6 +1046,11 @@ fn handle_typed_notification(
                 event_tx,
             );
         }
+        "thread/compacted" => {
+            let ev: UpstreamContextCompactedNotification =
+                serde_json::from_value(params).context("decode thread/compacted notification")?;
+            emit_context_compacted_event(ev.turn_id.clone(), ev.turn_id, recovery, event_tx);
+        }
         "turn/plan/updated" => {
             let ev: UpstreamTurnPlanUpdatedNotification =
                 serde_json::from_value(params).context("decode turn/plan/updated notification")?;
@@ -1359,6 +1369,11 @@ fn handle_typed_item_completed(
                 event_tx,
             );
         }
+        "contextCompaction" => {
+            let item: UpstreamContextCompactionThreadItem = serde_json::from_value(ev.item)
+                .context("decode item/completed contextCompaction item")?;
+            emit_context_compacted_event(item.id, ev.turn_id, recovery, event_tx);
+        }
         "fileChange" => {
             let item: UpstreamFileChangeThreadItem =
                 serde_json::from_value(ev.item).context("decode item/completed fileChange item")?;
@@ -1607,6 +1622,28 @@ fn guardian_assessment_from_upstream_auto_approval_review(
 
 fn command_tokens_from_string(command: &str) -> Vec<String> {
     shlex::split(command).unwrap_or_else(|| vec![command.to_string()])
+}
+
+fn emit_context_compacted_event(
+    event_id: String,
+    turn_id: String,
+    recovery: &mut StreamRecoveryContext,
+    event_tx: &UnboundedSender<Event>,
+) {
+    // Newer app-server builds emit `contextCompaction` items, while older/deprecated transports
+    // can still send `thread/compacted` for the same turn. Surface exactly one legacy event.
+    if recovery.last_context_compaction_turn_id.as_deref() == Some(turn_id.as_str()) {
+        return;
+    }
+    recovery.last_context_compaction_turn_id = Some(turn_id);
+    handle_codex_event(
+        Event {
+            id: event_id,
+            msg: EventMsg::ContextCompacted(ContextCompactedEvent),
+        },
+        recovery,
+        event_tx,
+    );
 }
 
 fn parsed_commands_from_actions(actions: &[UpstreamCommandAction]) -> Vec<ParsedCommand> {
@@ -2354,6 +2391,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2449,6 +2487,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: false,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2487,6 +2526,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2550,6 +2590,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2595,6 +2636,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2631,6 +2673,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2671,6 +2714,7 @@ mod stream_recovery_tests {
             recovery_action_tx: action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2807,6 +2851,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: None,
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2844,6 +2889,152 @@ mod tests {
     }
 
     #[test]
+    fn typed_context_compaction_item_completed_emits_context_compacted_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_item_completed(
+            UpstreamItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: serde_json::json!({
+                    "type": "contextCompaction",
+                    "id": "compaction-1"
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge context compaction item");
+
+        let event = event_rx
+            .try_recv()
+            .expect("expected bridged context compaction");
+        assert_eq!(event.id, "compaction-1");
+        assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
+        assert_eq!(
+            recovery.last_context_compaction_turn_id.as_deref(),
+            Some("turn-1")
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for completed context compaction"
+        );
+    }
+
+    #[test]
+    fn typed_thread_compacted_notification_emits_context_compacted_event() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "thread/compacted".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1"
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge deprecated thread/compacted");
+
+        let event = event_rx
+            .try_recv()
+            .expect("expected bridged deprecated compaction notification");
+        assert_eq!(event.id, "turn-1");
+        assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
+        assert_eq!(
+            recovery.last_context_compaction_turn_id.as_deref(),
+            Some("turn-1")
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra events for deprecated compaction notification"
+        );
+    }
+
+    #[test]
+    fn typed_context_compaction_item_dedupes_deprecated_thread_compacted_notification() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_typed_item_completed(
+            UpstreamItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: serde_json::json!({
+                    "type": "contextCompaction",
+                    "id": "compaction-1"
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge context compaction item");
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "thread/compacted".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1"
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge deprecated thread/compacted");
+
+        let event = event_rx
+            .try_recv()
+            .expect("expected single bridged context compaction event");
+        assert_eq!(event.id, "compaction-1");
+        assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected duplicate deprecated notification to be suppressed"
+        );
+    }
+
+    #[test]
     fn typed_turn_plan_updated_notification_emits_plan_update_event() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
         let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
@@ -2852,6 +3043,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: Some("turn-1".to_string()),
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2910,6 +3102,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: Some("turn-new".to_string()),
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2942,6 +3135,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: Some("turn-1".to_string()),
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -2974,6 +3168,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: Some("turn-new".to_string()),
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -3006,6 +3201,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: Some("turn-1".to_string()),
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
@@ -3038,6 +3234,7 @@ mod tests {
             recovery_action_tx,
             pending_continue_retry: None,
             active_turn_id: Some("turn-1".to_string()),
+            last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
             last_turn_start_was_recovery_continue: false,
