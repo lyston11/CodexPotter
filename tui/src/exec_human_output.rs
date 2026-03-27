@@ -5,6 +5,8 @@
 //! This renderer is intentionally append-only:
 //! - it preserves the same broad visibility policy as codex-potter's interactive verbosity modes
 //! - it does **not** use interactive folding/coalescing, because exec cannot rewrite prior output
+//! - it emits dim status hints when reasoning changes the live shimmer header, because exec has no
+//!   mutable status bar
 //! - it renders CodexPotter round / summary markers as plain text blocks instead of interactive
 //!   transcript chrome
 

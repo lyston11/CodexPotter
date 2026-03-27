@@ -54,6 +54,8 @@ Divergences must be documented in places below to avoid regression when syncing 
 - `codex-potter exec` without `--json` uses a separate append-only renderer that follows the same
   broad visibility policy as interactive verbosity, but never folds/coalesces prior output and
   renders Potter round/summary markers as plain text blocks.
+- That append-only exec renderer also emits a dim status line when reasoning changes the live
+  shimmer header, so headless runs still surface the latest derived status without a mutable UI.
 
 ### Shimmer
 
