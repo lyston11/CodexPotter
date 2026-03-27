@@ -298,6 +298,7 @@ impl ExecHumanRenderer {
                 out.push(
                     self.render_cell_block(Box::new(new_request_permissions_event(ev.clone())))?,
                 );
+                self.mark_work_activity();
             }
             EventMsg::RequestUserInput(ev) => {
                 out.extend(self.flush_agent_output(false)?);
@@ -319,6 +320,7 @@ impl ExecHumanRenderer {
                 out.push(
                     self.render_cell_block(Box::new(new_guardian_assessment_event(ev.clone())))?,
                 );
+                self.mark_work_activity();
             }
             EventMsg::WebSearchEnd(ev) => {
                 if self.verbosity != Verbosity::Minimal {
@@ -929,6 +931,12 @@ fn write_line(writer: &mut impl Write, line: &Line<'_>, color_enabled: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::AbsolutePathBuf;
+    use codex_protocol::approvals::GuardianAssessmentEvent;
+    use codex_protocol::approvals::GuardianAssessmentStatus;
+    use codex_protocol::approvals::GuardianRiskLevel;
+    use codex_protocol::models::FileSystemPermissions;
+    use codex_protocol::models::NetworkPermissions;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
@@ -937,6 +945,8 @@ mod tests {
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::ViewImageToolCallEvent;
     use codex_protocol::protocol::WebSearchEndEvent;
+    use codex_protocol::request_permissions::RequestPermissionProfile;
+    use codex_protocol::request_permissions::RequestPermissionsEvent;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -1160,6 +1170,81 @@ mod tests {
             }))
             .expect("exec command");
         assert_eq!(command_blocks.len(), 1);
+
+        let blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "done".to_string(),
+                    phase: None,
+                },
+            ))
+            .expect("agent message");
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].contains("Worked for "));
+        assert_eq!(blocks[1], "done");
+    }
+
+    #[test]
+    fn simple_mode_inserts_worked_separator_after_request_permissions() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        let write_root =
+            AbsolutePathBuf::from_absolute_path("/Users/me/project").expect("absolute path");
+        let request_blocks = renderer
+            .handle_event(&EventMsg::RequestPermissions(RequestPermissionsEvent {
+                call_id: "call-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                reason: Some("Select a workspace root".to_string()),
+                permissions: RequestPermissionProfile {
+                    network: Some(NetworkPermissions {
+                        enabled: Some(true),
+                    }),
+                    file_system: Some(FileSystemPermissions {
+                        read: None,
+                        write: Some(vec![write_root]),
+                    }),
+                },
+            }))
+            .expect("request permissions");
+        assert_eq!(request_blocks.len(), 1);
+
+        let blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "done".to_string(),
+                    phase: None,
+                },
+            ))
+            .expect("agent message");
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].contains("Worked for "));
+        assert_eq!(blocks[1], "done");
+    }
+
+    #[test]
+    fn simple_mode_inserts_worked_separator_after_guardian_assessment() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        let guardian_blocks = renderer
+            .handle_event(&EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                id: "assessment-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                status: GuardianAssessmentStatus::Approved,
+                risk_score: Some(15),
+                risk_level: Some(GuardianRiskLevel::Low),
+                rationale: Some("Looks safe.".to_string()),
+                action: None,
+            }))
+            .expect("guardian assessment");
+        assert_eq!(guardian_blocks.len(), 1);
 
         let blocks = renderer
             .handle_event(&EventMsg::AgentMessage(
