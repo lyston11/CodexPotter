@@ -29,6 +29,7 @@ pub struct ExecHumanRoundUi<W: Write> {
     renderer: ExecHumanRenderer,
     token_usage: TokenUsage,
     thread_id: Option<ThreadId>,
+    needs_spacing_between_blocks: bool,
 }
 
 impl<W: Write> ExecHumanRoundUi<W> {
@@ -39,30 +40,27 @@ impl<W: Write> ExecHumanRoundUi<W> {
             renderer: ExecHumanRenderer::new(verbosity, width, color_enabled),
             token_usage: TokenUsage::default(),
             thread_id: None,
+            needs_spacing_between_blocks: false,
         }
     }
 
-    fn write_block(&mut self, block: &str, needs_spacing: &mut bool) -> anyhow::Result<()> {
+    fn write_block(&mut self, block: &str) -> anyhow::Result<()> {
         if block.is_empty() {
             return Ok(());
         }
-        if *needs_spacing {
+        if self.needs_spacing_between_blocks {
             self.output.write_all(b"\n")?;
         }
         self.output.write_all(block.as_bytes())?;
         self.output.write_all(b"\n")?;
         self.output.flush()?;
-        *needs_spacing = true;
+        self.needs_spacing_between_blocks = true;
         Ok(())
     }
 
-    fn write_blocks(
-        &mut self,
-        blocks: Vec<String>,
-        needs_spacing: &mut bool,
-    ) -> anyhow::Result<()> {
+    fn write_blocks(&mut self, blocks: Vec<String>) -> anyhow::Result<()> {
         for block in blocks {
-            self.write_block(&block, needs_spacing)?;
+            self.write_block(&block)?;
         }
         Ok(())
     }
@@ -81,11 +79,7 @@ impl<W: Write> ExecHumanRoundUi<W> {
         }
     }
 
-    fn process_event(
-        &mut self,
-        event: &Event,
-        needs_spacing: &mut bool,
-    ) -> anyhow::Result<Option<AppExitInfo>> {
+    fn process_event(&mut self, event: &Event) -> anyhow::Result<Option<AppExitInfo>> {
         if let EventMsg::TokenCount(ev) = &event.msg
             && let Some(info) = &ev.info
         {
@@ -102,7 +96,7 @@ impl<W: Write> ExecHumanRoundUi<W> {
                     ev.call_id
                 );
                 let block = self.renderer.render_error_block(message.clone())?;
-                self.write_block(&block, needs_spacing)?;
+                self.write_block(&block)?;
                 return Ok(Some(AppExitInfo {
                     token_usage: self.token_usage.clone(),
                     thread_id: self.thread_id,
@@ -115,7 +109,7 @@ impl<W: Write> ExecHumanRoundUi<W> {
                     ev.server_name, ev.id
                 );
                 let block = self.renderer.render_error_block(message.clone())?;
-                self.write_block(&block, needs_spacing)?;
+                self.write_block(&block)?;
                 return Ok(Some(AppExitInfo {
                     token_usage: self.token_usage.clone(),
                     thread_id: self.thread_id,
@@ -126,7 +120,7 @@ impl<W: Write> ExecHumanRoundUi<W> {
         }
 
         let blocks = self.renderer.handle_event(&event.msg)?;
-        self.write_blocks(blocks, needs_spacing)?;
+        self.write_blocks(blocks)?;
 
         let exit_reason = match &event.msg {
             EventMsg::PotterRoundFinished { outcome } => Some(exit_reason_from_outcome(outcome)),
@@ -170,14 +164,13 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                 })
                 .map_err(|_| anyhow::anyhow!("codex op channel closed"))?;
 
-            let mut needs_spacing = false;
             let idle_flush_sleep = tokio::time::sleep(PENDING_AGENT_MESSAGE_IDLE_FLUSH_DELAY);
             tokio::pin!(idle_flush_sleep);
             let mut idle_flush_armed = false;
 
             loop {
                 while let Ok(event) = codex_event_rx.try_recv() {
-                    if let Some(exit_info) = self.process_event(&event, &mut needs_spacing)? {
+                    if let Some(exit_info) = self.process_event(&event)? {
                         return Ok(exit_info);
                     }
                     self.refresh_idle_flush_timer(&mut idle_flush_armed, idle_flush_sleep.as_mut());
@@ -185,9 +178,9 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
 
                 if let Ok(message) = fatal_exit_rx.try_recv() {
                     let blocks = self.renderer.flush_for_exit()?;
-                    self.write_blocks(blocks, &mut needs_spacing)?;
+                    self.write_blocks(blocks)?;
                     let block = self.renderer.render_error_block(message.clone())?;
-                    self.write_block(&block, &mut needs_spacing)?;
+                    self.write_block(&block)?;
                     return Ok(AppExitInfo {
                         token_usage: self.token_usage.clone(),
                         thread_id: self.thread_id,
@@ -198,15 +191,15 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                 tokio::select! {
                     Some(message) = fatal_exit_rx.recv() => {
                         while let Ok(event) = codex_event_rx.try_recv() {
-                            if let Some(exit_info) = self.process_event(&event, &mut needs_spacing)? {
+                            if let Some(exit_info) = self.process_event(&event)? {
                                 return Ok(exit_info);
                             }
                         }
 
                         let blocks = self.renderer.flush_for_exit()?;
-                        self.write_blocks(blocks, &mut needs_spacing)?;
+                        self.write_blocks(blocks)?;
                         let block = self.renderer.render_error_block(message.clone())?;
-                        self.write_block(&block, &mut needs_spacing)?;
+                        self.write_block(&block)?;
                         return Ok(AppExitInfo {
                             token_usage: self.token_usage.clone(),
                             thread_id: self.thread_id,
@@ -215,7 +208,7 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                     }
                     _ = &mut idle_flush_sleep, if idle_flush_armed => {
                         if let Some(block) = self.renderer.flush_idle_agent_message()? {
-                            self.write_block(&block, &mut needs_spacing)?;
+                            self.write_block(&block)?;
                         }
                         self.refresh_idle_flush_timer(&mut idle_flush_armed, idle_flush_sleep.as_mut());
                     }
@@ -223,9 +216,9 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                         let Some(event) = maybe_event else {
                             let message = "codex event stream closed unexpectedly".to_string();
                             let blocks = self.renderer.flush_for_exit()?;
-                            self.write_blocks(blocks, &mut needs_spacing)?;
+                            self.write_blocks(blocks)?;
                             let block = self.renderer.render_error_block(message.clone())?;
-                            self.write_block(&block, &mut needs_spacing)?;
+                            self.write_block(&block)?;
                             return Ok(AppExitInfo {
                                 token_usage: self.token_usage.clone(),
                                 thread_id: self.thread_id,
@@ -233,7 +226,7 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                             });
                         };
 
-                        if let Some(exit_info) = self.process_event(&event, &mut needs_spacing)? {
+                        if let Some(exit_info) = self.process_event(&event)? {
                             return Ok(exit_info);
                         }
                         self.refresh_idle_flush_timer(&mut idle_flush_armed, idle_flush_sleep.as_mut());
@@ -431,5 +424,96 @@ mod tests {
                 assert_eq!(final_output.matches("latest commentary").count(), 1);
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn spacing_between_rounds_is_preserved_across_render_round_calls() {
+        let output = SharedOutput::default();
+        let output_reader = output.clone();
+        let mut ui = ExecHumanRoundUi::new(output, Verbosity::Simple, Some(120), false);
+
+        let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
+        let (codex_event_tx, codex_event_rx) = unbounded_channel::<Event>();
+        let (_fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+
+        codex_event_tx
+            .send(Event {
+                id: "agent-message".to_string(),
+                msg: EventMsg::AgentMessage(AgentMessageEvent {
+                    message: "Workspace is clean.".to_string(),
+                    phase: None,
+                }),
+            })
+            .expect("send agent message");
+        codex_event_tx
+            .send(Event {
+                id: "round-finished".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                },
+            })
+            .expect("send PotterRoundFinished");
+        drop(codex_event_tx);
+
+        let exit_info = ui
+            .render_round(codex_tui::RenderRoundParams {
+                prompt: "Continue".to_string(),
+                pad_before_first_cell: false,
+                status_header_prefix: None,
+                prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("."), None),
+                codex_op_tx,
+                codex_event_rx,
+                fatal_exit_rx,
+            })
+            .await
+            .expect("first render_round");
+        assert!(matches!(exit_info.exit_reason, ExitReason::Completed));
+        let op = codex_op_rx.try_recv().expect("expected Op::UserInput");
+        assert!(matches!(op, Op::UserInput { .. }));
+
+        let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
+        let (codex_event_tx, codex_event_rx) = unbounded_channel::<Event>();
+        let (_fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+
+        codex_event_tx
+            .send(Event {
+                id: "round-start".to_string(),
+                msg: EventMsg::PotterRoundStarted {
+                    current: 2,
+                    total: 10,
+                },
+            })
+            .expect("send PotterRoundStarted");
+        codex_event_tx
+            .send(Event {
+                id: "round-finished".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                },
+            })
+            .expect("send PotterRoundFinished");
+        drop(codex_event_tx);
+
+        let exit_info = ui
+            .render_round(codex_tui::RenderRoundParams {
+                prompt: "Continue".to_string(),
+                pad_before_first_cell: false,
+                status_header_prefix: None,
+                prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("."), None),
+                codex_op_tx,
+                codex_event_rx,
+                fatal_exit_rx,
+            })
+            .await
+            .expect("second render_round");
+        assert!(matches!(exit_info.exit_reason, ExitReason::Completed));
+        let op = codex_op_rx.try_recv().expect("expected Op::UserInput");
+        assert!(matches!(op, Op::UserInput { .. }));
+
+        assert!(
+            output_reader
+                .contents()
+                .contains("Workspace is clean.\n\nCodexPotter: iteration round 2/10")
+        );
     }
 }
