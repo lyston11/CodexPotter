@@ -119,6 +119,7 @@ impl PotterAppServerClient {
                     title: Some("codex-potter".to_string()),
                     version: codex_tui::CODEX_POTTER_VERSION.to_string(),
                 },
+                capabilities: None,
             },
         };
 

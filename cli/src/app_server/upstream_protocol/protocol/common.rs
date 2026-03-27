@@ -154,6 +154,7 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 #[cfg(test)]
 mod tests {
     use super::v1::ClientInfo;
+    use super::v1::InitializeCapabilities;
     use super::v2::ThreadResumeParams;
     use super::v2::ThreadRollbackParams;
     use super::v2::ThreadStartParams;
@@ -357,6 +358,9 @@ mod tests {
                     title: Some("codex-potter".to_string()),
                     version: "0.0.0".to_string(),
                 },
+                capabilities: Some(InitializeCapabilities {
+                    experimental_api: true,
+                }),
             },
         };
 
@@ -364,5 +368,6 @@ mod tests {
         assert_eq!(value["method"], "initialize");
         assert_eq!(value["id"], 4);
         assert_eq!(value["params"]["clientInfo"]["name"], "codex-potter");
+        assert_eq!(value["params"]["capabilities"]["experimentalApi"], true);
     }
 }

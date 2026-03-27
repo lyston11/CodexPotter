@@ -12,6 +12,8 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
     pub client_info: ClientInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<InitializeCapabilities>,
 }
 
 /// Identifies the client for display/telemetry purposes.
@@ -21,6 +23,14 @@ pub struct ClientInfo {
     pub name: String,
     pub title: Option<String>,
     pub version: String,
+}
+
+/// Client-declared capabilities negotiated during initialize.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeCapabilities {
+    /// Opt into experimental API methods and fields such as `turn/start.collaborationMode`.
+    pub experimental_api: bool,
 }
 
 /// Response payload for an `applyPatch` approval request.

@@ -58,6 +58,7 @@ use crate::app_server::upstream_protocol::HookRunStatus as UpstreamHookRunStatus
 use crate::app_server::upstream_protocol::HookRunSummary as UpstreamHookRunSummary;
 use crate::app_server::upstream_protocol::HookScope as UpstreamHookScope;
 use crate::app_server::upstream_protocol::HookStartedNotification as UpstreamHookStartedNotification;
+use crate::app_server::upstream_protocol::InitializeCapabilities;
 use crate::app_server::upstream_protocol::InitializeParams;
 use crate::app_server::upstream_protocol::ItemCompletedNotification as UpstreamItemCompletedNotification;
 use crate::app_server::upstream_protocol::ItemGuardianApprovalReviewCompletedNotification as UpstreamItemGuardianApprovalReviewCompletedNotification;
@@ -650,6 +651,9 @@ async fn initialize_app_server(
                 title: Some("codex-potter".to_string()),
                 version: codex_tui::CODEX_POTTER_VERSION.to_string(),
             },
+            capabilities: Some(InitializeCapabilities {
+                experimental_api: true,
+            }),
         },
     };
     send_message(stdin, &request).await?;
@@ -3500,7 +3504,15 @@ if [[ "${1:-}" != "app-server" ]]; then
 fi
 
 # initialize request
-IFS= read -r _line
+IFS= read -r initialize
+echo "$initialize" | grep -q '"method":"initialize"' || {
+  echo "expected initialize, got: $initialize" >&2
+  exit 1
+}
+echo "$initialize" | grep -q '"experimentalApi":true' || {
+  echo "expected experimentalApi capability, got: $initialize" >&2
+  exit 1
+}
 echo '{"id":1,"result":{}}'
 
 # initialized notification
