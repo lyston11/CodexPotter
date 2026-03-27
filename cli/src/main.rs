@@ -153,7 +153,7 @@ fn resolve_codex_bin_or_exit(codex_bin: &str) -> String {
     match startup::resolve_codex_bin(codex_bin) {
         Ok(resolved) => resolved.command_for_spawn,
         Err(err) => {
-            eprint!("{}", err.render_ansi());
+            eprint!("{}", render_startup_error(&err, stderr_color_enabled()));
             std::process::exit(1);
         }
     }
@@ -185,11 +185,31 @@ fn resolve_codex_bin_or_exec_json_exit(codex_bin: &str) -> String {
     match startup::resolve_codex_bin(codex_bin) {
         Ok(resolved) => resolved.command_for_spawn,
         Err(err) => {
-            eprint!("{}", err.render_ansi());
+            eprint!("{}", render_startup_error(&err, stderr_color_enabled()));
             let _ = crate::exec::write_exec_json_preflight_error(&err.to_string());
             std::process::exit(1);
         }
     }
+}
+
+fn render_startup_error(err: &crate::startup::CodexBinError, color_enabled: bool) -> String {
+    if color_enabled {
+        err.render_ansi()
+    } else {
+        format!("{err}\n")
+    }
+}
+
+fn stream_color_enabled(stream: supports_color::Stream) -> bool {
+    supports_color::on_cached(stream).is_some()
+}
+
+fn stdout_color_enabled() -> bool {
+    stream_color_enabled(supports_color::Stream::Stdout)
+}
+
+fn stderr_color_enabled() -> bool {
+    stream_color_enabled(supports_color::Stream::Stderr)
 }
 
 fn resolve_exec_human_verbosity(
@@ -586,20 +606,24 @@ fn derive_resume_project_path_for_note(project_path: &Path) -> String {
 }
 
 fn print_resume_note(project_path: &str) {
+    let color_enabled = stdout_color_enabled();
     let command = format!("codex-potter resume {project_path}");
-    println!("{} To continue this project, run:", ansi_bold("Note:"));
-    println!("  {}", ansi_cyan(&command));
+    println!(
+        "{} To continue this project, run:",
+        ansi_bold("Note:", color_enabled)
+    );
+    println!("  {}", ansi_cyan(&command, color_enabled));
 }
 
 fn print_queued_prompts_note(queued_prompts: &[String]) {
-    let Some(note) = render_queued_prompts_note(queued_prompts) else {
+    let Some(note) = render_queued_prompts_note(queued_prompts, stdout_color_enabled()) else {
         return;
     };
 
     print!("{note}");
 }
 
-fn render_queued_prompts_note(queued_prompts: &[String]) -> Option<String> {
+fn render_queued_prompts_note(queued_prompts: &[String], color_enabled: bool) -> Option<String> {
     if queued_prompts.is_empty() {
         return None;
     }
@@ -612,7 +636,7 @@ fn render_queued_prompts_note(queued_prompts: &[String]) -> Option<String> {
     note.push('\n');
     note.push_str(&format!(
         "{} You have {count} queued {prompt_label} that {verb} not run before exiting.\n",
-        ansi_bold("Warning:")
+        ansi_bold("Warning:", color_enabled)
     ));
     note.push_str("Copy/paste them to continue:\n");
 
@@ -629,12 +653,20 @@ fn render_queued_prompts_note(queued_prompts: &[String]) -> Option<String> {
     Some(note)
 }
 
-fn ansi_bold(text: &str) -> String {
-    format!("\u{1b}[1m{text}\u{1b}[0m")
+fn ansi_bold(text: &str, color_enabled: bool) -> String {
+    if color_enabled {
+        format!("\u{1b}[1m{text}\u{1b}[0m")
+    } else {
+        text.to_string()
+    }
 }
 
-fn ansi_cyan(text: &str) -> String {
-    format!("\u{1b}[36m{text}\u{1b}[0m")
+fn ansi_cyan(text: &str, color_enabled: bool) -> String {
+    if color_enabled {
+        format!("\u{1b}[36m{text}\u{1b}[0m")
+    } else {
+        text.to_string()
+    }
 }
 
 fn maybe_apply_default_global_gitignore(workdir: &std::path::Path) {
@@ -650,12 +682,16 @@ fn maybe_apply_default_global_gitignore(workdir: &std::path::Path) {
         return;
     }
 
+    let color_enabled = stderr_color_enabled();
     match crate::global_gitignore::ensure_codexpotter_ignored(workdir, &status.path) {
         Ok(()) => eprintln!(
             "{} added {} to global gitignore {}",
-            ansi_bold("Notice:"),
-            ansi_cyan(crate::global_gitignore::CODEXPOTTER_GITIGNORE_ENTRY),
-            ansi_cyan(&status.path_display)
+            ansi_bold("Notice:", color_enabled),
+            ansi_cyan(
+                crate::global_gitignore::CODEXPOTTER_GITIGNORE_ENTRY,
+                color_enabled
+            ),
+            ansi_cyan(&status.path_display, color_enabled)
         ),
         Err(err) => eprintln!(
             "warning: failed to update global gitignore {}: {err}",
@@ -949,7 +985,7 @@ mod tests {
 
     #[test]
     fn render_queued_prompts_note_returns_none_when_empty() {
-        assert_eq!(render_queued_prompts_note(&[]), None);
+        assert_eq!(render_queued_prompts_note(&[], false), None);
     }
 
     #[test]
@@ -959,14 +995,34 @@ mod tests {
             String::from("no trailing newline"),
         ];
 
-        let output = render_queued_prompts_note(&prompts).expect("note");
+        let output = render_queued_prompts_note(&prompts, false).expect("note");
         let expected = format!(
             "\n{} You have 2 queued prompts that were not run before exiting.\nCopy/paste them to continue:\n--- queued prompt 1/2 ---\n{}--- end queued prompt 1/2 ---\n--- queued prompt 2/2 ---\n{}\n--- end queued prompt 2/2 ---\n",
-            ansi_bold("Warning:"),
+            ansi_bold("Warning:", false),
             prompts[0],
             prompts[1],
         );
 
         assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn ansi_helpers_return_plain_text_when_color_disabled() {
+        assert_eq!(ansi_bold("Note:", false), "Note:");
+        assert_eq!(ansi_cyan("path", false), "path");
+    }
+
+    #[test]
+    fn render_startup_error_returns_plain_text_when_color_disabled() {
+        let rendered = render_startup_error(
+            &crate::startup::CodexBinError::NotFoundInPath {
+                command: "codex".to_string(),
+            },
+            false,
+        );
+
+        assert!(rendered.ends_with('\n'));
+        assert!(rendered.contains("Failed to find `codex` binary"));
+        assert!(!rendered.contains('\u{1b}'));
     }
 }
