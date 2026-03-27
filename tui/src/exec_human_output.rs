@@ -41,6 +41,7 @@ use crate::history_cell::new_patch_apply_failure;
 use crate::history_cell::new_plan_update;
 use crate::history_cell::new_request_permissions_event;
 use crate::history_cell::new_request_user_input_event;
+use crate::history_cell::new_user_prompt;
 use crate::history_cell::new_warning_event;
 use crate::history_cell_potter::PotterStreamRecoveryRetryCell;
 use crate::history_cell_potter::PotterStreamRecoveryUnrecoverableCell;
@@ -125,7 +126,20 @@ impl ExecHumanRenderer {
                 self.cwd = cfg.cwd.clone();
                 self.stream = StreamController::new(self.width.map(usize::from), &self.cwd);
             }
-            EventMsg::PotterProjectStarted { .. } => {}
+            EventMsg::PotterProjectStarted {
+                user_message,
+                user_prompt_file,
+                ..
+            } => {
+                if let Some(user_message) = user_message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                {
+                    out.push(self.render_user_prompt_block(user_message)?);
+                }
+                out.push(self.render_project_hint_block(user_prompt_file.as_path())?);
+            }
             EventMsg::PotterRoundStarted { current, total } => {
                 out.push(self.render_lines(vec![Line::from(vec![
                     Span::styled(
@@ -610,10 +624,23 @@ impl ExecHumanRenderer {
         self.render_lines(lines)
     }
 
+    fn render_project_hint_block(&self, user_prompt_file: &std::path::Path) -> io::Result<String> {
+        self.render_lines(vec![Line::from(vec![
+            "Project created: ".dim(),
+            user_prompt_file.to_string_lossy().to_string().into(),
+        ])])
+    }
+
     fn render_cell_block(&self, cell: Box<dyn HistoryCell>) -> io::Result<String> {
         self.render_lines(normalize_general_lines(
             cell.display_lines(self.cell_width()),
         ))
+    }
+
+    fn render_user_prompt_block(&self, message: &str) -> io::Result<String> {
+        let mut lines = new_user_prompt(message.to_string()).display_lines(self.cell_width());
+        trim_blank_padding_lines(&mut lines);
+        self.render_lines(lines)
     }
 
     fn render_agent_message_block(
@@ -692,6 +719,25 @@ fn short_git_commit(commit: &str) -> String {
         return commit.to_string();
     }
     commit[..SHORT_SHA_LEN].to_string()
+}
+
+fn trim_blank_padding_lines(lines: &mut Vec<Line<'static>>) {
+    let first_non_blank = lines.iter().position(|line| !line_is_blank(line));
+    let last_non_blank = lines.iter().rposition(|line| !line_is_blank(line));
+
+    match (first_non_blank, last_non_blank) {
+        (Some(first), Some(last)) if first <= last => {
+            let kept = lines.drain(first..=last).collect::<Vec<_>>();
+            *lines = kept;
+        }
+        _ => lines.clear(),
+    }
+}
+
+fn line_is_blank(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .all(|span| span.content.chars().all(char::is_whitespace))
 }
 
 fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
@@ -915,6 +961,27 @@ mod tests {
         assert_eq!(
             blocks,
             vec!["CodexPotter: iteration round 1/10".to_string()]
+        );
+    }
+
+    #[test]
+    fn project_started_keeps_user_prompt_and_project_hint_visible() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let blocks = renderer
+            .handle_event(&EventMsg::PotterProjectStarted {
+                user_message: Some("Fix the failing test".to_string()),
+                working_dir: PathBuf::from("/repo"),
+                project_dir: PathBuf::from(".codexpotter/projects/2026/03/27/1"),
+                user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/27/1/MAIN.md"),
+            })
+            .expect("project started");
+
+        assert_eq!(
+            blocks,
+            vec![
+                "› Fix the failing test".to_string(),
+                "Project created: .codexpotter/projects/2026/03/27/1/MAIN.md".to_string(),
+            ]
         );
     }
 
