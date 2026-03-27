@@ -757,6 +757,15 @@ async fn thread_rollback(
     Ok(())
 }
 
+fn default_collaboration_mode() -> serde_json::Value {
+    serde_json::json!({
+        "mode": "default",
+        "settings": {
+            "developerInstructions": null,
+        },
+    })
+}
+
 async fn handle_op(
     thread_id: &str,
     op: Op,
@@ -785,7 +794,7 @@ async fn handle_op(
                     effort: None,
                     summary: None,
                     output_schema: final_output_json_schema,
-                    collaboration_mode: None,
+                    collaboration_mode: Some(default_collaboration_mode()),
                 },
             };
             send_message(stdin, &request).await?;
@@ -2894,6 +2903,19 @@ mod tests {
     }
 
     #[test]
+    fn default_collaboration_mode_matches_upstream_default_shape() {
+        assert_eq!(
+            default_collaboration_mode(),
+            serde_json::json!({
+                "mode": "default",
+                "settings": {
+                    "developerInstructions": null,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn typed_agent_message_item_completed_emits_agent_message_event() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
         let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
@@ -3456,7 +3478,23 @@ IFS= read -r _line
 echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
 
 # turn/start request
-IFS= read -r _line
+IFS= read -r turn_start
+echo "$turn_start" | grep -q '"method":"turn/start"' || {
+  echo "expected turn/start, got: $turn_start" >&2
+  exit 1
+}
+echo "$turn_start" | grep -q '"collaborationMode":' || {
+  echo "expected collaborationMode, got: $turn_start" >&2
+  exit 1
+}
+echo "$turn_start" | grep -q '"mode":"default"' || {
+  echo "expected default collaboration mode, got: $turn_start" >&2
+  exit 1
+}
+echo "$turn_start" | grep -q '"developerInstructions":null' || {
+  echo "expected null collaboration mode developerInstructions, got: $turn_start" >&2
+  exit 1
+}
 echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
 echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
 echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
