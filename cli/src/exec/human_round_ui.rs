@@ -136,7 +136,9 @@ impl<W: Write> ExecHumanRoundUi<W> {
 }
 
 impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi<W> {
-    fn set_project_started_at(&mut self, _started_at: Instant) {}
+    fn set_project_started_at(&mut self, started_at: Instant) {
+        self.renderer.set_project_started_at(started_at);
+    }
 
     fn render_round<'a>(
         &'a mut self,

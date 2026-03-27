@@ -42,6 +42,7 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell_potter::PotterStreamRecoveryRetryCell;
 use crate::history_cell_potter::PotterStreamRecoveryUnrecoverableCell;
+use crate::reasoning_status::ReasoningStatusTracker;
 use crate::render::line_utils::dim_lines;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
@@ -1324,46 +1325,6 @@ impl AppServerEventProcessor {
     }
 }
 
-struct ReasoningStatusTracker {
-    buffer: String,
-    current_header: Option<String>,
-}
-
-impl ReasoningStatusTracker {
-    fn new() -> Self {
-        Self {
-            buffer: String::new(),
-            current_header: None,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.buffer.clear();
-        self.current_header = None;
-    }
-
-    fn on_section_break(&mut self) {
-        self.reset();
-    }
-
-    fn on_final(&mut self) {
-        self.reset();
-    }
-
-    fn on_delta(&mut self, delta: &str) -> Option<String> {
-        self.buffer.push_str(delta);
-        let header = extract_first_bold(&self.buffer);
-        if let Some(header) = &header {
-            self.current_header = Some(header.clone());
-        }
-        header
-    }
-
-    fn current_header(&self) -> Option<String> {
-        self.current_header.clone()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PromptScreenAction {
     Submitted(String),
@@ -2416,29 +2377,6 @@ fn should_filter_thinking_event(msg: &EventMsg) -> bool {
     )
 }
 
-// Extract the first bold (Markdown) element in the form **...** from `s`.
-// Returns the inner text if found; otherwise `None`.
-fn extract_first_bold(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'*' && bytes[i + 1] == b'*' {
-            let start = i + 2;
-            let mut j = start;
-            while j + 1 < bytes.len() {
-                if bytes[j] == b'*' && bytes[j + 1] == b'*' {
-                    let trimmed = s[start..j].trim();
-                    return (!trimmed.is_empty()).then(|| trimmed.to_string());
-                }
-                j += 1;
-            }
-            return None;
-        }
-        i += 1;
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2673,21 +2611,6 @@ mod tests {
                 delta: "output".to_string(),
             }
         )));
-    }
-
-    #[test]
-    fn extract_first_bold_returns_first_markdown_bold_span() {
-        assert_eq!(
-            extract_first_bold("**Inspecting for code duplication**\n\nmore"),
-            Some("Inspecting for code duplication".to_string())
-        );
-        assert_eq!(extract_first_bold("no bold here"), None);
-        assert_eq!(extract_first_bold("**"), None);
-        assert_eq!(extract_first_bold("**  ** trailing"), None);
-        assert_eq!(
-            extract_first_bold("prefix **first** then **second**"),
-            Some("first".to_string())
-        );
     }
 
     #[test]

@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -24,13 +23,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
-use crate::exec_cell::spinner;
 use crate::render::renderable::Renderable;
-use crate::shimmer::shimmer_spans;
+use crate::status_line::StatusLine;
+use crate::status_line::render_status_line;
 use crate::text_formatting::capitalize_first;
-use crate::token_format::format_tokens_compact;
 use crate::tui::FrameRequester;
-use crate::ui_colors::secondary_color;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
@@ -225,48 +222,23 @@ impl Renderable for StatusIndicatorWidget {
             .schedule_frame_in(Duration::from_millis(32));
         let now = Instant::now();
         let elapsed_duration = self.elapsed_duration_at(now);
-        let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
-
-        let mut spans = Vec::with_capacity(6);
-        spans.push(spinner(Some(self.last_resume_at), self.animations_enabled));
-        spans.push(" ".into());
-        if let Some(prefix) = self.header_prefix.as_deref() {
-            spans.push(Span::styled(
-                prefix.to_string(),
-                Style::default().fg(secondary_color()).bold(),
-            ));
-            if let Some(prefix_elapsed_offset) = self.header_prefix_elapsed_offset {
-                let prefix_elapsed = prefix_elapsed_offset.saturating_add(elapsed_duration);
-                let pretty_prefix_elapsed = fmt_elapsed_compact(prefix_elapsed.as_secs());
-                spans.push(format!(" ({pretty_prefix_elapsed})").dim());
-            }
-            if !self.header.is_empty() {
-                spans.push(" · ".dim());
-            }
-        }
-        if self.animations_enabled {
-            spans.extend(shimmer_spans(&self.header));
-        } else if !self.header.is_empty() {
-            spans.push(self.header.clone().into());
-        }
-        spans.push(" ".into());
-        spans.push(format!("({pretty_elapsed})").dim());
-
-        if self.show_context_window {
-            spans.push(" · ".dim());
-            if let Some(percent) = self.context_window_percent {
-                let percent = percent.clamp(0, 100);
-                spans.push(format!("{percent}% context left").dim());
-            } else if let Some(used_tokens) = self.context_window_used_tokens {
-                let used_fmt = format_tokens_compact(used_tokens);
-                spans.push(format!("{used_fmt} used").dim());
-            } else {
-                spans.push("100% context left".dim());
-            }
-        }
 
         let mut lines = Vec::new();
-        lines.push(Line::from(spans));
+        lines.push(render_status_line(
+            &StatusLine {
+                header: self.header.clone(),
+                header_prefix: self.header_prefix.clone(),
+                header_prefix_elapsed: self
+                    .header_prefix_elapsed_offset
+                    .map(|offset| offset.saturating_add(elapsed_duration)),
+                elapsed: elapsed_duration,
+                context_window_percent: self.context_window_percent,
+                context_window_used_tokens: self.context_window_used_tokens,
+                show_context_window: self.show_context_window,
+            },
+            Some(self.last_resume_at),
+            self.animations_enabled,
+        ));
         if area.height > 1 {
             // If there is enough space, add the details lines below the header.
             let details = self.wrapped_details_lines(area.width);

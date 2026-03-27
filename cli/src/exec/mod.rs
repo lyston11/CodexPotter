@@ -118,6 +118,7 @@ pub async fn run_exec_human(
     let stdout = std::io::stdout();
     let mut ui =
         human_round_ui::ExecHumanRoundUi::new(stdout.lock(), verbosity, width, color_enabled);
+    crate::workflow::round_runner::PotterRoundUi::set_project_started_at(&mut ui, Instant::now());
 
     let prompt_footer = codex_tui::PromptFooterContext::new(
         start_response.working_dir.clone(),

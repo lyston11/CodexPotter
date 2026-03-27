@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_protocol::protocol::TokenUsage;
 use crossterm::queue;
 use crossterm::style::Color as CrosstermColor;
 use crossterm::style::Colors;
@@ -47,7 +48,10 @@ use crate::history_cell_potter::PotterStreamRecoveryRetryCell;
 use crate::history_cell_potter::PotterStreamRecoveryUnrecoverableCell;
 use crate::markdown;
 use crate::multi_agents;
+use crate::reasoning_status::ReasoningStatusTracker;
 use crate::status_indicator_widget::fmt_elapsed_compact;
+use crate::status_line::StatusLine;
+use crate::status_line::render_status_line;
 use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 use crate::ui_colors::secondary_color;
@@ -84,6 +88,13 @@ pub struct ExecHumanRenderer {
     pending_project_summary: Option<PendingProjectSummary>,
     pending_simple_final_message_separator: bool,
     separator_baseline: Option<Instant>,
+    project_started_at: Option<Instant>,
+    status_started_at: Option<Instant>,
+    status_header_prefix: Option<String>,
+    token_usage: TokenUsage,
+    context_usage: TokenUsage,
+    model_context_window: Option<i64>,
+    reasoning_status: ReasoningStatusTracker,
 }
 
 impl ExecHumanRenderer {
@@ -103,7 +114,19 @@ impl ExecHumanRenderer {
             pending_project_summary: None,
             pending_simple_final_message_separator: false,
             separator_baseline: None,
+            project_started_at: None,
+            status_started_at: None,
+            status_header_prefix: None,
+            token_usage: TokenUsage::default(),
+            context_usage: TokenUsage::default(),
+            model_context_window: None,
+            reasoning_status: ReasoningStatusTracker::new(),
         }
+    }
+
+    /// Provide the project start time used by status hints that mirror the live shimmer line.
+    pub fn set_project_started_at(&mut self, started_at: Instant) {
+        self.project_started_at = Some(started_at);
     }
 
     /// Render a fatal error block.
@@ -154,18 +177,23 @@ impl ExecHumanRenderer {
                 self.cwd = cfg.cwd.clone();
                 self.stream = StreamController::new(self.width.map(usize::from), &self.cwd);
             }
-            EventMsg::TurnStarted(_) => {
+            EventMsg::TurnStarted(ev) => {
                 self.pending_simple_final_message_separator = false;
                 self.separator_baseline = Some(Instant::now());
+                self.status_started_at = Some(Instant::now());
+                self.model_context_window = ev.model_context_window;
+                self.reasoning_status.reset();
             }
             EventMsg::PotterProjectStarted {
                 user_prompt_file, ..
             } => {
+                self.project_started_at.get_or_insert_with(Instant::now);
                 out.push(self.render_project_hint_block(user_prompt_file.as_path())?);
             }
             EventMsg::PotterRoundStarted { current, total } => {
                 self.pending_simple_final_message_separator = false;
                 self.separator_baseline = Some(Instant::now());
+                self.status_header_prefix = Some(format!("Round {current}/{total}"));
                 out.push(self.render_lines(vec![Line::from(vec![
                     Span::styled(
                         "CodexPotter: ",
@@ -175,6 +203,14 @@ impl ExecHumanRenderer {
                     ),
                     format!("iteration round {current}/{total}").into(),
                 ])])?);
+            }
+            EventMsg::TokenCount(ev) => {
+                if let Some(info) = &ev.info {
+                    self.token_usage = info.total_token_usage.clone();
+                    self.context_usage = info.last_token_usage.clone();
+                    self.model_context_window =
+                        info.model_context_window.or(self.model_context_window);
+                }
             }
             EventMsg::PotterProjectSucceeded {
                 rounds,
@@ -240,6 +276,31 @@ impl ExecHumanRenderer {
                 }
                 self.saw_agent_delta |= !ev.delta.is_empty();
                 let _ = self.stream.push(&ev.delta);
+            }
+            EventMsg::AgentReasoningDelta(ev) => {
+                if let Some(block) = self.maybe_render_reasoning_status_hint(&ev.delta)? {
+                    out.push(block);
+                }
+            }
+            EventMsg::AgentReasoningRawContentDelta(ev) => {
+                if let Some(block) = self.maybe_render_reasoning_status_hint(&ev.delta)? {
+                    out.push(block);
+                }
+            }
+            EventMsg::AgentReasoningSectionBreak(_) => {
+                self.reasoning_status.on_section_break();
+            }
+            EventMsg::AgentReasoning(ev) => {
+                if let Some(block) = self.maybe_render_reasoning_status_hint(&ev.text)? {
+                    out.push(block);
+                }
+                self.reasoning_status.on_final();
+            }
+            EventMsg::AgentReasoningRawContent(ev) => {
+                if let Some(block) = self.maybe_render_reasoning_status_hint(&ev.text)? {
+                    out.push(block);
+                }
+                self.reasoning_status.on_final();
             }
             EventMsg::AgentMessage(ev) => {
                 if self.verbosity == Verbosity::Minimal {
@@ -615,6 +676,87 @@ impl ExecHumanRenderer {
         Ok(Some(self.render_cell_block(Box::new(cell))?))
     }
 
+    fn maybe_render_reasoning_status_hint(&mut self, delta: &str) -> io::Result<Option<String>> {
+        let Some(header) = self.reasoning_status.on_delta(delta) else {
+            return Ok(None);
+        };
+        self.render_status_hint_block(header).map(Some)
+    }
+
+    fn render_status_hint_block(&self, header: String) -> io::Result<String> {
+        self.render_lines(self.build_status_hint_lines(header))
+    }
+
+    fn build_status_hint_lines(&self, header: String) -> Vec<Line<'static>> {
+        let elapsed = self
+            .status_started_at
+            .map(|started_at| started_at.elapsed())
+            .unwrap_or_default();
+        let header_prefix_elapsed = match (self.project_started_at, self.status_started_at) {
+            (Some(project_started_at), Some(status_started_at)) => Some(
+                status_started_at
+                    .saturating_duration_since(project_started_at)
+                    .saturating_add(elapsed),
+            ),
+            (Some(project_started_at), None) => Some(project_started_at.elapsed()),
+            (None, _) => None,
+        };
+        let (context_window_percent, context_window_used_tokens) =
+            self.current_context_window_display();
+        self.build_status_hint_lines_from_state(
+            header,
+            elapsed,
+            header_prefix_elapsed,
+            context_window_percent,
+            context_window_used_tokens,
+        )
+    }
+
+    fn build_status_hint_lines_from_state(
+        &self,
+        header: String,
+        elapsed: Duration,
+        header_prefix_elapsed: Option<Duration>,
+        context_window_percent: Option<i64>,
+        context_window_used_tokens: Option<i64>,
+    ) -> Vec<Line<'static>> {
+        let mut lines = vec![render_status_line(
+            &StatusLine {
+                header,
+                header_prefix: self.status_header_prefix.clone(),
+                header_prefix_elapsed,
+                elapsed,
+                context_window_percent,
+                context_window_used_tokens,
+                show_context_window: true,
+            },
+            None,
+            false,
+        )];
+        crate::render::line_utils::dim_lines(&mut lines);
+        lines
+    }
+
+    fn current_context_window_display(&self) -> (Option<i64>, Option<i64>) {
+        let Some(context_window) = self
+            .model_context_window
+            .filter(|context_window| *context_window > 0)
+        else {
+            return (
+                None,
+                (self.token_usage.total_tokens > 0).then_some(self.token_usage.total_tokens),
+            );
+        };
+
+        (
+            Some(
+                self.context_usage
+                    .percent_of_context_window_remaining(context_window),
+            ),
+            None,
+        )
+    }
+
     fn render_patch_blocks(
         &self,
         changes: std::collections::HashMap<PathBuf, codex_protocol::protocol::FileChange>,
@@ -936,6 +1078,8 @@ mod tests {
     use codex_protocol::approvals::GuardianRiskLevel;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
+    use codex_protocol::protocol::AgentReasoningDeltaEvent;
+    use codex_protocol::protocol::AgentReasoningEvent;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
@@ -947,8 +1091,28 @@ mod tests {
     use codex_protocol::request_permissions::RequestPermissionProfile;
     use codex_protocol::request_permissions::RequestPermissionsEvent;
     use pretty_assertions::assert_eq;
+    use ratatui::style::Modifier;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    fn line_to_plain_string(line: &Line<'_>) -> String {
+        let mut out = String::new();
+        for span in &line.spans {
+            out.push_str(span.content.as_ref());
+        }
+        out
+    }
+
+    fn assert_all_spans_dimmed(lines: &[Line<'_>]) {
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .all(|span| span.style.add_modifier.contains(Modifier::DIM)),
+            "expected all spans to be dimmed: {:?}",
+            lines.iter().map(line_to_plain_string).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn minimal_multi_file_patch_renders_each_file_without_changed_header() {
@@ -1335,5 +1499,57 @@ mod tests {
             }))
             .expect("image event");
         assert!(image_blocks.is_empty());
+    }
+
+    #[test]
+    fn reasoning_status_hint_uses_shimmer_line_format_and_dims_output() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        renderer.status_header_prefix = Some("Round 1/10".to_string());
+
+        let lines = renderer.build_status_hint_lines_from_state(
+            "Updating progress file".to_string(),
+            Duration::from_secs(2650),
+            Some(Duration::from_secs(2650)),
+            Some(12),
+            None,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            line_to_plain_string(&lines[0]),
+            "• Round 1/10 (44m 10s) · Updating progress file (44m 10s) · 12% context left"
+        );
+        assert_all_spans_dimmed(&lines);
+    }
+
+    #[test]
+    fn reasoning_status_hint_emits_once_until_header_changes() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: Some(128_000),
+        }));
+
+        let first = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "**Updating progress file**".to_string(),
+            }))
+            .expect("first reasoning delta");
+        assert_eq!(first.len(), 1);
+        assert!(first[0].contains("Updating progress file"));
+
+        let second = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "\nMore detail without a new title".to_string(),
+            }))
+            .expect("second reasoning delta");
+        assert!(second.is_empty());
+
+        let third = renderer
+            .handle_event(&EventMsg::AgentReasoning(AgentReasoningEvent {
+                text: "**Updating progress file**\nDone.".to_string(),
+            }))
+            .expect("reasoning final");
+        assert!(third.is_empty());
     }
 }
