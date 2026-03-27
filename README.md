@@ -77,7 +77,11 @@ codex-potter --yolo
 
 ⚠️ **Note:** Unlike Codex, every follow up prompt turns into a **new** task, **not sharing previous contexts**. Assign tasks to CodexPotter, instead of chat with it.
 
-### Prompting tips
+&ensp;
+
+## Tips
+
+### Prompt Examples
 
 **✅ tasks with clear goals or scopes:**
 
@@ -95,7 +99,19 @@ CodexPotter is not suitable for such tasks:
 - Question-answering
 - Brainstorming sessions
 
-### Howto: Ask followup questions in codex
+### Polish Enhancement Rounds
+
+GPT5.2 or GPT5.4 like introducing more fallback checks, which may not be what you want and may be amplified in CodexPotter's review process.
+To avoid that, try add instructions to AGENTS.md like:
+
+```markdown
+- When polishing codes, follow the first principle, try to simplify the solution, instead of bloating the code with extra checks, fallbacks, or safety nets that may hide potential issues.
+  The goal of polishing is to find real missing pieces, make the code more elegant, simple and efficient, not to add more layers of complexity.
+```
+
+&ensp;
+
+## Howto: Ask followup questions in codex
 
 Just pass the project file to codex, like:
 
