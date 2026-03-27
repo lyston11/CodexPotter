@@ -12,6 +12,7 @@ use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 use crossterm::queue;
 use crossterm::style::Color as CrosstermColor;
@@ -81,6 +82,8 @@ pub struct ExecHumanRenderer {
     plan_stream: Option<PlanStreamController>,
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
     pending_project_summary: Option<PendingProjectSummary>,
+    pending_simple_final_message_separator: bool,
+    separator_baseline: Option<Instant>,
 }
 
 impl ExecHumanRenderer {
@@ -97,6 +100,8 @@ impl ExecHumanRenderer {
             plan_stream: None,
             pending_minimal_agent_message_lines: None,
             pending_project_summary: None,
+            pending_simple_final_message_separator: false,
+            separator_baseline: None,
         }
     }
 
@@ -126,6 +131,10 @@ impl ExecHumanRenderer {
                 self.cwd = cfg.cwd.clone();
                 self.stream = StreamController::new(self.width.map(usize::from), &self.cwd);
             }
+            EventMsg::TurnStarted(_) => {
+                self.pending_simple_final_message_separator = false;
+                self.separator_baseline = Some(Instant::now());
+            }
             EventMsg::PotterProjectStarted {
                 user_message,
                 user_prompt_file,
@@ -141,6 +150,8 @@ impl ExecHumanRenderer {
                 out.push(self.render_project_hint_block(user_prompt_file.as_path())?);
             }
             EventMsg::PotterRoundStarted { current, total } => {
+                self.pending_simple_final_message_separator = false;
+                self.separator_baseline = Some(Instant::now());
                 out.push(self.render_lines(vec![Line::from(vec![
                     Span::styled(
                         "CodexPotter: ",
@@ -232,6 +243,7 @@ impl ExecHumanRenderer {
                         self.build_agent_message_lines(&ev.message)
                     };
                     if !lines.is_empty() {
+                        self.push_simple_final_message_separator(&mut out)?;
                         out.push(self.render_lines(lines)?);
                     }
                 }
@@ -317,6 +329,7 @@ impl ExecHumanRenderer {
                         Line::from(format!("  {}", ev.query)),
                     ];
                     out.push(self.render_lines(block)?);
+                    self.mark_work_activity();
                 }
             }
             EventMsg::ViewImageToolCall(ev) => {
@@ -329,6 +342,7 @@ impl ExecHumanRenderer {
                         Line::from(vec![Span::from("  "), Span::from(path).dim()]),
                     ];
                     out.push(self.render_lines(block)?);
+                    self.mark_work_activity();
                 }
             }
             EventMsg::ExecCommandEnd(ev) => {
@@ -337,6 +351,7 @@ impl ExecHumanRenderer {
                     out.extend(self.flush_plan_stream()?);
                     if let Some(block) = self.render_exec_command_end(ev)? {
                         out.push(block);
+                        self.mark_work_activity();
                     }
                 }
             }
@@ -344,13 +359,18 @@ impl ExecHumanRenderer {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
                 if ev.success {
-                    out.extend(self.render_patch_blocks(ev.changes.clone())?);
+                    let patch_blocks = self.render_patch_blocks(ev.changes.clone())?;
+                    if !patch_blocks.is_empty() {
+                        out.extend(patch_blocks);
+                        self.mark_work_activity();
+                    }
                 } else {
                     out.push(
                         self.render_cell_block(Box::new(new_patch_apply_failure(
                             ev.stderr.clone(),
                         )))?,
                     );
+                    self.mark_work_activity();
                 }
             }
             EventMsg::HookStarted(ev) => {
@@ -365,6 +385,7 @@ impl ExecHumanRenderer {
                     message.push_str(status_message);
                 }
                 out.push(self.render_lines(vec![Line::from(message)])?);
+                self.mark_work_activity();
             }
             EventMsg::HookCompleted(ev) => {
                 out.extend(self.flush_agent_output(false)?);
@@ -383,11 +404,13 @@ impl ExecHumanRenderer {
                     lines.push(Line::from(format!("  {prefix}{}", entry.text)));
                 }
                 out.push(self.render_lines(lines)?);
+                self.mark_work_activity();
             }
             EventMsg::CollabAgentSpawnEnd(ev) => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::spawn_end(ev.clone())))?);
+                self.mark_work_activity();
             }
             EventMsg::CollabAgentInteractionEnd(ev) => {
                 out.extend(self.flush_agent_output(false)?);
@@ -395,6 +418,7 @@ impl ExecHumanRenderer {
                 out.push(
                     self.render_cell_block(Box::new(multi_agents::interaction_end(ev.clone())))?,
                 );
+                self.mark_work_activity();
             }
             EventMsg::CollabWaitingBegin(ev) => {
                 out.extend(self.flush_agent_output(false)?);
@@ -402,26 +426,31 @@ impl ExecHumanRenderer {
                 out.push(
                     self.render_cell_block(Box::new(multi_agents::waiting_begin(ev.clone())))?,
                 );
+                self.mark_work_activity();
             }
             EventMsg::CollabWaitingEnd(ev) => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::waiting_end(ev.clone())))?);
+                self.mark_work_activity();
             }
             EventMsg::CollabCloseEnd(ev) => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::close_end(ev.clone())))?);
+                self.mark_work_activity();
             }
             EventMsg::CollabResumeBegin(ev) => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::resume_begin(ev.clone())))?);
+                self.mark_work_activity();
             }
             EventMsg::CollabResumeEnd(ev) => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::resume_end(ev.clone())))?);
+                self.mark_work_activity();
             }
             EventMsg::PotterStreamRecoveryUpdate {
                 attempt,
@@ -489,6 +518,7 @@ impl ExecHumanRenderer {
             let lines = self.stream.take_finalized_lines();
             self.saw_agent_delta = false;
             if !lines.is_empty() {
+                self.push_simple_final_message_separator(&mut out)?;
                 out.push(self.render_agent_message_block(lines, false)?);
             }
         }
@@ -522,7 +552,10 @@ impl ExecHumanRenderer {
         let Some(cell) = controller.finalize() else {
             return Ok(Vec::new());
         };
-        Ok(vec![self.render_cell_block(cell)?])
+        let mut out = Vec::new();
+        self.push_simple_final_message_separator(&mut out)?;
+        out.push(self.render_cell_block(cell)?);
+        Ok(out)
     }
 
     fn render_exec_command_end(
@@ -560,6 +593,12 @@ impl ExecHumanRenderer {
         &self,
         changes: std::collections::HashMap<PathBuf, codex_protocol::protocol::FileChange>,
     ) -> io::Result<Vec<String>> {
+        if self.verbosity == Verbosity::Simple {
+            return Ok(vec![self.render_cell_block(Box::new(
+                crate::history_cell::new_patch_event(changes, &self.cwd, self.verbosity),
+            ))?]);
+        }
+
         let lines =
             create_compact_diff_summary(&changes, &self.cwd, usize::from(self.cell_width()));
         if lines.is_empty() {
@@ -629,6 +668,32 @@ impl ExecHumanRenderer {
             "Project created: ".dim(),
             user_prompt_file.to_string_lossy().to_string().into(),
         ])])
+    }
+
+    fn mark_work_activity(&mut self) {
+        if self.verbosity != Verbosity::Simple {
+            return;
+        }
+        self.pending_simple_final_message_separator = true;
+        if self.separator_baseline.is_none() {
+            self.separator_baseline = Some(Instant::now());
+        }
+    }
+
+    fn push_simple_final_message_separator(&mut self, out: &mut Vec<String>) -> io::Result<()> {
+        if self.verbosity != Verbosity::Simple || !self.pending_simple_final_message_separator {
+            return Ok(());
+        }
+
+        let elapsed_seconds = self
+            .separator_baseline
+            .map(|baseline| baseline.elapsed().as_secs());
+        self.pending_simple_final_message_separator = false;
+        self.separator_baseline = Some(Instant::now());
+        out.push(self.render_cell_block(Box::new(
+            crate::history_cell::FinalMessageSeparator::new(elapsed_seconds),
+        ))?);
+        Ok(())
     }
 
     fn render_cell_block(&self, cell: Box<dyn HistoryCell>) -> io::Result<String> {
@@ -865,8 +930,11 @@ fn write_line(writer: &mut impl Write, line: &Line<'_>, color_enabled: bool) -> 
 mod tests {
     use super::*;
     use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::ExecCommandEndEvent;
+    use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::FileChange;
     use codex_protocol::protocol::PatchApplyEndEvent;
+    use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::ViewImageToolCallEvent;
     use codex_protocol::protocol::WebSearchEndEvent;
     use pretty_assertions::assert_eq;
@@ -919,6 +987,37 @@ mod tests {
                 .iter()
                 .any(|block| block.contains("Added b.txt (+1 -0)"))
         );
+    }
+
+    #[test]
+    fn simple_patch_keeps_full_diff_block_visible() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(120), false);
+        let mut changes = HashMap::new();
+        changes.insert(
+            PathBuf::from("/repo/a.txt"),
+            FileChange::Update {
+                unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                move_path: None,
+            },
+        );
+
+        renderer.cwd = PathBuf::from("/repo");
+        let blocks = renderer
+            .handle_event(&EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch".to_string(),
+                turn_id: String::new(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes,
+            }))
+            .expect("render patch");
+
+        assert_eq!(blocks.len(), 1);
+        let block = &blocks[0];
+        assert!(block.contains("Edited a.txt (+1 -1)"));
+        assert!(block.contains("-old"));
+        assert!(block.contains("+new"));
     }
 
     #[test]
@@ -1032,6 +1131,47 @@ mod tests {
             image_blocks,
             vec!["Viewed Image\n  screenshot.png".to_string()]
         );
+    }
+
+    #[test]
+    fn simple_mode_inserts_worked_separator_before_follow_up_agent_message() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        let command_blocks = renderer
+            .handle_event(&EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "cmd-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                command: vec!["bash".to_string(), "-lc".to_string(), "true".to_string()],
+                cwd: PathBuf::from("/repo"),
+                aggregated_output: String::new(),
+                parsed_cmd: Vec::new(),
+                exit_code: 0,
+                duration: Duration::from_secs(1),
+                formatted_output: String::new(),
+                stdout: String::new(),
+                stderr: String::new(),
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                process_id: None,
+            }))
+            .expect("exec command");
+        assert_eq!(command_blocks.len(), 1);
+
+        let blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "done".to_string(),
+                    phase: None,
+                },
+            ))
+            .expect("agent message");
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].contains("Worked for "));
+        assert_eq!(blocks[1], "done");
     }
 
     #[test]
