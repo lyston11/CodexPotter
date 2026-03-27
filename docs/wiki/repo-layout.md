@@ -57,8 +57,9 @@ Key modules (high-level):
   the app-server asks for approvals.
 - `cli/src/app_server/upstream_protocol/protocol/`: local copy of the app-server JSON-RPC schema (v1/v2).
 - `cli/src/codex_compat.rs`: maintains a `~/.codexpotter/codex-compat/` directory and symlinks
-  `$CODEX_HOME/{config.toml,auth.json}` into it (defaults to `~/.codex/{config.toml,auth.json}` when
-  `CODEX_HOME` is unset); used to point the app-server at a stable "Codex home".
+  `$CODEX_HOME/{config.toml,auth.json,agents,skills,rules,AGENTS.md}` into it (defaults to the same
+  entries under `~/.codex` when `CODEX_HOME` is unset); used to point the app-server at a stable
+  "Codex home".
 - `cli/src/config.rs`: `~/.codexpotter/config.toml` persistence
   (currently mainly for the global gitignore prompt).
 

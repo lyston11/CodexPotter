@@ -2,7 +2,7 @@
 //!
 //! CodexPotter needs to spawn the upstream `codex` backend while keeping its own state under
 //! `~/.codexpotter/`. The upstream backend expects a `CODEX_HOME` directory containing config,
-//! auth, skills, and rules. To avoid mutating the user's real Codex home, we create a
+//! auth, agent configs, skills, and rules. To avoid mutating the user's real Codex home, we create a
 //! `~/.codexpotter/codex-compat/` directory that symlinks to the corresponding files/dirs in the
 //! real `CODEX_HOME` (or `~/.codex` when unset).
 //!
@@ -13,6 +13,15 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
+
+const CODEX_COMPAT_ENTRY_NAMES: &[&str] = &[
+    "AGENTS.md",
+    "config.toml",
+    "auth.json",
+    "agents",
+    "skills",
+    "rules",
+];
 
 pub fn ensure_default_codex_compat_home() -> anyhow::Result<Option<PathBuf>> {
     let Some(home) = dirs::home_dir() else {
@@ -54,20 +63,12 @@ fn ensure_codex_compat_home(home: &Path, real_codex_home: &Path) -> anyhow::Resu
     std::fs::create_dir_all(&codex_home)
         .with_context(|| format!("create directory {}", codex_home.display()))?;
 
-    ensure_symlink(
-        &codex_home.join("AGENTS.md"),
-        &real_codex_home.join("AGENTS.md"),
-    )?;
-    ensure_symlink(
-        &codex_home.join("config.toml"),
-        &real_codex_home.join("config.toml"),
-    )?;
-    ensure_symlink(
-        &codex_home.join("auth.json"),
-        &real_codex_home.join("auth.json"),
-    )?;
-    ensure_symlink(&codex_home.join("skills"), &real_codex_home.join("skills"))?;
-    ensure_symlink(&codex_home.join("rules"), &real_codex_home.join("rules"))?;
+    for entry_name in CODEX_COMPAT_ENTRY_NAMES {
+        ensure_symlink(
+            &codex_home.join(entry_name),
+            &real_codex_home.join(entry_name),
+        )?;
+    }
 
     Ok(codex_home)
 }
@@ -113,17 +114,20 @@ mod tests {
 
         assert!(codex_home.is_dir());
 
-        let config_link = codex_home.join("config.toml");
-        let auth_link = codex_home.join("auth.json");
-
-        let config_meta = std::fs::symlink_metadata(&config_link).expect("config symlink");
-        assert!(config_meta.file_type().is_symlink());
-        let auth_meta = std::fs::symlink_metadata(&auth_link).expect("auth symlink");
-        assert!(auth_meta.file_type().is_symlink());
-        assert_eq!(
-            std::fs::read_link(&config_link).expect("read config link"),
-            real_codex_home.path().join("config.toml"),
-        );
+        for entry_name in CODEX_COMPAT_ENTRY_NAMES {
+            let link_path = codex_home.join(entry_name);
+            let link_meta = std::fs::symlink_metadata(&link_path)
+                .unwrap_or_else(|err| panic!("missing symlink {entry_name}: {err}"));
+            assert!(
+                link_meta.file_type().is_symlink(),
+                "{entry_name} should be a symlink"
+            );
+            assert_eq!(
+                std::fs::read_link(&link_path)
+                    .unwrap_or_else(|err| panic!("failed to read {entry_name} symlink: {err}")),
+                real_codex_home.path().join(entry_name),
+            );
+        }
 
         // Running it again should be a no-op (even if the targets are missing).
         let codex_home_again = ensure_codex_compat_home(home_dir.path(), real_codex_home.path())
