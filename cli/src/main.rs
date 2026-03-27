@@ -6,8 +6,8 @@
 //!   provides the long-lived `codex-potter app-server` implementation (project control plane).
 //! - `workflow`: Orchestrates CodexPotter projects/rounds, persists `potter-rollout.jsonl`, and
 //!   supports `resume` by replaying recorded events.
-//! - `exec`: Runs CodexPotter non-interactively and emits a machine-readable JSONL stream
-//!   (`codex-potter exec --json`).
+//! - `exec`: Runs CodexPotter non-interactively, either as a human-readable transcript or a
+//!   machine-readable JSONL stream (`codex-potter exec --json`).
 //!
 //! Interactive mode (default) uses the `codex-tui` crate for rendering; the TUI is kept as a pure
 //! renderer that is driven by the `EventMsg` stream from the app-server.
@@ -63,6 +63,22 @@ impl CliSandbox {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+enum CliVerbosity {
+    Minimal,
+    Simple,
+}
+
+impl From<CliVerbosity> for codex_tui::Verbosity {
+    fn from(value: CliVerbosity) -> Self {
+        match value {
+            CliVerbosity::Minimal => codex_tui::Verbosity::Minimal,
+            CliVerbosity::Simple => codex_tui::Verbosity::Simple,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author = "Codex", version, about = "Run CodexPotter interactively")]
 struct Cli {
@@ -109,13 +125,16 @@ enum CliCommand {
         /// Project path to resolve to a unique `MAIN.md`. If omitted, open a picker UI.
         project_path: Option<PathBuf>,
     },
-    /// Run CodexPotter non-interactively and emit a machine-readable JSONL event stream.
+    /// Run CodexPotter non-interactively.
     Exec {
         /// Prompt to run. If omitted, read from stdin.
         prompt: Option<String>,
         /// Emit a strict JSONL event stream to stdout.
         #[arg(long)]
         json: bool,
+        /// Override transcript verbosity for human-readable stdout rendering.
+        #[arg(long, value_enum)]
+        verbosity: Option<CliVerbosity>,
     },
     /// Run a long-lived JSON-RPC app-server that encapsulates CodexPotter project logic.
     ///
@@ -135,6 +154,16 @@ fn resolve_codex_bin_or_exit(codex_bin: &str) -> String {
         Ok(resolved) => resolved.command_for_spawn,
         Err(err) => {
             eprint!("{}", err.render_ansi());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn resolve_workdir_or_exit() -> PathBuf {
+    match std::env::current_dir() {
+        Ok(workdir) => workdir,
+        Err(err) => {
+            eprintln!("error: resolve current directory: {err}");
             std::process::exit(1);
         }
     }
@@ -163,6 +192,30 @@ fn resolve_codex_bin_or_exec_json_exit(codex_bin: &str) -> String {
     }
 }
 
+fn resolve_exec_human_verbosity(
+    cli_override: Option<CliVerbosity>,
+    configured: Option<codex_tui::Verbosity>,
+) -> codex_tui::Verbosity {
+    cli_override
+        .map(codex_tui::Verbosity::from)
+        .or(configured)
+        .unwrap_or(codex_tui::Verbosity::Minimal)
+}
+
+fn load_exec_human_verbosity(cli_override: Option<CliVerbosity>) -> codex_tui::Verbosity {
+    if cli_override.is_some() {
+        return resolve_exec_human_verbosity(cli_override, None);
+    }
+
+    match codex_tui::load_potter_tui_verbosity() {
+        Ok(configured) => resolve_exec_human_verbosity(None, configured),
+        Err(err) => {
+            eprintln!("warning: failed to load TUI verbosity: {err}");
+            codex_tui::Verbosity::Minimal
+        }
+    }
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
@@ -172,25 +225,44 @@ async fn main() -> anyhow::Result<()> {
     );
     let upstream_cli_args = cli.upstream_cli_args.clone();
 
-    if let Some(CliCommand::Exec { prompt, json }) = cli.command.as_ref() {
-        if !json {
-            eprintln!("error: currently only --json output is supported for exec");
-            std::process::exit(1);
-        }
-
-        let workdir = resolve_workdir_or_exec_json_exit();
+    if let Some(CliCommand::Exec {
+        prompt,
+        json,
+        verbosity,
+    }) = cli.command.as_ref()
+    {
+        let workdir = if *json {
+            resolve_workdir_or_exec_json_exit()
+        } else {
+            resolve_workdir_or_exit()
+        };
         maybe_apply_default_global_gitignore(&workdir);
-        let codex_bin = resolve_codex_bin_or_exec_json_exit(&cli.codex_bin);
 
-        let exit_code = crate::exec::run_exec_json(
-            &workdir,
-            prompt.clone(),
-            cli.rounds,
-            codex_bin,
-            backend_launch,
-            upstream_cli_args,
-        )
-        .await;
+        let exit_code = if *json {
+            let codex_bin = resolve_codex_bin_or_exec_json_exit(&cli.codex_bin);
+            crate::exec::run_exec_json(
+                &workdir,
+                prompt.clone(),
+                cli.rounds,
+                codex_bin,
+                backend_launch,
+                upstream_cli_args,
+            )
+            .await
+        } else {
+            let codex_bin = resolve_codex_bin_or_exit(&cli.codex_bin);
+            crate::exec::run_exec_human(
+                &workdir,
+                prompt.clone(),
+                cli.rounds,
+                codex_bin,
+                backend_launch,
+                upstream_cli_args,
+                load_exec_human_verbosity(*verbosity),
+            )
+            .await
+        };
+
         std::process::exit(exit_code);
     }
 
@@ -765,15 +837,68 @@ mod tests {
     }
 
     #[test]
-    fn exec_subcommand_parses_prompt_and_json_flag() {
-        let cli =
-            Cli::try_parse_from(["codex-potter", "exec", "hello", "--json"]).expect("parse args");
+    fn exec_subcommand_parses_prompt_json_flag_and_verbosity() {
+        let cli = Cli::try_parse_from([
+            "codex-potter",
+            "exec",
+            "hello",
+            "--json",
+            "--verbosity",
+            "simple",
+        ])
+        .expect("parse args");
 
-        let Some(CliCommand::Exec { prompt, json }) = cli.command else {
+        let Some(CliCommand::Exec {
+            prompt,
+            json,
+            verbosity,
+        }) = cli.command
+        else {
             panic!("expected exec command, got: {:?}", cli.command);
         };
         assert_eq!(prompt, Some("hello".to_string()));
         assert!(json);
+        assert_eq!(verbosity, Some(CliVerbosity::Simple));
+    }
+
+    #[test]
+    fn exec_subcommand_defaults_to_human_output() {
+        let cli = Cli::try_parse_from(["codex-potter", "exec", "hello"]).expect("parse args");
+
+        let Some(CliCommand::Exec {
+            prompt,
+            json,
+            verbosity,
+        }) = cli.command
+        else {
+            panic!("expected exec command, got: {:?}", cli.command);
+        };
+        assert_eq!(prompt, Some("hello".to_string()));
+        assert!(!json);
+        assert_eq!(verbosity, None);
+    }
+
+    #[test]
+    fn resolve_exec_human_verbosity_prefers_cli_override() {
+        assert_eq!(
+            resolve_exec_human_verbosity(
+                Some(CliVerbosity::Minimal),
+                Some(codex_tui::Verbosity::Simple)
+            ),
+            codex_tui::Verbosity::Minimal
+        );
+    }
+
+    #[test]
+    fn resolve_exec_human_verbosity_uses_config_or_minimal_default() {
+        assert_eq!(
+            resolve_exec_human_verbosity(None, Some(codex_tui::Verbosity::Simple)),
+            codex_tui::Verbosity::Simple
+        );
+        assert_eq!(
+            resolve_exec_human_verbosity(None, None),
+            codex_tui::Verbosity::Minimal
+        );
     }
 
     #[test]

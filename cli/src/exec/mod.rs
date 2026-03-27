@@ -1,15 +1,19 @@
-//! Non-interactive `exec --json` runner.
+//! Non-interactive `exec` runner.
 //!
-//! `codex-potter exec --json` is intended for automation and tooling integration. It runs a
-//! CodexPotter project in headless mode and emits newline-delimited JSON events to stdout.
+//! `codex-potter exec` runs a CodexPotter project headlessly. It supports:
+//! - a human-readable append-only stdout transcript (default)
+//! - a machine-readable JSONL event stream (`--json`)
 //!
 //! Design notes:
 //! - Output is a strict superset of upstream `codex exec --json` events (see [`ExecJsonlEvent`]).
 //! - Interactive requests (e.g. `RequestUserInput`) are treated as fatal because `exec` is
 //!   non-interactive.
+//! - Human-readable `exec` output is a codex-potter divergence from upstream Codex: it reuses the
+//!   interactive visibility policy but stays append-only and never folds/coalesces prior output.
 //! - Preflight failures should still produce a single JSONL `error` event so downstream consumers
 //!   can handle failures uniformly.
 
+mod human_round_ui;
 mod jsonl;
 
 #[cfg(test)]
@@ -17,6 +21,7 @@ mod json_round_ui;
 
 pub use jsonl::*;
 
+use std::io::IsTerminal;
 use std::io::Read as _;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -27,6 +32,171 @@ use std::time::Instant;
 use anyhow::Context;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PotterProjectOutcome;
+
+pub async fn run_exec_human(
+    workdir: &Path,
+    prompt: Option<String>,
+    rounds: NonZeroUsize,
+    codex_bin: String,
+    backend_launch: crate::app_server::AppServerLaunchConfig,
+    upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+    verbosity: codex_tui::Verbosity,
+) -> i32 {
+    let prompt = match prompt {
+        Some(prompt) => prompt,
+        None => match read_prompt_from_stdin() {
+            Ok(prompt) => prompt,
+            Err(err) => {
+                eprintln!("error: {err:#}");
+                return 1;
+            }
+        },
+    };
+
+    if prompt.trim().is_empty() {
+        eprintln!("error: prompt is empty");
+        return 1;
+    }
+
+    let rounds_total_u32 = match crate::rounds::round_budget_to_u32(rounds) {
+        Ok(rounds_total_u32) => rounds_total_u32,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return 1;
+        }
+    };
+
+    let mut client = match crate::app_server::potter::PotterAppServerClient::spawn(
+        workdir.to_path_buf(),
+        codex_bin,
+        rounds,
+        backend_launch,
+        upstream_cli_args,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return 1;
+        }
+    };
+
+    if let Err(err) = client.initialize().await {
+        let _ = client.shutdown().await;
+        eprintln!("error: {err:#}");
+        return 1;
+    }
+
+    let mut buffered_events = Vec::new();
+    let start_response = match client
+        .project_start(
+            crate::app_server::potter::ProjectStartParams {
+                user_message: prompt,
+                cwd: Some(workdir.to_path_buf()),
+                rounds: Some(rounds_total_u32),
+                event_mode: Some(crate::app_server::potter::PotterEventMode::Interactive),
+            },
+            &mut buffered_events,
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            let _ = client.shutdown().await;
+            return 1;
+        }
+    };
+
+    let color_enabled = supports_color::on_cached(supports_color::Stream::Stdout).is_some();
+    let width = if std::io::stdout().is_terminal() {
+        crossterm::terminal::size().ok().map(|(width, _)| width)
+    } else {
+        None
+    };
+    let stdout = std::io::stdout();
+    let mut ui =
+        human_round_ui::ExecHumanRoundUi::new(stdout.lock(), verbosity, width, color_enabled);
+
+    let prompt_footer = codex_tui::PromptFooterContext::new(
+        start_response.working_dir.clone(),
+        start_response.git_branch.clone(),
+    );
+
+    let exit = crate::workflow::project_render_loop::run_potter_project_render_loop(
+        &mut ui,
+        &mut client,
+        &start_response.project_id,
+        crate::workflow::project_render_loop::PotterProjectRenderOptions {
+            turn_prompt: crate::workflow::project::fixed_prompt()
+                .trim_end()
+                .to_string(),
+            prompt_footer,
+            pad_before_first_cell: false,
+            initial_status_header_prefix: None,
+        },
+        buffered_events,
+    )
+    .await;
+
+    let exit_code = match exit {
+        Ok(crate::workflow::project_render_loop::PotterProjectRenderExit::Completed {
+            outcome,
+        }) => {
+            let (outcome, _message) = exec_project_outcome(&outcome);
+            if matches!(
+                outcome,
+                crate::exec::PotterProjectCompletedOutcome::Succeeded
+            ) {
+                0
+            } else {
+                1
+            }
+        }
+        Ok(crate::workflow::project_render_loop::PotterProjectRenderExit::Interrupted {
+            ..
+        }) => {
+            let _ = client
+                .project_interrupt(
+                    crate::app_server::potter::ProjectInterruptParams {
+                        project_id: start_response.project_id.clone(),
+                    },
+                    &mut Vec::new(),
+                )
+                .await;
+            eprintln!("error: exec human mode cannot resolve interrupted projects");
+            1
+        }
+        Ok(crate::workflow::project_render_loop::PotterProjectRenderExit::UserRequested)
+        | Ok(crate::workflow::project_render_loop::PotterProjectRenderExit::FatalExitRequested) => {
+            let _ = client
+                .project_interrupt(
+                    crate::app_server::potter::ProjectInterruptParams {
+                        project_id: start_response.project_id.clone(),
+                    },
+                    &mut Vec::new(),
+                )
+                .await;
+            1
+        }
+        Err(err) => {
+            let _ = client
+                .project_interrupt(
+                    crate::app_server::potter::ProjectInterruptParams {
+                        project_id: start_response.project_id.clone(),
+                    },
+                    &mut Vec::new(),
+                )
+                .await;
+            eprintln!("error: {err:#}");
+            1
+        }
+    };
+
+    let _ = client.shutdown().await;
+    exit_code
+}
 
 pub async fn run_exec_json(
     workdir: &Path,
@@ -77,6 +247,7 @@ pub async fn run_exec_json(
     };
 
     if let Err(err) = client.initialize().await {
+        let _ = client.shutdown().await;
         let _ = write_exec_json_preflight_error(&format!("{err:#}"));
         return 1;
     }

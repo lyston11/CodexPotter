@@ -310,6 +310,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "supports-color",
  "tempfile",
  "tokio",
  "toml_edit",

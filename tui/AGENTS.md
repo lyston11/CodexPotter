@@ -51,6 +51,9 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Consecutive `Viewed Image` items are coalesced into one block in Simple mode, preserve event order, and render live as new paths arrive; Minimal mode hides them.
 - Consecutive `Searched` items are coalesced into one block in Simple mode and render live as new queries arrive; Minimal mode hides them.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success / budget exhaustion).
+- `codex-potter exec` without `--json` uses a separate append-only renderer that follows the same
+  broad visibility policy as interactive verbosity, but never folds/coalesces prior output and
+  renders Potter round/summary markers as plain text blocks.
 
 ### Shimmer
 

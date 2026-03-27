@@ -16,6 +16,7 @@ mod custom_terminal;
 mod diff_render;
 mod exec_cell;
 mod exec_command;
+mod exec_human_output;
 mod external_editor;
 mod external_editor_integration;
 mod file_search;
@@ -66,6 +67,7 @@ mod wrapping;
 mod test_backend;
 
 pub use bottom_pane::PromptFooterContext;
+pub use exec_human_output::ExecHumanRenderer;
 pub use exit::AppExitInfo;
 pub use exit::ExitReason;
 pub use global_gitignore_prompt::GlobalGitignorePromptOutcome;
@@ -79,4 +81,6 @@ pub use update_action::UpdateAction;
 pub use version::CODEX_POTTER_VERSION;
 
 pub use markdown_render::render_markdown_text;
+pub use potter_config::load_potter_tui_verbosity;
 pub use startup_setup::StartupSetupStep;
+pub use verbosity::Verbosity;

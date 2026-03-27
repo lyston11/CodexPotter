@@ -68,6 +68,30 @@ codex-potter --yolo resume .codexpotter/projects/2026/02/01/1
 
 ## Commands
 
+### `exec [PROMPT]`
+
+Runs CodexPotter headlessly from the current working directory.
+
+- Human-readable mode is the default: it prints an append-only transcript to stdout.
+- `--json` switches stdout to the machine-readable JSONL event stream.
+- If `PROMPT` is omitted, the prompt is read from stdin.
+- Human-readable mode follows the same visibility policy as interactive verbosity:
+  - default comes from `~/.codexpotter/config.toml` `[tui].verbosity`
+  - when no verbosity is configured yet, it defaults to `minimal`
+  - `--verbosity <minimal|simple>` overrides the configured value for this run only
+- Human-readable mode does not reuse interactive folding/coalescing. It renders the same class of
+  content, but every block is emitted append-only so the output can be piped safely.
+- Color output follows terminal capability detection and respects `NO_COLOR` / `FORCE_COLOR`.
+
+Examples:
+
+```sh
+codex-potter exec "Fix the failing test"
+printf '%s\n' "Summarize this repository" | codex-potter exec
+codex-potter exec --verbosity simple "Review the latest diff"
+codex-potter exec --json "Fix the failing test"
+```
+
 ### `resume [PROJECT_PATH]`
 
 Replays a previous CodexPotter project (history-only) and then prompts for a follow-up action.
@@ -108,8 +132,12 @@ See `resume.md` for how replay works and which artifacts are required.
 
 - `codex-potter` uses an external `codex app-server` process, while `codex exec` runs codex-core
   directly.
-- `codex-potter` renders rich TUI-formatted output (Markdown, diffs, exec blocks), while `codex exec`
-  emits primarily raw text.
+- `codex-potter exec --json` is still machine-readable, but `codex-potter exec` without `--json`
+  is a potter-specific human transcript mode.
+- This human transcript path intentionally follows codex-potter interactive verbosity visibility,
+  while remaining append-only and never folding/coalescing earlier output.
+- `codex-potter` renders rich TUI-formatted output (Markdown, diffs, exec blocks), while
+  upstream `codex exec` uses a different human-output pipeline.
 
 ## Differences vs. `codex tui` (legacy)
 
@@ -118,8 +146,10 @@ See `resume.md` for how replay works and which artifacts are required.
 
 ## Notes / gotchas
 
-- `codex-potter` is a TUI app and requires a real TTY (it enters raw mode and listens for key events).
-  It is not designed for piping output into files.
+- Interactive `codex-potter` / `resume` requires a real TTY because it enters raw mode and listens
+  for key events.
+- `codex-potter exec` is designed for non-interactive use and can be piped into files or other
+  programs.
 - Prompt shortcuts (initial composer):
   - Up/Down to recall prompt history when the input is empty (stored in `~/.codexpotter/history.jsonl`, max 500 entries).
   - ctrl+g to open an external editor (requires `$VISUAL` or `$EDITOR`), the same as codex.
