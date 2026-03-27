@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::PotterRoundOutcome;
+use codex_protocol::protocol::ServiceTier;
 
 use crate::workflow::rollout::PotterRolloutLine;
 
@@ -34,6 +35,7 @@ pub struct CompletedRoundIndex {
     pub round_total: u32,
     pub thread_id: ThreadId,
     pub rollout_path: PathBuf,
+    pub service_tier: Option<ServiceTier>,
     pub project_succeeded: Option<ProjectSucceededIndex>,
     pub outcome: PotterRoundOutcome,
 }
@@ -44,6 +46,7 @@ pub struct UnfinishedRoundIndex {
     pub round_total: u32,
     pub thread_id: ThreadId,
     pub rollout_path: PathBuf,
+    pub service_tier: Option<ServiceTier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +65,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
     struct RoundBuilder {
         round_current: u32,
         round_total: u32,
-        configured: Option<(ThreadId, PathBuf)>,
+        configured: Option<(ThreadId, PathBuf, Option<ServiceTier>)>,
         project_succeeded: Option<ProjectSucceededIndex>,
     }
 
@@ -102,6 +105,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
             PotterRolloutLine::RoundConfigured {
                 thread_id,
                 rollout_path,
+                service_tier,
                 ..
             } => {
                 let Some(builder) = current.as_mut() else {
@@ -110,7 +114,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                 if builder.configured.is_some() {
                     anyhow::bail!("potter-rollout: duplicate round_configured in a single round");
                 }
-                builder.configured = Some((*thread_id, rollout_path.clone()));
+                builder.configured = Some((*thread_id, rollout_path.clone(), *service_tier));
             }
             PotterRolloutLine::ProjectSucceeded {
                 rounds,
@@ -137,7 +141,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                 let Some(builder) = current.take() else {
                     anyhow::bail!("potter-rollout: round_finished without round_started");
                 };
-                let Some((thread_id, rollout_path)) = builder.configured else {
+                let Some((thread_id, rollout_path, service_tier)) = builder.configured else {
                     anyhow::bail!("potter-rollout: round_finished without round_configured");
                 };
                 if builder.project_succeeded.is_some()
@@ -152,6 +156,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                     round_total: builder.round_total,
                     thread_id,
                     rollout_path,
+                    service_tier,
                     project_succeeded: builder.project_succeeded,
                     outcome: outcome.clone(),
                 });
@@ -164,7 +169,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
             if builder.project_succeeded.is_some() {
                 anyhow::bail!("potter-rollout: project_succeeded without round_finished at EOF");
             }
-            let Some((thread_id, rollout_path)) = builder.configured else {
+            let Some((thread_id, rollout_path, service_tier)) = builder.configured else {
                 anyhow::bail!("potter-rollout: missing round_configured at EOF");
             };
             Some(UnfinishedRoundIndex {
@@ -172,6 +177,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                 round_total: builder.round_total,
                 thread_id,
                 rollout_path,
+                service_tier,
             })
         }
         None => None,
@@ -217,6 +223,7 @@ mod tests {
             PotterRolloutLine::RoundConfigured {
                 thread_id: thread_id(),
                 rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -238,6 +245,7 @@ mod tests {
                     round_total: 10,
                     thread_id: thread_id(),
                     rollout_path: PathBuf::from("rollout.jsonl"),
+                    service_tier: None,
                     project_succeeded: None,
                     outcome: PotterRoundOutcome::Completed,
                 }],
@@ -261,6 +269,7 @@ mod tests {
             PotterRolloutLine::RoundConfigured {
                 thread_id: thread_id(),
                 rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -282,6 +291,7 @@ mod tests {
                     round_total: 10,
                     thread_id: thread_id(),
                     rollout_path: PathBuf::from("rollout.jsonl"),
+                    service_tier: None,
                     project_succeeded: None,
                     outcome: PotterRoundOutcome::Interrupted,
                 }],
@@ -305,6 +315,7 @@ mod tests {
             PotterRolloutLine::RoundConfigured {
                 thread_id: thread_id(),
                 rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: Some(ServiceTier::Fast),
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -333,6 +344,7 @@ mod tests {
                     round_total: 10,
                     thread_id: thread_id(),
                     rollout_path: PathBuf::from("rollout.jsonl"),
+                    service_tier: Some(ServiceTier::Fast),
                     project_succeeded: Some(ProjectSucceededIndex {
                         rounds: 3,
                         duration_secs: 42,
@@ -362,6 +374,7 @@ mod tests {
             PotterRolloutLine::RoundConfigured {
                 thread_id: thread_id(),
                 rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: Some(ServiceTier::Flex),
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -381,6 +394,7 @@ mod tests {
                     round_total: 10,
                     thread_id: thread_id(),
                     rollout_path: PathBuf::from("rollout.jsonl"),
+                    service_tier: Some(ServiceTier::Flex),
                 }),
             }
         );
@@ -400,6 +414,7 @@ mod tests {
             PotterRolloutLine::RoundConfigured {
                 thread_id: thread_id(),
                 rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },

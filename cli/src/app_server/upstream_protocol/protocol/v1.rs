@@ -3,6 +3,8 @@
 //! This module contains the request/response payloads for the initial `initialize` request and
 //! the approval response payloads used by certain server-initiated requests.
 
+use std::path::PathBuf;
+
 use codex_protocol::protocol::ReviewDecision;
 use serde::Deserialize;
 use serde::Serialize;
@@ -30,7 +32,21 @@ pub struct ClientInfo {
 #[serde(rename_all = "camelCase")]
 pub struct InitializeCapabilities {
     /// Opt into experimental API methods and fields such as `turn/start.collaborationMode`.
+    #[serde(default)]
     pub experimental_api: bool,
+    /// Exact notification method names that should be suppressed for this connection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opt_out_notification_methods: Option<Vec<String>>,
+}
+
+/// Response payload for the `initialize` request.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResponse {
+    pub user_agent: String,
+    pub codex_home: PathBuf,
+    pub platform_family: String,
+    pub platform_os: String,
 }
 
 /// Response payload for an `applyPatch` approval request.

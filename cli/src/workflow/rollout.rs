@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::PotterRoundOutcome;
+use codex_protocol::protocol::ServiceTier;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -35,6 +36,8 @@ pub enum PotterRolloutLine {
     RoundConfigured {
         thread_id: ThreadId,
         rollout_path: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<ServiceTier>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rollout_path_raw: Option<PathBuf>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

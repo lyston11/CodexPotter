@@ -267,6 +267,7 @@ git_branch: "{git_branch}"
             &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
                 thread_id,
                 rollout_path: upstream_rollout_path.to_path_buf(),
+                service_tier: None,
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -417,6 +418,7 @@ git_branch: "{git_branch}"
             &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
                 thread_id,
                 rollout_path: upstream_missing,
+                service_tier: None,
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },

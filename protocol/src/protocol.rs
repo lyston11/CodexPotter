@@ -507,6 +507,7 @@ pub struct RateLimitSnapshot {
 pub enum PlanType {
     #[default]
     Free,
+    Go,
     Plus,
     Pro,
     Team,
@@ -515,6 +516,15 @@ pub enum PlanType {
     Edu,
     #[serde(other)]
     Unknown,
+}
+
+/// Runtime service tier currently active for the session.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum ServiceTier {
+    Fast,
+    Flex,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -916,6 +926,10 @@ pub struct SessionConfiguredEvent {
 
     pub model_provider_id: String,
 
+    /// Runtime service tier resolved by the backend for this session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
+
     /// Working directory that should be treated as the *root* of the
     /// session.
     pub cwd: PathBuf,
@@ -1313,6 +1327,7 @@ mod tests {
                 forked_from_id: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
+                service_tier: Some(ServiceTier::Fast),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 history_log_id: 0,
@@ -1329,6 +1344,7 @@ mod tests {
                 "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                 "model": "codex-mini-latest",
                 "model_provider_id": "openai",
+                "service_tier": "fast",
                 "cwd": "/home/user/project",
                 "reasoning_effort": "medium",
                 "history_log_id": 0,

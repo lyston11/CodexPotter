@@ -28,6 +28,7 @@ use crate::app_server::upstream_protocol::ApplyPatchApprovalResponse;
 use crate::app_server::upstream_protocol::ClientInfo;
 use crate::app_server::upstream_protocol::ClientNotification;
 use crate::app_server::upstream_protocol::ClientRequest;
+use crate::app_server::upstream_protocol::ClientResponse;
 use crate::app_server::upstream_protocol::CollaborationMode;
 use crate::app_server::upstream_protocol::CollaborationModeKind;
 use crate::app_server::upstream_protocol::CollaborationModeSettings;
@@ -95,7 +96,6 @@ use crate::app_server::upstream_protocol::TurnCompletedNotification as UpstreamT
 use crate::app_server::upstream_protocol::TurnPlanStepStatus as UpstreamTurnPlanStepStatus;
 use crate::app_server::upstream_protocol::TurnPlanUpdatedNotification as UpstreamTurnPlanUpdatedNotification;
 use crate::app_server::upstream_protocol::TurnStartParams;
-use crate::app_server::upstream_protocol::TurnStartResponse;
 use crate::app_server::upstream_protocol::TurnStartedNotification as UpstreamTurnStartedNotification;
 use crate::app_server::upstream_protocol::TurnStatus as UpstreamTurnStatus;
 use crate::app_server::upstream_protocol::UserInput as ApiUserInput;
@@ -143,6 +143,7 @@ use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::ServiceTier;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::StreamErrorEvent;
 use codex_protocol::protocol::TerminalInteractionEvent;
@@ -653,14 +654,30 @@ async fn initialize_app_server(
             },
             capabilities: Some(InitializeCapabilities {
                 experimental_api: true,
+                opt_out_notification_methods: None,
             }),
         },
     };
-    send_message(stdin, &request).await?;
-    let _response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
+    let _response = send_client_request(stdin, lines, request, recovery, event_tx).await?;
 
     send_message(stdin, &ClientNotification::Initialized).await?;
     Ok(())
+}
+
+async fn send_client_request(
+    stdin: &mut ChildStdin,
+    lines: &mut tokio::io::Lines<BufReader<ChildStdout>>,
+    request: ClientRequest,
+    recovery: &mut StreamRecoveryContext,
+    event_tx: &UnboundedSender<Event>,
+) -> anyhow::Result<ClientResponse> {
+    let request_id = request.id().clone();
+    let method = request.method();
+    send_message(stdin, &request).await?;
+    let response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
+    request
+        .decode_response(response)
+        .with_context(|| format!("decode {method} response"))
 }
 
 struct ThreadStartSettings {
@@ -718,14 +735,15 @@ async fn thread_start(
     recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<ThreadStartResponse> {
-    let request_id = next_request_id(next_id);
     let request = ClientRequest::ThreadStart {
-        request_id: request_id.clone(),
+        request_id: next_request_id(next_id),
         params: settings.into_params(),
     };
-    send_message(stdin, &request).await?;
-    let response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
-    serde_json::from_value(response.result).context("decode thread/start response")
+    let response = send_client_request(stdin, lines, request, recovery, event_tx).await?;
+    let ClientResponse::ThreadStart { response, .. } = response else {
+        unreachable!("thread/start must decode into thread/start response");
+    };
+    Ok(response)
 }
 
 async fn thread_resume(
@@ -736,14 +754,15 @@ async fn thread_resume(
     recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<ThreadResumeResponse> {
-    let request_id = next_request_id(next_id);
     let request = ClientRequest::ThreadResume {
-        request_id: request_id.clone(),
+        request_id: next_request_id(next_id),
         params: settings.into_params(),
     };
-    send_message(stdin, &request).await?;
-    let response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
-    serde_json::from_value(response.result).context("decode thread/resume response")
+    let response = send_client_request(stdin, lines, request, recovery, event_tx).await?;
+    let ClientResponse::ThreadResume { response, .. } = response else {
+        unreachable!("thread/resume must decode into thread/resume response");
+    };
+    Ok(response)
 }
 
 async fn thread_rollback(
@@ -754,20 +773,20 @@ async fn thread_rollback(
     recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<()> {
-    let request_id = next_request_id(next_id);
     let request = ClientRequest::ThreadRollback {
-        request_id: request_id.clone(),
+        request_id: next_request_id(next_id),
         params: ThreadRollbackParams {
             thread_id: thread_id.to_string(),
             num_turns: 1,
         },
     };
-    send_message(stdin, &request).await?;
-    let response = read_until_response(stdin, lines, request_id, recovery, event_tx)
+    let response = send_client_request(stdin, lines, request, recovery, event_tx)
         .await
         .with_context(|| format!("thread/rollback thread_id={thread_id}"))?;
-    let _parsed: ThreadRollbackResponse =
-        serde_json::from_value(response.result).context("decode thread/rollback response")?;
+    let ClientResponse::ThreadRollback { response, .. } = response else {
+        unreachable!("thread/rollback must decode into thread/rollback response");
+    };
+    let _parsed: ThreadRollbackResponse = response;
     Ok(())
 }
 
@@ -806,10 +825,9 @@ async fn handle_op(
             items,
             final_output_json_schema,
         } => {
-            let request_id = next_request_id(next_id);
             let input = items.into_iter().map(ApiUserInput::from).collect();
             let request = ClientRequest::TurnStart {
-                request_id: request_id.clone(),
+                request_id: next_request_id(next_id),
                 params: TurnStartParams {
                     thread_id: ctx.thread_id.to_string(),
                     input,
@@ -826,11 +844,13 @@ async fn handle_op(
                     )),
                 },
             };
-            send_message(stdin, &request).await?;
-            let response =
-                read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
-            let parsed: TurnStartResponse =
-                serde_json::from_value(response.result).context("decode turn/start response")?;
+            let response = send_client_request(stdin, lines, request, recovery, event_tx).await?;
+            let ClientResponse::TurnStart {
+                response: parsed, ..
+            } = response
+            else {
+                unreachable!("turn/start must decode into turn/start response");
+            };
             recovery.active_turn_id = Some(parsed.turn.id);
             Ok(())
         }
@@ -853,9 +873,15 @@ async fn handle_op(
                 .await?
             {
                 Ok(response) => {
-                    let _parsed: crate::app_server::upstream_protocol::TurnInterruptResponse =
-                        serde_json::from_value(response.result)
-                            .context("decode turn/interrupt response")?;
+                    let response = request
+                        .decode_response(response)
+                        .context("decode turn/interrupt response")?;
+                    let ClientResponse::TurnInterrupt {
+                        response: _parsed, ..
+                    } = response
+                    else {
+                        unreachable!("turn/interrupt must decode into turn/interrupt response");
+                    };
                     Ok(())
                 }
                 Err(error) if error.code == JSONRPC_INVALID_REQUEST_ERROR_CODE => Ok(()),
@@ -2388,6 +2414,7 @@ fn synthesize_session_configured(
         forked_from_id: None,
         model: thread_start_or_resume.model().to_string(),
         model_provider_id: thread_start_or_resume.model_provider().to_string(),
+        service_tier: thread_start_or_resume.service_tier(),
         cwd: thread_start_or_resume.cwd().to_path_buf(),
         reasoning_effort: thread_start_or_resume.reasoning_effort(),
         history_log_id: 0,
@@ -2421,6 +2448,13 @@ impl ThreadStartOrResume {
         match self {
             ThreadStartOrResume::Start(resp) => &resp.model_provider,
             ThreadStartOrResume::Resume(resp) => &resp.model_provider,
+        }
+    }
+
+    fn service_tier(&self) -> Option<ServiceTier> {
+        match self {
+            ThreadStartOrResume::Start(resp) => resp.service_tier,
+            ThreadStartOrResume::Resume(resp) => resp.service_tier,
         }
     }
 
@@ -3513,14 +3547,14 @@ echo "$initialize" | grep -q '"experimentalApi":true' || {
   echo "expected experimentalApi capability, got: $initialize" >&2
   exit 1
 }
-echo '{"id":1,"result":{}}'
+echo '{"id":1,"result":{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
 
 # turn/start request
 IFS= read -r turn_start
@@ -3653,7 +3687,7 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{"id":1,"result":{}}'
+echo '{"id":1,"result":{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}'
 
 # initialized notification
 IFS= read -r _line
@@ -3661,7 +3695,7 @@ IFS= read -r _line
 # thread/start request
 IFS= read -r _line
 echo '{"method":"error","params":"Token data is not available."}'
-echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
 
 # turn/start request
 IFS= read -r _line
@@ -3846,14 +3880,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{"id":1,"result":{}}'
+echo '{"id":1,"result":{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
 
 # turn/start request
 IFS= read -r _line
@@ -4012,14 +4046,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{"id":1,"result":{}}'
+echo '{"id":1,"result":{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
 
 # turn/start request
 IFS= read -r _line
@@ -4120,14 +4154,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{"id":1,"result":{}}'
+echo '{"id":1,"result":{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
 
 # turn/start request
 IFS= read -r _line
@@ -4233,14 +4267,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # turn/start request
 IFS= read -r _line
@@ -4360,14 +4394,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # first turn/start request
 IFS= read -r _line
@@ -4498,14 +4532,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # turn/start request
 IFS= read -r _line
@@ -4648,14 +4682,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # first turn/start request
 IFS= read -r _line
@@ -4801,14 +4835,14 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
 
 # thread/start request
 IFS= read -r _line
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # first turn/start request
 IFS= read -r _line
@@ -4986,7 +5020,7 @@ dd if=/dev/zero bs=1 count=131072 1>&2 2>/dev/null
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
@@ -4997,7 +5031,7 @@ echo "$thread_start" | grep -q '"sandbox":"danger-full-access"' || {{
   echo "expected sandbox=danger-full-access in thread/start, got: $thread_start" >&2
   exit 1
 }}
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # Wait for the client to close stdin to request shutdown.
 while IFS= read -r _line; do
@@ -5084,7 +5118,7 @@ dd if=/dev/zero bs=1 count=131072 1>&2 2>/dev/null
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
@@ -5095,7 +5129,7 @@ echo "$thread_start" | grep -q '"sandbox":"workspace-write"' || {{
   echo "expected sandbox=workspace-write in thread/start, got: $thread_start" >&2
   exit 1
 }}
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"workspaceWrite","writableRoots":[],"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"workspaceWrite","writableRoots":[],"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false}},"reasoningEffort":null}}}}'
 
 # Wait for the client to close stdin to request shutdown.
 while IFS= read -r _line; do
@@ -5173,7 +5207,7 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
@@ -5184,7 +5218,7 @@ echo "$thread_start" | grep -q '"sandbox":null' || {{
   echo "expected sandbox=null in thread/start, got: $thread_start" >&2
   exit 1
 }}
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # Wait for the client to close stdin to request shutdown.
 while IFS= read -r _line; do
@@ -5266,7 +5300,7 @@ fi
 
 # initialize request
 IFS= read -r _line
-echo '{{"id":1,"result":{{}}}}'
+echo '{{"id":1,"result":{{"userAgent":"test-agent","codexHome":"/tmp/codex-home","platformFamily":"unix","platformOs":"test-os"}}}}'
 
 # initialized notification
 IFS= read -r _line
@@ -5277,7 +5311,7 @@ if echo "$thread_start" | grep -Fq '"codex_home"'; then
   echo "did not expect codex_home in thread/start config, got: $thread_start" >&2
   exit 1
 fi
-echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
 
 # Wait for the client to close stdin to request shutdown.
 while IFS= read -r _line; do

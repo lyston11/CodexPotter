@@ -17,6 +17,10 @@ Created by `cli/src/workflow/project.rs`:
 - `.codexpotter/projects/YYYY/MM/DD/N/MAIN.md`
   - the progress file that the agent is instructed to read/update each round
   - the file contains front matter fields (`status`, `finite_incantatem`, `short_title`) plus task lists
+- `.codexpotter/projects/YYYY/MM/DD/N/potter-rollout.jsonl`
+  - append-only project / round boundary log used by `resume`
+  - persists the recorded thread id, upstream rollout path, and session metadata needed for replay
+    (including `service_tier`)
 - a gitignored knowledge base directory
   - a scratchpad for intermediate findings; intentionally not committed
 
@@ -65,9 +69,11 @@ flag are resolved from `profiles.<name>.*` first, then fall back to the top-leve
 
 - The first-screen startup banner is rendered before `thread/start` returns a session snapshot, so
   it cannot rely on app-server `SessionConfiguredEvent` / config snapshot for the initial render.
-- In this fork, `protocol::SessionConfiguredEvent` does not expose `service_tier`, so the prompt
-  screen cannot learn Fast state from app-server session events later either; layered config is the
-  only local source currently available to the TUI for this badge.
+- `protocol::SessionConfiguredEvent` now exposes `service_tier`, and CodexPotter also persists it
+  into `potter-rollout.jsonl` so resume/replay can synthesize the same session metadata without
+  depending on upstream rollout fidelity.
+- That session metadata still arrives too late for the first prompt-screen render, so layered
+  config remains the source of truth for the startup banner's initial ` [fast]` badge.
 - Upstream `/fast` persists the current selection via `service_tier`, while `fast_mode` is the
   feature gate that can still disable Fast entirely.
 - codex-potter therefore treats layered config as the startup-banner source of truth: when the

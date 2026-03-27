@@ -29,7 +29,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::PotterRoundOutcome;
 #[cfg(test)]
-use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::ServiceTier;
 use codex_tui::ExitReason;
 use codex_tui::InterruptedProjectAction;
 use tokio::sync::mpsc::unbounded_channel;
@@ -685,6 +685,7 @@ struct UnfinishedRoundPlan {
     round_total: u32,
     thread_id: codex_protocol::ThreadId,
     rollout_path: PathBuf,
+    service_tier: Option<ServiceTier>,
     project_started: Option<(Option<String>, PathBuf)>,
 }
 
@@ -743,9 +744,16 @@ fn build_round_replay_plans(
             total: round.round_total,
         });
 
-        let rollout_path = resolve_rollout_path_for_replay(project, &round.rollout_path);
+        let rollout_path = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            &project.workdir,
+            &round.rollout_path,
+        );
         if let Some(cfg) =
-            synthesize_session_configured_event(round.thread_id, rollout_path.clone())?
+            crate::workflow::replay_session_config::synthesize_session_configured_event(
+                round.thread_id,
+                round.service_tier,
+                rollout_path.clone(),
+            )?
         {
             events.push(EventMsg::SessionConfigured(cfg));
         }
@@ -778,7 +786,11 @@ fn build_round_replay_plans(
         round_current: round.round_current,
         round_total: round.round_total,
         thread_id: round.thread_id,
-        rollout_path: resolve_rollout_path_for_replay(project, &round.rollout_path),
+        rollout_path: crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            &project.workdir,
+            &round.rollout_path,
+        ),
+        service_tier: round.service_tier,
         project_started: project_started
             .map(|started| (started.user_message, started.user_prompt_file)),
     });
@@ -787,121 +799,6 @@ fn build_round_replay_plans(
         completed_rounds: rounds,
         unfinished_round,
     })
-}
-
-#[cfg(test)]
-fn resolve_rollout_path_for_replay(project: &ResolvedProjectPaths, rollout_path: &Path) -> PathBuf {
-    if rollout_path.is_absolute() {
-        return rollout_path.to_path_buf();
-    }
-    project.workdir.join(rollout_path)
-}
-
-#[cfg(test)]
-fn synthesize_session_configured_event(
-    thread_id: codex_protocol::ThreadId,
-    rollout_path: PathBuf,
-) -> anyhow::Result<Option<SessionConfiguredEvent>> {
-    let Some(snapshot) = read_rollout_context_snapshot(&rollout_path)? else {
-        return Ok(None);
-    };
-
-    Ok(Some(SessionConfiguredEvent {
-        session_id: thread_id,
-        forked_from_id: None,
-        model: snapshot.model,
-        model_provider_id: snapshot.model_provider_id,
-        cwd: snapshot.cwd,
-        reasoning_effort: None,
-        history_log_id: 0,
-        history_entry_count: 0,
-        initial_messages: None,
-        rollout_path,
-    }))
-}
-
-#[cfg(test)]
-struct RolloutContextSnapshot {
-    cwd: PathBuf,
-    model: String,
-    model_provider_id: String,
-}
-
-#[cfg(test)]
-fn read_rollout_context_snapshot(
-    rollout_path: &Path,
-) -> anyhow::Result<Option<RolloutContextSnapshot>> {
-    let file = std::fs::File::open(rollout_path)
-        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
-    let reader = std::io::BufReader::new(file);
-
-    let mut cwd: Option<PathBuf> = None;
-    let mut model: Option<String> = None;
-    let mut model_provider_id: Option<String> = None;
-
-    for (idx, line) in reader.lines().enumerate() {
-        let line_number = idx + 1;
-        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .with_context(|| format!("parse rollout json line {line_number}: {line}"))?;
-        let Some(item_type) = value.get("type").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        match item_type {
-            "turn_context" => {
-                if cwd.is_some() && model.is_some() {
-                    continue;
-                }
-                let Some(payload) = value.get("payload") else {
-                    continue;
-                };
-                if cwd.is_none()
-                    && let Some(v) = payload.get("cwd")
-                {
-                    cwd = serde_json::from_value::<PathBuf>(v.clone()).ok();
-                }
-                if model.is_none() {
-                    model = payload
-                        .get("model")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned);
-                }
-            }
-            "session_meta" => {
-                if model_provider_id.is_some() {
-                    continue;
-                }
-                let Some(payload) = value.get("payload") else {
-                    continue;
-                };
-                model_provider_id = payload
-                    .get("model_provider")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned);
-            }
-            _ => {}
-        }
-
-        if cwd.is_some() && model.is_some() && model_provider_id.is_some() {
-            break;
-        }
-    }
-
-    let Some(cwd) = cwd else {
-        return Ok(None);
-    };
-    let Some(model) = model else {
-        return Ok(None);
-    };
-
-    Ok(Some(RolloutContextSnapshot {
-        cwd,
-        model,
-        model_provider_id: model_provider_id.unwrap_or_default(),
-    }))
 }
 
 #[cfg(test)]
@@ -1923,6 +1820,7 @@ mod tests {
             crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
                 thread_id,
                 rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -1940,6 +1838,7 @@ mod tests {
             unfinished.rollout_path,
             resolved.workdir.join("rollout.jsonl")
         );
+        assert_eq!(unfinished.service_tier, None);
         assert_eq!(unfinished.remaining_rounds_including_current().unwrap(), 10);
         assert_eq!(
             unfinished.project_started,
@@ -1978,6 +1877,7 @@ mod tests {
             crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
                 thread_id,
                 rollout_path: PathBuf::from("first.jsonl"),
+                service_tier: Some(ServiceTier::Fast),
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -1991,6 +1891,7 @@ mod tests {
             crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
                 thread_id: next_thread_id,
                 rollout_path: PathBuf::from("second.jsonl"),
+                service_tier: Some(ServiceTier::Flex),
                 rollout_path_raw: None,
                 rollout_base_dir: None,
             },
@@ -2021,6 +1922,7 @@ mod tests {
         );
 
         let unfinished = plans.unfinished_round.expect("unfinished round");
+        assert_eq!(unfinished.service_tier, Some(ServiceTier::Flex));
         assert_eq!(unfinished.project_started, None);
     }
 
@@ -2066,6 +1968,7 @@ mod tests {
             round_total: 10,
             thread_id,
             rollout_path: resolved.workdir.join("rollout.jsonl"),
+            service_tier: Some(ServiceTier::Fast),
             project_started: Some((
                 Some("hello".to_string()),
                 PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md"),
@@ -2119,6 +2022,7 @@ mod tests {
             round_total: 10,
             thread_id,
             rollout_path: resolved.workdir.join("rollout.jsonl"),
+            service_tier: None,
             project_started: None,
         };
 

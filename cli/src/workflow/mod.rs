@@ -23,6 +23,7 @@ pub mod project;
 pub mod project_render_loop;
 pub mod project_runner;
 pub mod prompt_queue;
+pub mod replay_session_config;
 pub mod resume;
 pub mod resume_picker_index;
 pub mod rollout;

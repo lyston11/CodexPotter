@@ -1188,6 +1188,7 @@ mod tests {
             forked_from_id: None,
             model: "test-model".to_string(),
             model_provider_id: "test-provider".to_string(),
+            service_tier: None,
             cwd: PathBuf::from("/tmp/project"),
             reasoning_effort: None,
             history_log_id: 0,

@@ -158,6 +158,7 @@ impl PotterRoundEventBridge {
             &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
                 thread_id: cfg.session_id,
                 rollout_path,
+                service_tier: cfg.service_tier,
                 rollout_path_raw,
                 rollout_base_dir,
             },
@@ -190,7 +191,11 @@ finite_incantatem: {finite}
         .expect("write progress file");
     }
 
-    fn session_configured_event(workdir: &Path, rollout_path: PathBuf) -> Event {
+    fn session_configured_event(
+        workdir: &Path,
+        rollout_path: PathBuf,
+        service_tier: Option<codex_protocol::protocol::ServiceTier>,
+    ) -> Event {
         Event {
             id: "event_1".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -201,6 +206,7 @@ finite_incantatem: {finite}
                 forked_from_id: None,
                 model: "test".to_string(),
                 model_provider_id: "test".to_string(),
+                service_tier,
                 cwd: workdir.to_path_buf(),
                 reasoning_effort: None,
                 history_log_id: 0,
@@ -233,16 +239,73 @@ finite_incantatem: {finite}
             project_rounds_run: 1,
         });
 
-        let ev = session_configured_event(workdir, PathBuf::from("upstream.jsonl"));
+        let ev = session_configured_event(workdir, PathBuf::from("upstream.jsonl"), None);
         bridge.observe_backend_event(&ev).expect("observe #1");
         bridge.observe_backend_event(&ev).expect("observe #2");
 
         let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
-        assert_eq!(lines.len(), 1);
-        assert!(matches!(
-            &lines[0],
-            crate::workflow::rollout::PotterRolloutLine::RoundConfigured { .. }
-        ));
+        assert_eq!(
+            lines,
+            vec![
+                crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                    thread_id: codex_protocol::ThreadId::from_string(
+                        "019ca423-63d9-7641-ae83-db060ad3c000",
+                    )
+                    .expect("thread id"),
+                    rollout_path: rollout_path.canonicalize().expect("canonical rollout"),
+                    service_tier: None,
+                    rollout_path_raw: None,
+                    rollout_base_dir: None,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn observe_backend_event_records_round_configured_service_tier() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+
+        let rollout_path = workdir.join("upstream.jsonl");
+        std::fs::write(&rollout_path, "").expect("write upstream rollout");
+
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: true,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
+            user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 1,
+            round_total: 10,
+            project_rounds_run: 1,
+        });
+
+        let ev = session_configured_event(
+            workdir,
+            PathBuf::from("upstream.jsonl"),
+            Some(codex_protocol::protocol::ServiceTier::Fast),
+        );
+        bridge.observe_backend_event(&ev).expect("observe");
+
+        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+        assert_eq!(
+            lines,
+            vec![
+                crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                    thread_id: codex_protocol::ThreadId::from_string(
+                        "019ca423-63d9-7641-ae83-db060ad3c000",
+                    )
+                    .expect("thread id"),
+                    rollout_path: rollout_path.canonicalize().expect("canonical rollout"),
+                    service_tier: Some(codex_protocol::protocol::ServiceTier::Fast),
+                    rollout_path_raw: None,
+                    rollout_base_dir: None,
+                }
+            ]
+        );
     }
 
     #[test]

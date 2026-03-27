@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::app_server::upstream_protocol::JSONRPCRequest;
+use crate::app_server::upstream_protocol::JSONRPCResponse;
 use crate::app_server::upstream_protocol::RequestId;
 
 use super::v1;
@@ -21,6 +22,35 @@ pub enum ClientRequest {
         #[serde(rename = "id")]
         request_id: RequestId,
         params: v1::InitializeParams,
+    },
+
+    #[serde(rename = "configRequirements/read")]
+    ConfigRequirementsRead {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        params: Option<()>,
+    },
+
+    #[serde(rename = "account/read")]
+    GetAccount {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        params: v2::GetAccountParams,
+    },
+
+    #[serde(rename = "account/login/start")]
+    LoginAccount {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        params: v2::LoginAccountParams,
+    },
+
+    #[serde(rename = "account/login/cancel")]
+    CancelLoginAccount {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        params: v2::CancelLoginAccountParams,
     },
 
     #[serde(rename = "thread/start")]
@@ -57,6 +87,162 @@ pub enum ClientRequest {
         request_id: RequestId,
         params: v2::TurnInterruptParams,
     },
+}
+
+/// Typed response from the server to a [`ClientRequest`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "method", rename_all = "camelCase")]
+pub enum ClientResponse {
+    Initialize {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v1::InitializeResponse,
+    },
+
+    #[serde(rename = "configRequirements/read")]
+    ConfigRequirementsRead {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::ConfigRequirementsReadResponse,
+    },
+
+    #[serde(rename = "account/read")]
+    GetAccount {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::GetAccountResponse,
+    },
+
+    #[serde(rename = "account/login/start")]
+    LoginAccount {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::LoginAccountResponse,
+    },
+
+    #[serde(rename = "account/login/cancel")]
+    CancelLoginAccount {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::CancelLoginAccountResponse,
+    },
+
+    #[serde(rename = "thread/start")]
+    ThreadStart {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::ThreadStartResponse,
+    },
+
+    #[serde(rename = "thread/resume")]
+    ThreadResume {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::ThreadResumeResponse,
+    },
+
+    #[serde(rename = "thread/rollback")]
+    ThreadRollback {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::ThreadRollbackResponse,
+    },
+
+    #[serde(rename = "turn/start")]
+    TurnStart {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::TurnStartResponse,
+    },
+
+    #[serde(rename = "turn/interrupt")]
+    TurnInterrupt {
+        #[serde(rename = "id")]
+        request_id: RequestId,
+        response: v2::TurnInterruptResponse,
+    },
+}
+
+impl ClientRequest {
+    pub fn id(&self) -> &RequestId {
+        match self {
+            Self::Initialize { request_id, .. }
+            | Self::ConfigRequirementsRead { request_id, .. }
+            | Self::GetAccount { request_id, .. }
+            | Self::LoginAccount { request_id, .. }
+            | Self::CancelLoginAccount { request_id, .. }
+            | Self::ThreadStart { request_id, .. }
+            | Self::ThreadResume { request_id, .. }
+            | Self::ThreadRollback { request_id, .. }
+            | Self::TurnStart { request_id, .. }
+            | Self::TurnInterrupt { request_id, .. } => request_id,
+        }
+    }
+
+    pub fn method(&self) -> &'static str {
+        match self {
+            Self::Initialize { .. } => "initialize",
+            Self::ConfigRequirementsRead { .. } => "configRequirements/read",
+            Self::GetAccount { .. } => "account/read",
+            Self::LoginAccount { .. } => "account/login/start",
+            Self::CancelLoginAccount { .. } => "account/login/cancel",
+            Self::ThreadStart { .. } => "thread/start",
+            Self::ThreadResume { .. } => "thread/resume",
+            Self::ThreadRollback { .. } => "thread/rollback",
+            Self::TurnStart { .. } => "turn/start",
+            Self::TurnInterrupt { .. } => "turn/interrupt",
+        }
+    }
+
+    pub fn decode_response(
+        &self,
+        response: JSONRPCResponse,
+    ) -> Result<ClientResponse, serde_json::Error> {
+        let request_id = response.id;
+        let response = match self {
+            Self::Initialize { .. } => ClientResponse::Initialize {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::ConfigRequirementsRead { .. } => ClientResponse::ConfigRequirementsRead {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::GetAccount { .. } => ClientResponse::GetAccount {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::LoginAccount { .. } => ClientResponse::LoginAccount {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::CancelLoginAccount { .. } => ClientResponse::CancelLoginAccount {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::ThreadStart { .. } => ClientResponse::ThreadStart {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::ThreadResume { .. } => ClientResponse::ThreadResume {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::ThreadRollback { .. } => ClientResponse::ThreadRollback {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::TurnStart { .. } => ClientResponse::TurnStart {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+            Self::TurnInterrupt { .. } => ClientResponse::TurnInterrupt {
+                request_id,
+                response: serde_json::from_value(response.result)?,
+            },
+        };
+        Ok(response)
+    }
 }
 
 /// Notification from the client to the server.
@@ -153,6 +339,8 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 
 #[cfg(test)]
 mod tests {
+    use codex_protocol::protocol::PlanType;
+
     use super::v1::ClientInfo;
     use super::v1::InitializeCapabilities;
     use super::v2::ThreadResumeParams;
@@ -360,6 +548,7 @@ mod tests {
                 },
                 capabilities: Some(InitializeCapabilities {
                     experimental_api: true,
+                    opt_out_notification_methods: None,
                 }),
             },
         };
@@ -369,5 +558,108 @@ mod tests {
         assert_eq!(value["id"], 4);
         assert_eq!(value["params"]["clientInfo"]["name"], "codex-potter");
         assert_eq!(value["params"]["capabilities"]["experimentalApi"], true);
+    }
+
+    #[test]
+    fn serialize_config_requirements_read_without_params() {
+        let request = ClientRequest::ConfigRequirementsRead {
+            request_id: RequestId::Integer(6),
+            params: None,
+        };
+
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["method"], "configRequirements/read");
+        assert_eq!(value["id"], 6);
+        assert!(
+            value.get("params").is_none(),
+            "configRequirements/read should omit params when unset"
+        );
+    }
+
+    #[test]
+    fn serialize_login_account_api_key_request() {
+        let request = ClientRequest::LoginAccount {
+            request_id: RequestId::Integer(7),
+            params: v2::LoginAccountParams::ApiKey {
+                api_key: "secret".to_string(),
+            },
+        };
+
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["method"], "account/login/start");
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["params"]["type"], "apiKey");
+        assert_eq!(value["params"]["apiKey"], "secret");
+    }
+
+    #[test]
+    fn serialize_get_account_request() {
+        let request = ClientRequest::GetAccount {
+            request_id: RequestId::Integer(8),
+            params: v2::GetAccountParams {
+                refresh_token: false,
+            },
+        };
+
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["method"], "account/read");
+        assert_eq!(value["id"], 8);
+        assert_eq!(value["params"]["refreshToken"], false);
+    }
+
+    #[test]
+    fn account_serializes_chatgpt_plan_type_in_camel_case() {
+        let account = v2::Account::Chatgpt {
+            email: "user@example.com".to_string(),
+            plan_type: PlanType::Go,
+        };
+
+        let value = serde_json::to_value(&account).expect("serialize account");
+        assert_eq!(value["type"], "chatgpt");
+        assert_eq!(value["email"], "user@example.com");
+        assert_eq!(value["planType"], "go");
+    }
+
+    #[test]
+    fn decode_initialize_response_into_typed_client_response() {
+        let request = ClientRequest::Initialize {
+            request_id: RequestId::Integer(9),
+            params: v1::InitializeParams {
+                client_info: ClientInfo {
+                    name: "codex-potter".to_string(),
+                    title: None,
+                    version: "0.0.0".to_string(),
+                },
+                capabilities: None,
+            },
+        };
+
+        let typed = request
+            .decode_response(JSONRPCResponse {
+                id: RequestId::Integer(9),
+                result: serde_json::json!({
+                    "userAgent": "codex-app-server",
+                    "codexHome": "/tmp/codex-home",
+                    "platformFamily": "unix",
+                    "platformOs": "macos",
+                }),
+            })
+            .expect("decode response");
+
+        assert!(matches!(
+            typed,
+            ClientResponse::Initialize {
+                request_id: RequestId::Integer(9),
+                response: v1::InitializeResponse {
+                    user_agent,
+                    platform_family,
+                    platform_os,
+                    ..
+                },
+                ..
+            } if user_agent == "codex-app-server"
+                && platform_family == "unix"
+                && platform_os == "macos"
+        ));
     }
 }
