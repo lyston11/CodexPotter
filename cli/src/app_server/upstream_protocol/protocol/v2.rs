@@ -458,6 +458,31 @@ pub struct ThreadRollbackResponse {
     pub thread: Thread,
 }
 
+/// Collaboration mode kind applied to a `turn/start` request.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CollaborationModeKind {
+    Plan,
+    #[default]
+    Default,
+}
+
+/// Settings bundled with a collaboration mode.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CollaborationModeSettings {
+    pub model: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub developer_instructions: Option<String>,
+}
+
+/// Collaboration mode preset applied to a turn.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub struct CollaborationMode {
+    pub mode: CollaborationModeKind,
+    pub settings: CollaborationModeSettings,
+}
+
 /// Parameters for the `turn/start` JSON-RPC method.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -471,7 +496,7 @@ pub struct TurnStartParams {
     pub effort: Option<JsonValue>,
     pub summary: Option<JsonValue>,
     pub output_schema: Option<JsonValue>,
-    pub collaboration_mode: Option<JsonValue>,
+    pub collaboration_mode: Option<CollaborationMode>,
 }
 
 /// Upstream turn metadata returned by `turn/*` methods.

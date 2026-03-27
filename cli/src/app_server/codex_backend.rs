@@ -28,6 +28,9 @@ use crate::app_server::upstream_protocol::ApplyPatchApprovalResponse;
 use crate::app_server::upstream_protocol::ClientInfo;
 use crate::app_server::upstream_protocol::ClientNotification;
 use crate::app_server::upstream_protocol::ClientRequest;
+use crate::app_server::upstream_protocol::CollaborationMode;
+use crate::app_server::upstream_protocol::CollaborationModeKind;
+use crate::app_server::upstream_protocol::CollaborationModeSettings;
 use crate::app_server::upstream_protocol::CommandAction as UpstreamCommandAction;
 use crate::app_server::upstream_protocol::CommandExecutionApprovalDecision;
 use crate::app_server::upstream_protocol::CommandExecutionRequestApprovalResponse;
@@ -411,6 +414,13 @@ async fn run_app_server_backend_inner(
         };
 
         let thread_id = thread_start_or_resume.thread_id().to_string();
+        let session_model = thread_start_or_resume.model().to_string();
+        let session_reasoning_effort = thread_start_or_resume.reasoning_effort();
+        let turn_request = TurnRequestContext {
+            thread_id: thread_id.as_str(),
+            model: session_model.as_str(),
+            reasoning_effort: session_reasoning_effort,
+        };
 
         let session_configured = synthesize_session_configured(&thread_start_or_resume)?;
         let _ = event_tx.send(Event {
@@ -440,7 +450,7 @@ async fn run_app_server_backend_inner(
                         }
                     }
                     handle_op(
-                        &thread_id,
+                        turn_request,
                         op,
                         stdin.as_mut().context("codex app-server stdin unavailable")?,
                         &mut lines,
@@ -481,7 +491,7 @@ async fn run_app_server_backend_inner(
                             }
                             recovery.last_turn_start_was_recovery_continue = true;
                             handle_op(
-                                &thread_id,
+                                turn_request,
                                 Op::UserInput {
                                     items: vec![CodexUserInput::Text {
                                         text: String::from("Continue"),
@@ -757,17 +767,29 @@ async fn thread_rollback(
     Ok(())
 }
 
-fn default_collaboration_mode() -> serde_json::Value {
-    serde_json::json!({
-        "mode": "default",
-        "settings": {
-            "developerInstructions": null,
+fn default_collaboration_mode(
+    model: &str,
+    reasoning_effort: Option<ReasoningEffort>,
+) -> CollaborationMode {
+    CollaborationMode {
+        mode: CollaborationModeKind::Default,
+        settings: CollaborationModeSettings {
+            model: model.to_string(),
+            reasoning_effort,
+            developer_instructions: None,
         },
-    })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TurnRequestContext<'a> {
+    thread_id: &'a str,
+    model: &'a str,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn handle_op(
-    thread_id: &str,
+    ctx: TurnRequestContext<'_>,
     op: Op,
     stdin: &mut ChildStdin,
     lines: &mut tokio::io::Lines<BufReader<ChildStdout>>,
@@ -785,7 +807,7 @@ async fn handle_op(
             let request = ClientRequest::TurnStart {
                 request_id: request_id.clone(),
                 params: TurnStartParams {
-                    thread_id: thread_id.to_string(),
+                    thread_id: ctx.thread_id.to_string(),
                     input,
                     cwd: None,
                     approval_policy: None,
@@ -794,7 +816,10 @@ async fn handle_op(
                     effort: None,
                     summary: None,
                     output_schema: final_output_json_schema,
-                    collaboration_mode: Some(default_collaboration_mode()),
+                    collaboration_mode: Some(default_collaboration_mode(
+                        ctx.model,
+                        ctx.reasoning_effort,
+                    )),
                 },
             };
             send_message(stdin, &request).await?;
@@ -814,7 +839,7 @@ async fn handle_op(
             let request = ClientRequest::TurnInterrupt {
                 request_id: request_id.clone(),
                 params: crate::app_server::upstream_protocol::TurnInterruptParams {
-                    thread_id: thread_id.to_string(),
+                    thread_id: ctx.thread_id.to_string(),
                     turn_id,
                 },
             };
@@ -2904,12 +2929,20 @@ mod tests {
 
     #[test]
     fn default_collaboration_mode_matches_upstream_default_shape() {
+        let value = serde_json::to_value(default_collaboration_mode(
+            "gpt-5.4",
+            Some(ReasoningEffort::High),
+        ))
+        .expect("serialize collaboration mode");
+
         assert_eq!(
-            default_collaboration_mode(),
+            value,
             serde_json::json!({
                 "mode": "default",
                 "settings": {
-                    "developerInstructions": null,
+                    "model": "gpt-5.4",
+                    "reasoning_effort": "high",
+                    "developer_instructions": null,
                 },
             })
         );
@@ -3491,8 +3524,16 @@ echo "$turn_start" | grep -q '"mode":"default"' || {
   echo "expected default collaboration mode, got: $turn_start" >&2
   exit 1
 }
-echo "$turn_start" | grep -q '"developerInstructions":null' || {
-  echo "expected null collaboration mode developerInstructions, got: $turn_start" >&2
+echo "$turn_start" | grep -q '"model":"test-model"' || {
+  echo "expected collaboration mode model override, got: $turn_start" >&2
+  exit 1
+}
+echo "$turn_start" | grep -q '"reasoning_effort":null' || {
+  echo "expected null collaboration mode reasoning_effort, got: $turn_start" >&2
+  exit 1
+}
+echo "$turn_start" | grep -q '"developer_instructions":null' || {
+  echo "expected null collaboration mode developer_instructions, got: $turn_start" >&2
   exit 1
 }
 echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
