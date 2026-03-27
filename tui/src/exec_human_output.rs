@@ -81,6 +81,7 @@ pub struct ExecHumanRenderer {
     saw_agent_delta: bool,
     plan_stream: Option<PlanStreamController>,
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
+    pending_minimal_agent_message_visible: bool,
     pending_project_summary: Option<PendingProjectSummary>,
     pending_simple_final_message_separator: bool,
     separator_baseline: Option<Instant>,
@@ -99,6 +100,7 @@ impl ExecHumanRenderer {
             saw_agent_delta: false,
             plan_stream: None,
             pending_minimal_agent_message_lines: None,
+            pending_minimal_agent_message_visible: false,
             pending_project_summary: None,
             pending_simple_final_message_separator: false,
             separator_baseline: None,
@@ -116,6 +118,28 @@ impl ExecHumanRenderer {
         out.extend(self.flush_agent_output(false)?);
         out.extend(self.flush_plan_stream()?);
         Ok(out)
+    }
+
+    /// Return whether minimal-mode output still has a hidden completed agent message waiting for
+    /// an idle flush.
+    pub fn needs_idle_agent_message_flush(&self) -> bool {
+        self.verbosity == Verbosity::Minimal
+            && self.pending_minimal_agent_message_lines.is_some()
+            && !self.pending_minimal_agent_message_visible
+    }
+
+    /// Render the hidden minimal-mode agent message as a dim block so append-only exec output
+    /// keeps pace with the live transcript even without a transient preview area.
+    pub fn flush_idle_agent_message(&mut self) -> io::Result<Option<String>> {
+        if !self.needs_idle_agent_message_flush() {
+            return Ok(None);
+        }
+
+        let Some(lines) = self.pending_minimal_agent_message_lines.clone() else {
+            return Ok(None);
+        };
+        self.pending_minimal_agent_message_visible = true;
+        Ok(Some(self.render_agent_message_block(lines, true)?))
     }
 
     /// Render one protocol event into zero or more append-only output blocks.
@@ -221,6 +245,9 @@ impl ExecHumanRenderer {
                 }
             }
             EventMsg::AgentMessageDelta(ev) => {
+                if self.verbosity == Verbosity::Minimal && !self.saw_agent_delta {
+                    out.extend(self.flush_agent_output(false)?);
+                }
                 self.saw_agent_delta |= !ev.delta.is_empty();
                 let _ = self.stream.push(&ev.delta);
             }
@@ -511,7 +538,11 @@ impl ExecHumanRenderer {
                     out.push(self.render_agent_message_block(lines, !final_message)?);
                 }
             } else if let Some(lines) = self.pending_minimal_agent_message_lines.take() {
-                out.push(self.render_agent_message_block(lines, !final_message)?);
+                let was_visible = self.pending_minimal_agent_message_visible;
+                self.pending_minimal_agent_message_visible = false;
+                if !was_visible {
+                    out.push(self.render_agent_message_block(lines, !final_message)?);
+                }
             }
             return Ok(out);
         }
@@ -536,9 +567,12 @@ impl ExecHumanRenderer {
         if lines.is_empty() {
             return Ok(());
         }
-        if let Some(previous) = self.pending_minimal_agent_message_lines.replace(lines) {
+        if let Some(previous) = self.pending_minimal_agent_message_lines.replace(lines)
+            && !self.pending_minimal_agent_message_visible
+        {
             out.push(self.render_agent_message_block(previous, true)?);
         }
+        self.pending_minimal_agent_message_visible = false;
         Ok(())
     }
 
@@ -1116,6 +1150,66 @@ mod tests {
             ))
             .expect("turn complete");
         assert_eq!(blocks, vec!["done".to_string()]);
+    }
+
+    #[test]
+    fn minimal_idle_flush_makes_pending_agent_message_visible_without_duplication() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "latest".to_string(),
+                    phase: None,
+                },
+            ))
+            .expect("agent message");
+        assert!(blocks.is_empty());
+        assert!(renderer.needs_idle_agent_message_flush());
+
+        let idle_block = renderer
+            .flush_idle_agent_message()
+            .expect("idle flush")
+            .expect("idle block");
+        assert_eq!(idle_block, "latest");
+        assert!(
+            renderer
+                .flush_idle_agent_message()
+                .expect("second idle flush")
+                .is_none()
+        );
+
+        let blocks = renderer
+            .handle_event(&EventMsg::TurnComplete(
+                codex_protocol::protocol::TurnCompleteEvent {
+                    turn_id: "turn-1".to_string(),
+                    last_agent_message: None,
+                },
+            ))
+            .expect("turn complete");
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn minimal_new_agent_stream_flushes_previous_pending_message() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "previous".to_string(),
+                    phase: None,
+                },
+            ))
+            .expect("agent message");
+        assert!(blocks.is_empty());
+
+        let blocks = renderer
+            .handle_event(&EventMsg::AgentMessageDelta(
+                codex_protocol::protocol::AgentMessageDeltaEvent {
+                    delta: "next".to_string(),
+                },
+            ))
+            .expect("agent delta");
+        assert_eq!(blocks, vec!["previous".to_string()]);
     }
 
     #[test]

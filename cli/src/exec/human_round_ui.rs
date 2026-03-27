@@ -6,6 +6,7 @@
 //! - round lifecycle still follows `PotterRoundUi`, so project/round orchestration stays shared
 
 use std::io::Write;
+use std::time::Duration;
 use std::time::Instant;
 
 use codex_protocol::ThreadId;
@@ -19,6 +20,8 @@ use codex_tui::AppExitInfo;
 use codex_tui::ExecHumanRenderer;
 use codex_tui::ExitReason;
 use codex_tui::Verbosity;
+
+const PENDING_AGENT_MESSAGE_IDLE_FLUSH_DELAY: Duration = Duration::from_millis(250);
 
 /// Append-only `exec` round renderer that writes human-readable text blocks.
 pub struct ExecHumanRoundUi<W: Write> {
@@ -62,6 +65,20 @@ impl<W: Write> ExecHumanRoundUi<W> {
             self.write_block(&block, needs_spacing)?;
         }
         Ok(())
+    }
+
+    fn refresh_idle_flush_timer(
+        &self,
+        idle_flush_armed: &mut bool,
+        idle_flush_sleep: std::pin::Pin<&mut tokio::time::Sleep>,
+    ) {
+        if self.renderer.needs_idle_agent_message_flush() {
+            idle_flush_sleep
+                .reset(tokio::time::Instant::now() + PENDING_AGENT_MESSAGE_IDLE_FLUSH_DELAY);
+            *idle_flush_armed = true;
+        } else {
+            *idle_flush_armed = false;
+        }
     }
 
     fn process_event(
@@ -154,12 +171,16 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                 .map_err(|_| anyhow::anyhow!("codex op channel closed"))?;
 
             let mut needs_spacing = false;
+            let idle_flush_sleep = tokio::time::sleep(PENDING_AGENT_MESSAGE_IDLE_FLUSH_DELAY);
+            tokio::pin!(idle_flush_sleep);
+            let mut idle_flush_armed = false;
 
             loop {
                 while let Ok(event) = codex_event_rx.try_recv() {
                     if let Some(exit_info) = self.process_event(&event, &mut needs_spacing)? {
                         return Ok(exit_info);
                     }
+                    self.refresh_idle_flush_timer(&mut idle_flush_armed, idle_flush_sleep.as_mut());
                 }
 
                 if let Ok(message) = fatal_exit_rx.try_recv() {
@@ -192,6 +213,12 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                             exit_reason: ExitReason::Fatal(message),
                         });
                     }
+                    _ = &mut idle_flush_sleep, if idle_flush_armed => {
+                        if let Some(block) = self.renderer.flush_idle_agent_message()? {
+                            self.write_block(&block, &mut needs_spacing)?;
+                        }
+                        self.refresh_idle_flush_timer(&mut idle_flush_armed, idle_flush_sleep.as_mut());
+                    }
                     maybe_event = codex_event_rx.recv() => {
                         let Some(event) = maybe_event else {
                             let message = "codex event stream closed unexpectedly".to_string();
@@ -209,6 +236,7 @@ impl<W: Write> crate::workflow::round_runner::PotterRoundUi for ExecHumanRoundUi
                         if let Some(exit_info) = self.process_event(&event, &mut needs_spacing)? {
                             return Ok(exit_info);
                         }
+                        self.refresh_idle_flush_timer(&mut idle_flush_armed, idle_flush_sleep.as_mut());
                     }
                 }
             }
@@ -232,10 +260,41 @@ mod tests {
     use crate::workflow::round_runner::PotterRoundUi;
     use codex_protocol::approvals::ElicitationRequestEvent;
     use codex_protocol::mcp::RequestId;
+    use codex_protocol::protocol::AgentMessageEvent;
+    use codex_protocol::protocol::PotterRoundOutcome;
     use codex_protocol::protocol::TurnStartedEvent;
     use pretty_assertions::assert_eq;
+    use std::io;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use tokio::sync::mpsc::unbounded_channel;
+    use tokio::time;
+
+    #[derive(Clone, Default)]
+    struct SharedOutput {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl SharedOutput {
+        fn contents(&self) -> String {
+            String::from_utf8(self.inner.lock().expect("lock output").clone()).expect("utf8 output")
+        }
+    }
+
+    impl Write for SharedOutput {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner
+                .lock()
+                .expect("lock output")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn elicitation_request_fails_fast_with_error_block() {
@@ -299,5 +358,78 @@ mod tests {
             message,
             "unsupported interactive request: ElicitationRequest server_name=mcp-server request_id=req-1"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn idle_flush_makes_latest_agent_message_visible_before_round_exit() {
+        let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
+        let (codex_event_tx, codex_event_rx) = unbounded_channel::<Event>();
+        let (_fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+
+        codex_event_tx
+            .send(Event {
+                id: "agent-message".to_string(),
+                msg: EventMsg::AgentMessage(AgentMessageEvent {
+                    message: "latest commentary".to_string(),
+                    phase: None,
+                }),
+            })
+            .expect("send agent message");
+
+        let output = SharedOutput::default();
+        let output_reader = output.clone();
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async move {
+                let render = tokio::task::spawn_local(async move {
+                    let mut ui =
+                        ExecHumanRoundUi::new(output, Verbosity::Minimal, Some(120), false);
+                    ui.render_round(codex_tui::RenderRoundParams {
+                        prompt: "Continue".to_string(),
+                        pad_before_first_cell: false,
+                        status_header_prefix: None,
+                        prompt_footer: codex_tui::PromptFooterContext::new(
+                            PathBuf::from("."),
+                            None,
+                        ),
+                        codex_op_tx,
+                        codex_event_rx,
+                        fatal_exit_rx,
+                    })
+                    .await
+                });
+
+                let op = codex_op_rx.recv().await.expect("expected Op::UserInput");
+                assert!(matches!(op, Op::UserInput { .. }));
+                assert!(!output_reader.contents().contains("latest commentary"));
+
+                time::advance(PENDING_AGENT_MESSAGE_IDLE_FLUSH_DELAY + Duration::from_millis(1))
+                    .await;
+                tokio::task::yield_now().await;
+
+                let visible_output = output_reader.contents();
+                assert!(visible_output.contains("latest commentary"));
+
+                codex_event_tx
+                    .send(Event {
+                        id: "round-finished".to_string(),
+                        msg: EventMsg::PotterRoundFinished {
+                            outcome: PotterRoundOutcome::Completed,
+                        },
+                    })
+                    .expect("send PotterRoundFinished");
+                drop(codex_event_tx);
+
+                let exit_info = render
+                    .await
+                    .expect("join render task")
+                    .expect("render_round");
+                assert!(matches!(exit_info.exit_reason, ExitReason::Completed));
+
+                let final_output = output_reader.contents();
+                assert_eq!(final_output.matches("latest commentary").count(), 1);
+            })
+            .await;
     }
 }
