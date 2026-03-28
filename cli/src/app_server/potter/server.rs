@@ -88,7 +88,6 @@ struct ResumedProject {
     project_id: String,
     resolved: crate::workflow::resume::ResolvedProjectPaths,
     progress_file_rel: PathBuf,
-    potter_rollout_lines: Vec<crate::workflow::rollout::PotterRolloutLine>,
     index: crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
 }
 
@@ -552,7 +551,6 @@ fn resume_project(
         project_id: project_id.clone(),
         resolved: resolved.clone(),
         progress_file_rel: progress_file_rel.clone(),
-        potter_rollout_lines,
         index,
     });
 
@@ -606,9 +604,6 @@ async fn start_rounds(
     )
     .context("reset progress file finite_incantatem")?;
 
-    let baseline_rounds = count_completed_rounds(&resumed.potter_rollout_lines);
-    let baseline_rounds_u32 =
-        crate::rounds::usize_to_u32(baseline_rounds, "potter-rollout baseline rounds")?;
     let git_commit_start = crate::workflow::project::progress_file_git_commit_start(
         &resumed.resolved.workdir,
         &resumed.progress_file_rel,
@@ -624,7 +619,6 @@ async fn start_rounds(
         resumed.project_id.clone(),
         ResumedProjectPlan {
             resumed,
-            baseline_rounds: baseline_rounds_u32,
             git_commit_start,
             potter_rollout_path,
             rounds_total: rounds_total_u32,
@@ -881,22 +875,6 @@ fn load_potter_rollout_lines(
     Ok(lines)
 }
 
-fn count_completed_rounds(lines: &[crate::workflow::rollout::PotterRolloutLine]) -> usize {
-    // Interrupted rounds may still be persisted for replay/audit purposes when the user confirms
-    // stop, but `Op::Interrupt` intentionally does not consume future iteration budget: we may
-    // retry the same round/thread before the stop decision, and later resumes should not treat a
-    // stopped interrupted round as having consumed a new round slot.
-    lines
-        .iter()
-        .filter(|line| match line {
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome } => {
-                !matches!(outcome, PotterRoundOutcome::Interrupted)
-            }
-            _ => false,
-        })
-        .count()
-}
-
 fn build_resume_replay(
     resolved: &crate::workflow::resume::ResolvedProjectPaths,
     index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
@@ -1094,7 +1072,6 @@ impl FreshProjectPlan {
 #[derive(Debug, Clone)]
 struct ResumedProjectPlan {
     resumed: ResumedProject,
-    baseline_rounds: u32,
     git_commit_start: String,
     potter_rollout_path: PathBuf,
     rounds_total: u32,
@@ -1449,7 +1426,6 @@ async fn run_resumed_project(
 ) -> anyhow::Result<ProjectRunExit> {
     let ResumedProjectPlan {
         resumed,
-        baseline_rounds,
         git_commit_start,
         potter_rollout_path,
         rounds_total,
@@ -1488,7 +1464,6 @@ async fn run_resumed_project(
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
     let continuation_plan = ResumedProjectPlan {
         resumed: resumed.clone(),
-        baseline_rounds,
         git_commit_start: git_commit_start.clone(),
         potter_rollout_path: round_context.potter_rollout_path.clone(),
         rounds_total,
@@ -1543,7 +1518,7 @@ async fn run_resumed_project(
         initial_continue_round = Some(ContinueRoundPlan {
             round_current: unfinished.round_current,
             round_total: unfinished.round_total,
-            project_rounds_run: baseline_rounds.saturating_add(1),
+            project_rounds_run: 1,
             resume_thread_id: unfinished.thread_id,
             replay_event_msgs,
         });
@@ -1589,10 +1564,7 @@ async fn run_resumed_project(
                     ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
                     return Ok(ProjectRunExit::Completed);
                 }
-                rounds_run = initial_continue_round
-                    .project_rounds_run
-                    .checked_sub(baseline_rounds)
-                    .context("continued resumed round predates baseline_rounds")?;
+                rounds_run = initial_continue_round.project_rounds_run;
                 anyhow::ensure!(
                     rounds_run <= rounds_total,
                     "continued resumed round exceeded configured rounds_total: rounds_run={rounds_run} rounds_total={rounds_total}"
@@ -1639,7 +1611,7 @@ async fn run_resumed_project(
 
     while rounds_run < rounds_total {
         let current_round = next_round_current;
-        let project_rounds_run = baseline_rounds.saturating_add(rounds_run.saturating_add(1));
+        let project_rounds_run = rounds_run.saturating_add(1);
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
             &round_context,
@@ -1935,28 +1907,6 @@ mod tests {
                 .expect("decode")
                 .is_none()
         );
-    }
-
-    #[test]
-    fn count_completed_rounds_ignores_interrupted_outcome() {
-        let lines = vec![
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Interrupted,
-            },
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Completed,
-            },
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::TaskFailed {
-                    message: String::from("nope"),
-                },
-            },
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::UserRequested,
-            },
-        ];
-
-        assert_eq!(count_completed_rounds(&lines), 3);
     }
 
     #[test]
@@ -2405,10 +2355,8 @@ git_branch: "main"
                 project_id: project_id.clone(),
                 resolved,
                 progress_file_rel: progress_file_rel.clone(),
-                potter_rollout_lines: Vec::new(),
                 index,
             },
-            baseline_rounds: 0,
             git_commit_start: String::new(),
             potter_rollout_path: temp.path().join("potter-rollout.jsonl"),
             rounds_total: 1,
@@ -2445,6 +2393,213 @@ git_branch: "main"
             matches!(completed, PotterProjectOutcome::Fatal { .. }),
             "expected fatal outcome, got {completed:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resumed_project_summary_rounds_count_only_new_rounds() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::time::Duration;
+        use tokio::time::timeout;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let codex_bin = temp.path().join("dummy-codex");
+
+                let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+found=0
+for arg in "$@"; do
+  if [[ "$arg" == "app-server" ]]; then
+    found=1
+    break
+  fi
+done
+if [[ "$found" != "1" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _initialize
+echo '{"id":1,"result":{"userAgent":"test-agent","platformFamily":"unix","platformOs":"test-os"}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
+
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+                std::fs::write(&codex_bin, script).expect("write dummy codex");
+                let mut perms = std::fs::metadata(&codex_bin)
+                    .expect("stat dummy codex")
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+                let workdir = temp.path().to_path_buf();
+                let project_dir = workdir.join(".codexpotter/projects/2026/03/27/1");
+                std::fs::create_dir_all(&project_dir).expect("create project dir");
+
+                let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/27/1/MAIN.md");
+                let progress_file = workdir.join(&progress_file_rel);
+                std::fs::write(
+                    &progress_file,
+                    r#"---
+status: open
+finite_incantatem: false
+short_title: test
+git_commit: "start"
+git_branch: "main"
+---
+
+# Overall Goal
+"#,
+                )
+                .expect("write progress file");
+
+                let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir);
+                crate::workflow::rollout::append_line(
+                    &potter_rollout_path,
+                    &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                        user_message: Some("hello".to_string()),
+                        user_prompt_file: progress_file_rel.clone(),
+                    },
+                )
+                .expect("append project_started");
+                for idx in 0..16u32 {
+                    crate::workflow::rollout::append_line(
+                        &potter_rollout_path,
+                        &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                            current: idx.saturating_add(1),
+                            total: 16,
+                        },
+                    )
+                    .expect("append round_started");
+                    crate::workflow::rollout::append_line(
+                        &potter_rollout_path,
+                        &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                            outcome: PotterRoundOutcome::TaskFailed {
+                                message: String::from("nope"),
+                            },
+                        },
+                    )
+                    .expect("append round_finished");
+                }
+
+                let config = PotterAppServerConfig {
+                    default_workdir: workdir.clone(),
+                    codex_bin: codex_bin.display().to_string(),
+                    backend_launch: crate::app_server::AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    codex_compat_home: None,
+                    rounds: NonZeroUsize::new(4).expect("nonzero rounds"),
+                    upstream_cli_args: Default::default(),
+                };
+
+                let mut state = ServerState {
+                    config,
+                    running: None,
+                    resumed: None,
+                    interrupted: None,
+                };
+
+                let (writer_tx, mut writer_rx) = unbounded_channel::<JSONRPCMessage>();
+                let (internal_tx, mut internal_rx) = unbounded_channel::<InternalEvent>();
+
+                let resume = resume_project(
+                    &mut state,
+                    ProjectResumeParams {
+                        project_path: project_dir.clone(),
+                        cwd: Some(workdir.clone()),
+                        event_mode: None,
+                    },
+                )
+                .expect("resume project");
+
+                let project_id = resume.project_id.clone();
+                let response = start_rounds(
+                    &mut state,
+                    ProjectStartRoundsParams {
+                        project_id: project_id.clone(),
+                        rounds: Some(4),
+                        resume_policy: Some(ResumePolicy::StartNewRound),
+                        event_mode: Some(PotterEventMode::Interactive),
+                    },
+                    &writer_tx,
+                    &internal_tx,
+                )
+                .await
+                .expect("start rounds");
+                assert_eq!(response.rounds_total, 4);
+
+                let mut events = Vec::<Event>::new();
+                let finished_project_id = timeout(Duration::from_secs(10), async {
+                    loop {
+                        tokio::select! {
+                            maybe_internal = internal_rx.recv() => {
+                                let Some(internal) = maybe_internal else {
+                                    continue;
+                                };
+                                if let InternalEvent::ProjectFinished { project_id } = internal {
+                                    return project_id;
+                                }
+                            }
+                            maybe_msg = writer_rx.recv() => {
+                                let Some(msg) = maybe_msg else {
+                                    continue;
+                                };
+                                let JSONRPCMessage::Notification(notification) = msg else {
+                                    continue;
+                                };
+                                if notification.method != POTTER_EVENT_NOTIFICATION_METHOD {
+                                    continue;
+                                }
+                                let Some(params) = notification.params else {
+                                    continue;
+                                };
+                                let Ok(event) = serde_json::from_value::<Event>(params) else {
+                                    continue;
+                                };
+                                events.push(event);
+                            }
+                        }
+                    }
+                })
+                .await
+                .expect("timed out waiting for project completion");
+
+                assert_eq!(finished_project_id, project_id);
+                events.extend(drain_potter_events(writer_rx));
+
+                let rounds = events
+                    .iter()
+                    .find_map(|event| match &event.msg {
+                        EventMsg::PotterProjectBudgetExhausted { rounds, .. } => Some(*rounds),
+                        _ => None,
+                    })
+                    .expect("PotterProjectBudgetExhausted event");
+
+                assert_eq!(rounds, 4);
+            })
+            .await;
     }
 
     #[tokio::test]
