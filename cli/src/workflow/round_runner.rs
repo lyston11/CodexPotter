@@ -83,6 +83,11 @@ pub struct PotterRoundOptions {
     pub project_started: Option<PotterProjectStartedInfo>,
     pub round_current: u32,
     pub round_total: u32,
+    /// Number of rounds executed in the current iteration window, including this round.
+    ///
+    /// This intentionally differs from `round_current` when resuming unfinished rounds: resume may
+    /// preserve the original round position (for example `7/10`) while summary metrics should
+    /// reflect only the newly executed rounds since the resume continuation began.
     pub project_rounds_run: u32,
 }
 
@@ -92,6 +97,11 @@ pub struct PotterContinueRoundOptions {
     pub pad_before_first_cell: bool,
     pub round_current: u32,
     pub round_total: u32,
+    /// Number of rounds executed in the current iteration window, including this round.
+    ///
+    /// This intentionally differs from `round_current` when resuming unfinished rounds: resume may
+    /// preserve the original round position (for example `7/10`) while summary metrics should
+    /// reflect only the newly executed rounds since the resume continuation began.
     pub project_rounds_run: u32,
     /// Existing Codex thread to resume for this unfinished round.
     pub resume_thread_id: codex_protocol::ThreadId,

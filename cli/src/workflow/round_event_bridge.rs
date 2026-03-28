@@ -33,6 +33,12 @@ pub struct PotterRoundEventBridgeConfig {
     pub project_started_at: Instant,
     pub round_current: u32,
     pub round_total: u32,
+    /// Number of rounds executed in the current iteration window, including the active round.
+    ///
+    /// This value is used for summary markers (`PotterProjectSucceeded` /
+    /// `PotterProjectBudgetExhausted`) and for the persisted `ProjectSucceeded` rollout entry. It
+    /// intentionally resets when a project is resumed so the round count matches the elapsed
+    /// duration for the current iteration window.
     pub project_rounds_run: u32,
 }
 
