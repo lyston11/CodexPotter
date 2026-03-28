@@ -5,6 +5,8 @@
 //! This renderer is intentionally append-only:
 //! - it preserves the same broad visibility policy as codex-potter's interactive verbosity modes
 //! - it does **not** use interactive folding/coalescing, because exec cannot rewrite prior output
+//! - it emits a metadata header block (workdir/model/reasoning effort/project file) at the start of
+//!   the transcript instead of the interactive `Project created:` hint
 //! - it emits dim timestamped status hints when reasoning changes the live shimmer header, because
 //!   exec has no mutable status bar; these hints omit the interactive round-prefix shimmer chrome
 //!   and only surface `context left` when usage first crosses each 10% threshold
@@ -17,6 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::TokenUsage;
 use crossterm::queue;
 use crossterm::style::Color as CrosstermColor;
@@ -77,6 +80,18 @@ struct PendingProjectSummary {
     git_commit_end: String,
 }
 
+#[derive(Debug, Clone)]
+struct PendingExecMetaInfo {
+    workdir: PathBuf,
+    user_prompt_file: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct SessionMetaInfo {
+    model: String,
+    reasoning_effort: Option<ReasoningEffortConfig>,
+}
+
 /// Append-only human-readable renderer used by `codex-potter exec` without `--json`.
 pub struct ExecHumanRenderer {
     cwd: PathBuf,
@@ -96,6 +111,10 @@ pub struct ExecHumanRenderer {
     model_context_window: Option<i64>,
     context_output_level: i64,
     reasoning_status: ReasoningStatusTracker,
+    pending_exec_meta: Option<PendingExecMetaInfo>,
+    session_meta: Option<SessionMetaInfo>,
+    pending_initial_blocks: Vec<String>,
+    emitted_exec_meta: bool,
 }
 
 impl ExecHumanRenderer {
@@ -120,6 +139,10 @@ impl ExecHumanRenderer {
             model_context_window: None,
             context_output_level: EXEC_REASONING_CONTEXT_MAX_LEVEL,
             reasoning_status: ReasoningStatusTracker::new(),
+            pending_exec_meta: None,
+            session_meta: None,
+            pending_initial_blocks: Vec::new(),
+            emitted_exec_meta: false,
         }
     }
 
@@ -134,6 +157,7 @@ impl ExecHumanRenderer {
     /// Flush buffered transcript state before an abnormal exit.
     pub fn flush_for_exit(&mut self) -> io::Result<Vec<String>> {
         let mut out = Vec::new();
+        out.extend(self.flush_pending_exec_meta(true)?);
         out.extend(self.flush_agent_output(false)?);
         out.extend(self.flush_plan_stream()?);
         Ok(out)
@@ -173,6 +197,11 @@ impl ExecHumanRenderer {
             EventMsg::SessionConfigured(cfg) => {
                 self.cwd = cfg.cwd.clone();
                 self.stream = StreamController::new(self.width.map(usize::from), &self.cwd);
+                self.session_meta = Some(SessionMetaInfo {
+                    model: cfg.model.clone(),
+                    reasoning_effort: cfg.reasoning_effort,
+                });
+                out.extend(self.flush_pending_exec_meta(false)?);
             }
             EventMsg::TurnStarted(ev) => {
                 self.pending_simple_final_message_separator = false;
@@ -183,22 +212,31 @@ impl ExecHumanRenderer {
                 self.reasoning_status.reset();
             }
             EventMsg::PotterProjectStarted {
-                user_prompt_file, ..
+                working_dir,
+                user_prompt_file,
+                ..
             } => {
-                out.push(self.render_project_hint_block(user_prompt_file.as_path())?);
+                self.pending_exec_meta = Some(PendingExecMetaInfo {
+                    workdir: working_dir.clone(),
+                    user_prompt_file: user_prompt_file.clone(),
+                });
+                out.extend(self.flush_pending_exec_meta(false)?);
             }
             EventMsg::PotterRoundStarted { current, total } => {
                 self.pending_simple_final_message_separator = false;
                 self.separator_baseline = Some(Instant::now());
-                out.push(self.render_lines(vec![Line::from(vec![
-                    Span::styled(
-                        "CodexPotter: ",
-                        Style::default()
-                            .fg(secondary_color())
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    format!("iteration round {current}/{total}").into(),
-                ])])?);
+                self.push_block(
+                    &mut out,
+                    self.render_lines(vec![Line::from(vec![
+                        Span::styled(
+                            "CodexPotter: ",
+                            Style::default()
+                                .fg(secondary_color())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        format!("iteration round {current}/{total}").into(),
+                    ])])?,
+                );
             }
             EventMsg::TokenCount(ev) => {
                 if let Some(info) = &ev.info {
@@ -563,6 +601,43 @@ impl ExecHumanRenderer {
         Ok(out)
     }
 
+    fn push_block(&mut self, out: &mut Vec<String>, block: String) {
+        if self.emitted_exec_meta || self.pending_exec_meta.is_none() {
+            out.push(block);
+        } else {
+            self.pending_initial_blocks.push(block);
+        }
+    }
+
+    fn flush_pending_exec_meta(&mut self, allow_placeholders: bool) -> io::Result<Vec<String>> {
+        if self.emitted_exec_meta {
+            return Ok(Vec::new());
+        }
+
+        let Some(pending_meta) = self.pending_exec_meta.clone() else {
+            return Ok(Vec::new());
+        };
+
+        let (model, reasoning_effort) = match &self.session_meta {
+            Some(meta) => (meta.model.clone(), meta.reasoning_effort),
+            None if allow_placeholders => ("<missing>".to_string(), None),
+            None => return Ok(Vec::new()),
+        };
+
+        self.emitted_exec_meta = true;
+        self.pending_exec_meta = None;
+
+        let mut out = Vec::new();
+        out.push(self.render_exec_meta_block(
+            pending_meta.workdir.as_path(),
+            &model,
+            reasoning_effort,
+            pending_meta.user_prompt_file.as_path(),
+        )?);
+        out.append(&mut self.pending_initial_blocks);
+        Ok(out)
+    }
+
     fn build_agent_message_lines(&self, message: &str) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         markdown::append_markdown(
@@ -812,11 +887,37 @@ impl ExecHumanRenderer {
         self.render_lines(lines)
     }
 
-    fn render_project_hint_block(&self, user_prompt_file: &std::path::Path) -> io::Result<String> {
-        self.render_lines(vec![Line::from(vec![
-            "Project created: ".dim(),
-            user_prompt_file.to_string_lossy().to_string().into(),
-        ])])
+    fn render_exec_meta_block(
+        &self,
+        workdir: &std::path::Path,
+        model: &str,
+        reasoning_effort: Option<ReasoningEffortConfig>,
+        user_prompt_file: &std::path::Path,
+    ) -> io::Result<String> {
+        let reasoning_effort = reasoning_effort
+            .map(|effort| effort.to_string())
+            .unwrap_or_else(|| "<missing>".to_string());
+        let lines = vec![
+            Line::from("--------"),
+            Line::from(vec![
+                "workdir:".bold(),
+                " ".into(),
+                workdir.display().to_string().into(),
+            ]),
+            Line::from(vec!["model:".bold(), " ".into(), model.to_string().into()]),
+            Line::from(vec![
+                "reasoning effort:".bold(),
+                " ".into(),
+                reasoning_effort.into(),
+            ]),
+            Line::from(vec![
+                "codexpotter project file:".bold(),
+                " ".into(),
+                user_prompt_file.to_string_lossy().to_string().into(),
+            ]),
+            Line::from("--------"),
+        ];
+        self.render_lines(lines)
     }
 
     fn mark_work_activity(&mut self) {
@@ -1234,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn project_started_emits_only_project_hint() {
+    fn project_started_emits_exec_meta_block_first() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
         let blocks = renderer
             .handle_event(&EventMsg::PotterProjectStarted {
@@ -1245,9 +1346,49 @@ mod tests {
             })
             .expect("project started");
 
+        assert!(blocks.is_empty());
+
+        let blocks = renderer
+            .handle_event(&EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 10,
+            })
+            .expect("round marker");
+        assert!(blocks.is_empty());
+
+        let blocks = renderer
+            .handle_event(&EventMsg::SessionConfigured(
+                codex_protocol::protocol::SessionConfiguredEvent {
+                    session_id: codex_protocol::ThreadId::from_string(
+                        "019ca423-63d9-7641-ae83-db060ad3c000",
+                    )
+                    .expect("thread id"),
+                    forked_from_id: None,
+                    model: "gpt-5.2".to_string(),
+                    model_provider_id: "openai".to_string(),
+                    service_tier: None,
+                    cwd: PathBuf::from("/repo"),
+                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+                    history_log_id: 0,
+                    history_entry_count: 0,
+                    initial_messages: None,
+                    rollout_path: PathBuf::from("/repo/rollout.jsonl"),
+                },
+            ))
+            .expect("session configured");
+
         assert_eq!(
             blocks,
-            vec!["Project created: .codexpotter/projects/2026/03/27/1/MAIN.md".to_string(),]
+            vec![
+                "--------\n\
+workdir: /repo\n\
+model: gpt-5.2\n\
+reasoning effort: xhigh\n\
+codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
+--------"
+                    .to_string(),
+                "CodexPotter: iteration round 1/10".to_string(),
+            ]
         );
     }
 
