@@ -5,8 +5,9 @@
 //! This renderer is intentionally append-only:
 //! - it preserves the same broad visibility policy as codex-potter's interactive verbosity modes
 //! - it does **not** use interactive folding/coalescing, because exec cannot rewrite prior output
-//! - it emits dim status hints when reasoning changes the live shimmer header, because exec has no
-//!   mutable status bar
+//! - it emits dim timestamped status hints when reasoning changes the live shimmer header, because
+//!   exec has no mutable status bar; these hints omit the interactive round-prefix shimmer chrome
+//!   and only surface `context left` when usage first crosses each 10% threshold
 //! - it renders CodexPotter round / summary markers as plain text blocks instead of interactive
 //!   transcript chrome
 
@@ -52,13 +53,13 @@ use crate::markdown;
 use crate::multi_agents;
 use crate::reasoning_status::ReasoningStatusTracker;
 use crate::status_indicator_widget::fmt_elapsed_compact;
-use crate::status_line::StatusLine;
-use crate::status_line::render_status_line;
 use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 use crate::ui_colors::secondary_color;
 
 const DEFAULT_RENDER_WIDTH: u16 = 120;
+const EXEC_REASONING_CONTEXT_STEP: i64 = 10;
+const EXEC_REASONING_CONTEXT_MAX_LEVEL: i64 = 100;
 
 #[derive(Debug)]
 enum PendingProjectSummaryOutcome {
@@ -90,12 +91,10 @@ pub struct ExecHumanRenderer {
     pending_project_summary: Option<PendingProjectSummary>,
     pending_simple_final_message_separator: bool,
     separator_baseline: Option<Instant>,
-    project_started_at: Option<Instant>,
     status_started_at: Option<Instant>,
-    status_header_prefix: Option<String>,
-    token_usage: TokenUsage,
     context_usage: TokenUsage,
     model_context_window: Option<i64>,
+    context_output_level: i64,
     reasoning_status: ReasoningStatusTracker,
 }
 
@@ -116,20 +115,16 @@ impl ExecHumanRenderer {
             pending_project_summary: None,
             pending_simple_final_message_separator: false,
             separator_baseline: None,
-            project_started_at: None,
             status_started_at: None,
-            status_header_prefix: None,
-            token_usage: TokenUsage::default(),
             context_usage: TokenUsage::default(),
             model_context_window: None,
+            context_output_level: EXEC_REASONING_CONTEXT_MAX_LEVEL,
             reasoning_status: ReasoningStatusTracker::new(),
         }
     }
 
-    /// Provide the project start time used by status hints that mirror the live shimmer line.
-    pub fn set_project_started_at(&mut self, started_at: Instant) {
-        self.project_started_at = Some(started_at);
-    }
+    /// Provide the project start time for API parity with interactive renderers.
+    pub fn set_project_started_at(&mut self, _started_at: Instant) {}
 
     /// Render a fatal error block.
     pub fn render_error_block(&self, message: String) -> io::Result<String> {
@@ -184,18 +179,17 @@ impl ExecHumanRenderer {
                 self.separator_baseline = Some(Instant::now());
                 self.status_started_at = Some(Instant::now());
                 self.model_context_window = ev.model_context_window;
+                self.context_output_level = EXEC_REASONING_CONTEXT_MAX_LEVEL;
                 self.reasoning_status.reset();
             }
             EventMsg::PotterProjectStarted {
                 user_prompt_file, ..
             } => {
-                self.project_started_at.get_or_insert_with(Instant::now);
                 out.push(self.render_project_hint_block(user_prompt_file.as_path())?);
             }
             EventMsg::PotterRoundStarted { current, total } => {
                 self.pending_simple_final_message_separator = false;
                 self.separator_baseline = Some(Instant::now());
-                self.status_header_prefix = Some(format!("Round {current}/{total}"));
                 out.push(self.render_lines(vec![Line::from(vec![
                     Span::styled(
                         "CodexPotter: ",
@@ -208,7 +202,6 @@ impl ExecHumanRenderer {
             }
             EventMsg::TokenCount(ev) => {
                 if let Some(info) = &ev.info {
-                    self.token_usage = info.total_token_usage.clone();
                     self.context_usage = info.last_token_usage.clone();
                     self.model_context_window =
                         info.model_context_window.or(self.model_context_window);
@@ -682,81 +675,67 @@ impl ExecHumanRenderer {
         let Some(header) = self.reasoning_status.on_delta(delta) else {
             return Ok(None);
         };
-        self.render_status_hint_block(header).map(Some)
+        self.render_reasoning_status_hint_block(header).map(Some)
     }
 
-    fn render_status_hint_block(&self, header: String) -> io::Result<String> {
-        self.render_lines(self.build_status_hint_lines(header))
+    fn render_reasoning_status_hint_block(&mut self, header: String) -> io::Result<String> {
+        let lines = self.build_reasoning_status_hint_lines(header);
+        self.render_lines(lines)
     }
 
-    fn build_status_hint_lines(&self, header: String) -> Vec<Line<'static>> {
+    fn build_reasoning_status_hint_lines(&mut self, header: String) -> Vec<Line<'static>> {
         let elapsed = self
             .status_started_at
             .map(|started_at| started_at.elapsed())
             .unwrap_or_default();
-        let header_prefix_elapsed = match (self.project_started_at, self.status_started_at) {
-            (Some(project_started_at), Some(status_started_at)) => Some(
-                status_started_at
-                    .saturating_duration_since(project_started_at)
-                    .saturating_add(elapsed),
-            ),
-            (Some(project_started_at), None) => Some(project_started_at.elapsed()),
-            (None, _) => None,
-        };
-        let (context_window_percent, context_window_used_tokens) =
-            self.current_context_window_display();
-        self.build_status_hint_lines_from_state(
+        self.build_reasoning_status_hint_lines_from_state(
             header,
             elapsed,
-            header_prefix_elapsed,
-            context_window_percent,
-            context_window_used_tokens,
+            self.current_context_window_percent(),
         )
     }
 
-    fn build_status_hint_lines_from_state(
-        &self,
+    fn build_reasoning_status_hint_lines_from_state(
+        &mut self,
         header: String,
         elapsed: Duration,
-        header_prefix_elapsed: Option<Duration>,
         context_window_percent: Option<i64>,
-        context_window_used_tokens: Option<i64>,
     ) -> Vec<Line<'static>> {
-        let mut lines = vec![render_status_line(
-            &StatusLine {
-                header,
-                header_prefix: self.status_header_prefix.clone(),
-                header_prefix_elapsed,
-                elapsed,
-                context_window_percent,
-                context_window_used_tokens,
-                show_context_window: true,
-            },
-            None,
-            false,
-        )];
+        let pretty_elapsed = fmt_elapsed_compact(elapsed.as_secs());
+        let mut text = format!("@{pretty_elapsed}: {header}");
+        if let Some(percent) = self.take_reasoning_context_hint(context_window_percent) {
+            text.push_str(&format!(" ({percent}% context left)"));
+        }
+
+        let mut lines = vec![Line::from(text)];
         crate::render::line_utils::dim_lines(&mut lines);
         lines
     }
 
-    fn current_context_window_display(&self) -> (Option<i64>, Option<i64>) {
-        let Some(context_window) = self
+    fn current_context_window_percent(&self) -> Option<i64> {
+        let context_window = self
             .model_context_window
-            .filter(|context_window| *context_window > 0)
-        else {
-            return (
-                None,
-                (self.token_usage.total_tokens > 0).then_some(self.token_usage.total_tokens),
-            );
-        };
+            .filter(|context_window| *context_window > 0)?;
 
-        (
-            Some(
-                self.context_usage
-                    .percent_of_context_window_remaining(context_window),
-            ),
-            None,
+        Some(
+            self.context_usage
+                .percent_of_context_window_remaining(context_window)
+                .clamp(0, 100),
         )
+    }
+
+    fn take_reasoning_context_hint(&mut self, context_window_percent: Option<i64>) -> Option<i64> {
+        let percent = context_window_percent?;
+        let recovered_level = reasoning_context_output_level(percent);
+        if recovered_level > self.context_output_level {
+            self.context_output_level = recovered_level;
+        }
+        if percent >= self.context_output_level - EXEC_REASONING_CONTEXT_STEP {
+            return None;
+        }
+
+        self.context_output_level = recovered_level;
+        Some(percent)
     }
 
     fn render_patch_blocks(
@@ -952,9 +931,25 @@ fn short_git_commit(commit: &str) -> String {
 
 fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
     match event_name {
+        codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
+        codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
         codex_protocol::protocol::HookEventName::SessionStart => "session-start",
+        codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
         codex_protocol::protocol::HookEventName::Stop => "stop",
     }
+}
+
+fn reasoning_context_output_level(percent: i64) -> i64 {
+    if percent <= 0 {
+        return EXEC_REASONING_CONTEXT_STEP;
+    }
+
+    ((percent + EXEC_REASONING_CONTEXT_STEP - 1) / EXEC_REASONING_CONTEXT_STEP
+        * EXEC_REASONING_CONTEXT_STEP)
+        .clamp(
+            EXEC_REASONING_CONTEXT_STEP,
+            EXEC_REASONING_CONTEXT_MAX_LEVEL,
+        )
 }
 
 struct ModifierDiff {
@@ -1504,24 +1499,102 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_status_hint_uses_shimmer_line_format_and_dims_output() {
+    fn reasoning_status_hint_uses_exec_timestamp_format_and_dims_output() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
-        renderer.status_header_prefix = Some("Round 1/10".to_string());
 
-        let lines = renderer.build_status_hint_lines_from_state(
+        let lines = renderer.build_reasoning_status_hint_lines_from_state(
             "Updating progress file".to_string(),
             Duration::from_secs(2650),
-            Some(Duration::from_secs(2650)),
             Some(12),
-            None,
         );
 
         assert_eq!(lines.len(), 1);
         assert_eq!(
             line_to_plain_string(&lines[0]),
-            "• Round 1/10 (44m 10s) · Updating progress file (44m 10s) · 12% context left"
+            "@44m 10s: Updating progress file (12% context left)"
         );
         assert_all_spans_dimmed(&lines);
+    }
+
+    #[test]
+    fn reasoning_status_hint_only_emits_context_when_crossing_new_thresholds() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+
+        let first = renderer.build_reasoning_status_hint_lines_from_state(
+            "Researching advisory lock mechanism".to_string(),
+            Duration::from_secs(15),
+            Some(89),
+        );
+        assert_eq!(
+            line_to_plain_string(&first[0]),
+            "@15s: Researching advisory lock mechanism (89% context left)"
+        );
+
+        let second = renderer.build_reasoning_status_hint_lines_from_state(
+            "Planning inventory tasks".to_string(),
+            Duration::from_secs(25),
+            Some(80),
+        );
+        assert_eq!(
+            line_to_plain_string(&second[0]),
+            "@25s: Planning inventory tasks"
+        );
+
+        let third = renderer.build_reasoning_status_hint_lines_from_state(
+            "Searching for advisory locks".to_string(),
+            Duration::from_secs(40),
+            Some(79),
+        );
+        assert_eq!(
+            line_to_plain_string(&third[0]),
+            "@40s: Searching for advisory locks (79% context left)"
+        );
+
+        let fourth = renderer.build_reasoning_status_hint_lines_from_state(
+            "Examining code files".to_string(),
+            Duration::from_secs(45),
+            Some(75),
+        );
+        assert_eq!(
+            line_to_plain_string(&fourth[0]),
+            "@45s: Examining code files"
+        );
+    }
+
+    #[test]
+    fn reasoning_status_hint_context_thresholds_reset_after_recovery() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+
+        let _ = renderer.build_reasoning_status_hint_lines_from_state(
+            "Evaluating project locks".to_string(),
+            Duration::from_secs(15),
+            Some(89),
+        );
+        let _ = renderer.build_reasoning_status_hint_lines_from_state(
+            "Evaluating project locks".to_string(),
+            Duration::from_secs(25),
+            Some(79),
+        );
+
+        let recovered = renderer.build_reasoning_status_hint_lines_from_state(
+            "Context compacted".to_string(),
+            Duration::from_secs(30),
+            Some(95),
+        );
+        assert_eq!(
+            line_to_plain_string(&recovered[0]),
+            "@30s: Context compacted"
+        );
+
+        let after_recovery = renderer.build_reasoning_status_hint_lines_from_state(
+            "Evaluating project locks".to_string(),
+            Duration::from_secs(35),
+            Some(89),
+        );
+        assert_eq!(
+            line_to_plain_string(&after_recovery[0]),
+            "@35s: Evaluating project locks (89% context left)"
+        );
     }
 
     #[test]

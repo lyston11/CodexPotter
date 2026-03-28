@@ -39,14 +39,34 @@ pub struct InitializeCapabilities {
     pub opt_out_notification_methods: Option<Vec<String>>,
 }
 
+/// Optional server metadata returned by newer app-server builds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
 /// Response payload for the `initialize` request.
+///
+/// Current upstream releases can omit `codexHome`, and some SDKs also accept
+/// `serverInfo`. Keep this shape tolerant so `initialize` decoding does not
+/// break when the app-server trims metadata.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResponse {
-    pub user_agent: String,
-    pub codex_home: PathBuf,
-    pub platform_family: String,
-    pub platform_os: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_info: Option<ServerInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_home: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_os: Option<String>,
 }
 
 /// Response payload for an `applyPatch` approval request.

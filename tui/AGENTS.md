@@ -39,7 +39,7 @@ Divergences must be documented in places below to avoid regression when syncing 
   - Reasoning messages are never rendered.
   - Successful `Ran` items suppress output preview and adjacent ones are collapsed into one.
   - `Explored` items are more aggressively collapsed.
-  Minimal mode:
+    Minimal mode:
   - With all the above Simple-mode suppressions, plus:
   - Only the final agent message in a turn stays normal; earlier completed agent messages stay dim
   - Streamed agent text is committed only after completion, then kept pending until a later visible event or `TurnComplete` confirms whether it is final
@@ -51,11 +51,9 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Consecutive `Viewed Image` items are coalesced into one block in Simple mode, preserve event order, and render live as new paths arrive; Minimal mode hides them.
 - Consecutive `Searched` items are coalesced into one block in Simple mode and render live as new queries arrive; Minimal mode hides them.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success / budget exhaustion).
-- `codex-potter exec` without `--json` uses a separate append-only renderer that follows the same
-  broad visibility policy as interactive verbosity, but never folds/coalesces prior output and
-  renders Potter round/summary markers as plain text blocks.
-- That append-only exec renderer also emits a dim status line when reasoning changes the live
-  shimmer header, so headless runs still surface the latest derived status without a mutable UI.
+- `codex-potter exec` without `--json`:
+  - renders content similar to interactive mode, respect verbosity, but in append-only way — never folds/coalesces prior output.
+  - additionally emits the text of the shimmer when it changes.
 
 ### Shimmer
 

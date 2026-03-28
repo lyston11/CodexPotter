@@ -143,16 +143,109 @@ pub enum WebSearchMode {
     Live,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningSummary {
+    #[default]
+    Auto,
+    Concise,
+    Detailed,
+    None,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Personality {
+    None,
+    Friendly,
+    Pragmatic,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: JsonValue,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_loading: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DynamicToolSpecDe {
+    name: String,
+    description: String,
+    input_schema: JsonValue,
+    defer_loading: Option<bool>,
+    expose_to_context: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for DynamicToolSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let DynamicToolSpecDe {
+            name,
+            description,
+            input_schema,
+            defer_loading,
+            expose_to_context,
+        } = DynamicToolSpecDe::deserialize(deserializer)?;
+
+        Ok(Self {
+            name,
+            description,
+            input_schema,
+            defer_loading: defer_loading
+                .unwrap_or_else(|| expose_to_context.map(|visible| !visible).unwrap_or(false)),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ExecPolicyAmendment {
+    pub command: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPolicyRuleAction {
+    Allow,
+    Deny,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkPolicyAmendment {
+    pub host: String,
+    pub action: NetworkPolicyRuleAction,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CommandExecutionApprovalDecision {
     Accept,
+    AcceptForSession,
+    AcceptWithExecpolicyAmendment {
+        execpolicy_amendment: ExecPolicyAmendment,
+    },
+    ApplyNetworkPolicyAmendment {
+        network_policy_amendment: NetworkPolicyAmendment,
+    },
+    Decline,
+    Cancel,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum FileChangeApprovalDecision {
     Accept,
+    AcceptForSession,
+    Decline,
+    Cancel,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -501,12 +594,36 @@ pub enum NetworkAccess {
     Enabled,
 }
 
+fn default_include_platform_defaults() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ReadOnlyAccess {
+    #[serde(rename_all = "camelCase")]
+    Restricted {
+        #[serde(default = "default_include_platform_defaults")]
+        include_platform_defaults: bool,
+        #[serde(default)]
+        readable_roots: Vec<AbsolutePathBuf>,
+    },
+    #[default]
+    FullAccess,
+}
+
 /// Concrete sandbox policy resolved by the upstream app-server.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SandboxPolicy {
     DangerFullAccess,
-    ReadOnly,
+    #[serde(rename_all = "camelCase")]
+    ReadOnly {
+        #[serde(default)]
+        access: ReadOnlyAccess,
+        #[serde(default)]
+        network_access: bool,
+    },
     #[serde(rename_all = "camelCase")]
     ExternalSandbox {
         #[serde(default)]
@@ -516,6 +633,8 @@ pub enum SandboxPolicy {
     WorkspaceWrite {
         #[serde(default)]
         writable_roots: Vec<AbsolutePathBuf>,
+        #[serde(default)]
+        read_only_access: ReadOnlyAccess,
         #[serde(default)]
         network_access: bool,
         #[serde(default)]
@@ -533,14 +652,23 @@ pub enum SandboxPolicy {
 pub struct ThreadStartParams {
     pub model: Option<String>,
     pub model_provider: Option<String>,
+    pub service_tier: Option<Option<ServiceTier>>,
     pub cwd: Option<String>,
     pub approval_policy: Option<AskForApproval>,
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox: Option<SandboxMode>,
     pub config: Option<HashMap<String, JsonValue>>,
+    pub service_name: Option<String>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
+    pub personality: Option<Personality>,
+    pub ephemeral: Option<bool>,
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
+    pub mock_experimental_field: Option<String>,
     #[serde(default)]
     pub experimental_raw_events: bool,
+    #[serde(default)]
+    pub persist_extended_history: bool,
 }
 
 /// Response payload for `thread/start`.
@@ -565,14 +693,21 @@ pub struct ThreadStartResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadResumeParams {
     pub thread_id: String,
+    pub history: Option<Vec<JsonValue>>,
+    pub path: Option<PathBuf>,
     pub model: Option<String>,
     pub model_provider: Option<String>,
+    pub service_tier: Option<Option<ServiceTier>>,
     pub cwd: Option<String>,
     pub approval_policy: Option<AskForApproval>,
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox: Option<SandboxMode>,
     pub config: Option<HashMap<String, JsonValue>>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
+    pub personality: Option<Personality>,
+    #[serde(default)]
+    pub persist_extended_history: bool,
 }
 
 /// Response payload for `thread/resume`.
@@ -595,7 +730,36 @@ pub struct ThreadResumeResponse {
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
-    pub path: PathBuf,
+    #[serde(default)]
+    pub preview: String,
+    #[serde(default)]
+    pub ephemeral: bool,
+    #[serde(default)]
+    pub model_provider: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub status: JsonValue,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub cwd: PathBuf,
+    #[serde(default)]
+    pub cli_version: String,
+    #[serde(default)]
+    pub source: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_nickname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_info: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub turns: Vec<Turn>,
 }
 
 /// Parameters for the `thread/rollback` JSON-RPC method.
@@ -649,19 +813,28 @@ pub struct TurnStartParams {
     pub input: Vec<UserInput>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_policy: Option<SandboxPolicy>,
     pub model: Option<String>,
-    pub effort: Option<JsonValue>,
-    pub summary: Option<JsonValue>,
+    pub service_tier: Option<Option<ServiceTier>>,
+    pub effort: Option<ReasoningEffort>,
+    pub summary: Option<ReasoningSummary>,
+    pub personality: Option<Personality>,
     pub output_schema: Option<JsonValue>,
     pub collaboration_mode: Option<CollaborationMode>,
 }
 
 /// Upstream turn metadata returned by `turn/*` methods.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Turn {
     pub id: String,
+    #[serde(default)]
+    pub items: Vec<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TurnStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<TurnError>,
 }
 
 /// Response payload for `turn/start`.
@@ -775,7 +948,10 @@ impl From<CoreUserInput> for UserInput {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum HookEventName {
+    PreToolUse,
+    PostToolUse,
     SessionStart,
+    UserPromptSubmit,
     Stop,
 }
 
@@ -1223,11 +1399,16 @@ pub enum CommandAction {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use codex_protocol::protocol::CodexErrorInfo;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
+    use super::DynamicToolSpec;
+    use super::Thread;
     use super::TurnError;
+    use super::TurnStatus;
 
     #[test]
     fn turn_error_deserializes_known_camel_case_codex_error_info() {
@@ -1277,5 +1458,71 @@ mod tests {
 
         assert_eq!(error.message, "fatal error");
         assert_eq!(error.codex_error_info, None);
+    }
+
+    #[test]
+    fn dynamic_tool_spec_deserializes_legacy_expose_to_context() {
+        let spec: DynamicToolSpec = serde_json::from_value(json!({
+            "name": "lookup_ticket",
+            "description": "Fetch a ticket",
+            "inputSchema": {
+                "type": "object"
+            },
+            "exposeToContext": false
+        }))
+        .expect("deserialize dynamic tool spec");
+
+        assert_eq!(
+            spec,
+            DynamicToolSpec {
+                name: "lookup_ticket".to_string(),
+                description: "Fetch a ticket".to_string(),
+                input_schema: json!({
+                    "type": "object"
+                }),
+                defer_loading: true,
+            }
+        );
+    }
+
+    #[test]
+    fn thread_deserializes_current_upstream_shape() {
+        let thread: Thread = serde_json::from_value(json!({
+            "id": "thread-1",
+            "preview": "Investigate protocol drift",
+            "ephemeral": false,
+            "modelProvider": "openai",
+            "createdAt": 1,
+            "updatedAt": 2,
+            "status": {
+                "type": "active",
+                "activeFlags": ["waitingOnApproval"]
+            },
+            "path": "/tmp/thread.jsonl",
+            "cwd": "/tmp/worktree",
+            "cliVersion": "0.116.0",
+            "source": "cli",
+            "agentNickname": "reviewer",
+            "agentRole": "worker",
+            "gitInfo": {
+                "branch": "main"
+            },
+            "name": "Protocol drift",
+            "turns": [{
+                "id": "turn-1",
+                "items": [{
+                    "type": "message"
+                }],
+                "status": "completed",
+                "error": null
+            }]
+        }))
+        .expect("deserialize thread");
+
+        assert_eq!(thread.id, "thread-1");
+        assert_eq!(thread.preview, "Investigate protocol drift");
+        assert_eq!(thread.path, Some(PathBuf::from("/tmp/thread.jsonl")));
+        assert_eq!(thread.turns.len(), 1);
+        assert_eq!(thread.turns[0].status, Some(TurnStatus::Completed));
     }
 }

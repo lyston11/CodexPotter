@@ -164,7 +164,9 @@ fn all_referenced_rollouts_exist(
 ) -> bool {
     let mut all_paths = Vec::new();
     for round in &index.completed_rounds {
-        all_paths.push(&round.rollout_path);
+        if let Some(configured) = &round.configured {
+            all_paths.push(&configured.rollout_path);
+        }
     }
     if let Some(unfinished) = &index.unfinished_round {
         all_paths.push(&unfinished.rollout_path);

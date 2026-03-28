@@ -93,6 +93,7 @@ Each line is a single JSON object (append-only). The schema is a tagged enum wit
   - `rollout_path`: path to the upstream rollout file (recorded as an absolute path when possible).
   - `rollout_path_raw` / `rollout_base_dir` (optional): debugging fields populated when path
     canonicalization fails.
+  - This line is omitted if the round fails before upstream session initialization completes.
 - `project_succeeded`
   - `rounds`: number of rounds recorded for the overall project (used for summary rendering).
   - `duration_secs`: wall-clock elapsed time since the current live run started (new project or
@@ -102,6 +103,7 @@ Each line is a single JSON object (append-only). The schema is a tagged enum wit
 - `round_finished`
   - `outcome`: `completed` | `user_requested` | `task_failed` | `fatal` (payload matches the
     `PotterRoundOutcome` schema in `codex-protocol`).
+  - May immediately follow `round_started` when a round fails before `round_configured`.
 
 ### Compatibility
 

@@ -921,22 +921,25 @@ fn build_resume_replay(
             total: round.round_total,
         });
 
-        let rollout_path = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            &resolved.workdir,
-            &round.rollout_path,
-        );
-        if let Some(cfg) =
-            crate::workflow::replay_session_config::synthesize_session_configured_event(
-                round.thread_id,
-                round.service_tier,
-                rollout_path.clone(),
-            )?
-        {
-            events.push(EventMsg::SessionConfigured(cfg));
+        if let Some(configured) = &round.configured {
+            let rollout_path =
+                crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+                    &resolved.workdir,
+                    &configured.rollout_path,
+                );
+            if let Some(cfg) =
+                crate::workflow::replay_session_config::synthesize_session_configured_event(
+                    configured.thread_id,
+                    configured.service_tier,
+                    rollout_path.clone(),
+                )?
+            {
+                events.push(EventMsg::SessionConfigured(cfg));
+            }
+            let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
+                .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+            events.append(&mut rollout_events);
         }
-        let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
-            .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
-        events.append(&mut rollout_events);
 
         if let Some(project_succeeded) = &round.project_succeeded {
             events.push(EventMsg::PotterProjectSucceeded {
@@ -2094,15 +2097,147 @@ git_branch: "main"
         let resumed = state.resumed.as_ref().expect("resumed state");
         assert!(resumed.index.unfinished_round.is_none());
         assert_eq!(resumed.index.completed_rounds.len(), 1);
-        assert_eq!(resumed.index.completed_rounds[0].thread_id, thread_id);
         assert_eq!(
-            resumed.index.completed_rounds[0].service_tier,
-            Some(ServiceTier::Fast)
+            resumed.index.completed_rounds[0].configured,
+            Some(
+                crate::workflow::rollout_resume_index::RoundConfigurationIndex {
+                    thread_id,
+                    rollout_path: rollout_path.clone(),
+                    service_tier: Some(ServiceTier::Fast),
+                }
+            )
         );
         assert!(matches!(
             &resumed.index.completed_rounds[0].outcome,
             PotterRoundOutcome::Interrupted
         ));
+    }
+
+    #[test]
+    fn resume_project_replays_failed_round_without_round_configured() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        let project_dir = workdir.join(".codexpotter/projects/2026/03/28/1");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/28/1/MAIN.md");
+        let progress_file = project_dir.join("MAIN.md");
+        std::fs::write(
+            &progress_file,
+            r#"---
+status: open
+finite_incantatem: false
+short_title: test
+git_commit: "start"
+git_branch: "main"
+---
+"#,
+        )
+        .expect("write progress file");
+
+        let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir);
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: progress_file_rel.clone(),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::TaskFailed {
+                    message: "Failed to run `codex app-server`: decode initialize response"
+                        .to_string(),
+                },
+            },
+        )
+        .expect("append round_finished");
+
+        let config = PotterAppServerConfig {
+            default_workdir: workdir.clone(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(10).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
+        };
+        let mut state = ServerState {
+            config,
+            running: None,
+            resumed: None,
+            interrupted: None,
+        };
+
+        let response = resume_project(
+            &mut state,
+            ProjectResumeParams {
+                project_path: project_dir.clone(),
+                cwd: Some(workdir.clone()),
+                event_mode: None,
+            },
+        )
+        .expect("resume project");
+
+        assert!(response.unfinished_round.is_none());
+        assert_eq!(response.replay.completed_rounds.len(), 1);
+        let replay_round = &response.replay.completed_rounds[0];
+        assert_eq!(replay_round.events.len(), 3);
+        assert!(matches!(
+            replay_round.events.first(),
+            Some(EventMsg::PotterProjectStarted {
+                user_message: Some(user_message),
+                working_dir,
+                project_dir,
+                user_prompt_file,
+            }) if user_message == "hello"
+                && working_dir
+                    == &workdir
+                        .canonicalize()
+                        .expect("canonical working directory")
+                && project_dir
+                    == &project_dir
+                        .canonicalize()
+                        .expect("canonical project directory")
+                && user_prompt_file == &progress_file_rel
+        ));
+        assert!(matches!(
+            replay_round.events.get(1),
+            Some(EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 10
+            })
+        ));
+        assert!(matches!(
+            replay_round.events.last(),
+            Some(EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::TaskFailed { message },
+            }) if message == "Failed to run `codex app-server`: decode initialize response"
+        ));
+
+        let resumed = state.resumed.as_ref().expect("resumed state");
+        assert!(resumed.index.unfinished_round.is_none());
+        assert_eq!(resumed.index.completed_rounds.len(), 1);
+        assert_eq!(resumed.index.completed_rounds[0].configured, None);
+        assert_eq!(
+            resumed.index.completed_rounds[0].outcome,
+            PotterRoundOutcome::TaskFailed {
+                message: "Failed to run `codex app-server`: decode initialize response".to_string(),
+            }
+        );
     }
 
     #[tokio::test]

@@ -833,7 +833,10 @@ pub struct PatchApplyEndEvent {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HookEventName {
+    PreToolUse,
+    PostToolUse,
     SessionStart,
+    UserPromptSubmit,
     Stop,
 }
 

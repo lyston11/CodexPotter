@@ -33,11 +33,16 @@ pub struct ProjectStartedIndex {
 pub struct CompletedRoundIndex {
     pub round_current: u32,
     pub round_total: u32,
+    pub configured: Option<RoundConfigurationIndex>,
+    pub project_succeeded: Option<ProjectSucceededIndex>,
+    pub outcome: PotterRoundOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundConfigurationIndex {
     pub thread_id: ThreadId,
     pub rollout_path: PathBuf,
     pub service_tier: Option<ServiceTier>,
-    pub project_succeeded: Option<ProjectSucceededIndex>,
-    pub outcome: PotterRoundOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,9 +146,6 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                 let Some(builder) = current.take() else {
                     anyhow::bail!("potter-rollout: round_finished without round_started");
                 };
-                let Some((thread_id, rollout_path, service_tier)) = builder.configured else {
-                    anyhow::bail!("potter-rollout: round_finished without round_configured");
-                };
                 if builder.project_succeeded.is_some()
                     && !matches!(outcome, PotterRoundOutcome::Completed)
                 {
@@ -151,12 +153,25 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                         "potter-rollout: project_succeeded recorded but round_finished outcome is {outcome:?}"
                     );
                 }
+                let configured = match builder.configured {
+                    Some((thread_id, rollout_path, service_tier)) => {
+                        Some(RoundConfigurationIndex {
+                            thread_id,
+                            rollout_path,
+                            service_tier,
+                        })
+                    }
+                    None if matches!(outcome, PotterRoundOutcome::Completed) => {
+                        anyhow::bail!(
+                            "potter-rollout: completed round_finished without round_configured"
+                        );
+                    }
+                    None => None,
+                };
                 completed_rounds.push(CompletedRoundIndex {
                     round_current: builder.round_current,
                     round_total: builder.round_total,
-                    thread_id,
-                    rollout_path,
-                    service_tier,
+                    configured,
                     project_succeeded: builder.project_succeeded,
                     outcome: outcome.clone(),
                 });
@@ -243,9 +258,11 @@ mod tests {
                 completed_rounds: vec![CompletedRoundIndex {
                     round_current: 1,
                     round_total: 10,
-                    thread_id: thread_id(),
-                    rollout_path: PathBuf::from("rollout.jsonl"),
-                    service_tier: None,
+                    configured: Some(RoundConfigurationIndex {
+                        thread_id: thread_id(),
+                        rollout_path: PathBuf::from("rollout.jsonl"),
+                        service_tier: None,
+                    }),
                     project_succeeded: None,
                     outcome: PotterRoundOutcome::Completed,
                 }],
@@ -289,9 +306,11 @@ mod tests {
                 completed_rounds: vec![CompletedRoundIndex {
                     round_current: 1,
                     round_total: 10,
-                    thread_id: thread_id(),
-                    rollout_path: PathBuf::from("rollout.jsonl"),
-                    service_tier: None,
+                    configured: Some(RoundConfigurationIndex {
+                        thread_id: thread_id(),
+                        rollout_path: PathBuf::from("rollout.jsonl"),
+                        service_tier: None,
+                    }),
                     project_succeeded: None,
                     outcome: PotterRoundOutcome::Interrupted,
                 }],
@@ -342,9 +361,11 @@ mod tests {
                 completed_rounds: vec![CompletedRoundIndex {
                     round_current: 1,
                     round_total: 10,
-                    thread_id: thread_id(),
-                    rollout_path: PathBuf::from("rollout.jsonl"),
-                    service_tier: Some(ServiceTier::Fast),
+                    configured: Some(RoundConfigurationIndex {
+                        thread_id: thread_id(),
+                        rollout_path: PathBuf::from("rollout.jsonl"),
+                        service_tier: Some(ServiceTier::Fast),
+                    }),
                     project_succeeded: Some(ProjectSucceededIndex {
                         rounds: 3,
                         duration_secs: 42,
@@ -444,7 +465,40 @@ mod tests {
     }
 
     #[test]
-    fn build_resume_index_errors_when_round_finished_missing_round_configured() {
+    fn build_resume_index_records_failed_round_without_round_configured() {
+        let lines = vec![
+            PotterRolloutLine::ProjectStarted {
+                user_message: None,
+                user_prompt_file: PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md"),
+            },
+            PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+            PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::TaskFailed {
+                    message: "init failed".to_string(),
+                },
+            },
+        ];
+
+        let index = build_resume_index(&lines).expect("build resume index");
+        assert_eq!(
+            index.completed_rounds,
+            vec![CompletedRoundIndex {
+                round_current: 1,
+                round_total: 10,
+                configured: None,
+                project_succeeded: None,
+                outcome: PotterRoundOutcome::TaskFailed {
+                    message: "init failed".to_string(),
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn build_resume_index_errors_when_completed_round_is_missing_config() {
         let lines = vec![
             PotterRolloutLine::ProjectStarted {
                 user_message: None,
@@ -462,7 +516,7 @@ mod tests {
         let err = build_resume_index(&lines).unwrap_err();
         assert!(
             err.to_string()
-                .contains("round_finished without round_configured"),
+                .contains("completed round_finished without round_configured"),
             "unexpected error: {err:#}"
         );
     }

@@ -368,13 +368,21 @@ mod tests {
             params: ThreadStartParams {
                 model: None,
                 model_provider: None,
+                service_tier: None,
                 cwd: None,
                 approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
+                approvals_reviewer: None,
                 sandbox: None,
                 config: None,
+                service_name: None,
                 base_instructions: None,
                 developer_instructions: None,
+                personality: None,
+                ephemeral: None,
+                dynamic_tools: None,
+                mock_experimental_field: None,
                 experimental_raw_events: false,
+                persist_extended_history: false,
             },
         };
 
@@ -386,12 +394,19 @@ mod tests {
         for key in [
             "model",
             "modelProvider",
+            "serviceTier",
             "cwd",
             "approvalPolicy",
+            "approvalsReviewer",
             "sandbox",
             "config",
+            "serviceName",
             "baseInstructions",
             "developerInstructions",
+            "personality",
+            "ephemeral",
+            "dynamicTools",
+            "mockExperimentalField",
         ] {
             assert!(
                 params.contains_key(key),
@@ -400,6 +415,7 @@ mod tests {
         }
         assert_eq!(value["params"]["approvalPolicy"], "never");
         assert_eq!(value["params"]["experimentalRawEvents"], false);
+        assert_eq!(value["params"]["persistExtendedHistory"], false);
     }
 
     #[test]
@@ -408,14 +424,20 @@ mod tests {
             request_id: RequestId::Integer(2),
             params: ThreadResumeParams {
                 thread_id: "thread-1".to_string(),
+                history: None,
+                path: None,
                 model: None,
                 model_provider: None,
+                service_tier: None,
                 cwd: None,
                 approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
+                approvals_reviewer: None,
                 sandbox: None,
                 config: None,
                 base_instructions: None,
                 developer_instructions: None,
+                personality: None,
+                persist_extended_history: false,
             },
         };
 
@@ -426,14 +448,19 @@ mod tests {
         let params = value["params"].as_object().expect("params object");
         for key in [
             "threadId",
+            "history",
+            "path",
             "model",
             "modelProvider",
+            "serviceTier",
             "cwd",
             "approvalPolicy",
+            "approvalsReviewer",
             "sandbox",
             "config",
             "baseInstructions",
             "developerInstructions",
+            "personality",
         ] {
             assert!(
                 params.contains_key(key),
@@ -442,6 +469,7 @@ mod tests {
         }
         assert_eq!(value["params"]["threadId"], "thread-1");
         assert_eq!(value["params"]["approvalPolicy"], "never");
+        assert_eq!(value["params"]["persistExtendedHistory"], false);
     }
 
     #[test]
@@ -453,10 +481,13 @@ mod tests {
                 input: Vec::new(),
                 cwd: None,
                 approval_policy: None,
+                approvals_reviewer: None,
                 sandbox_policy: None,
                 model: None,
+                service_tier: None,
                 effort: None,
                 summary: None,
+                personality: None,
                 output_schema: None,
                 collaboration_mode: None,
             },
@@ -472,10 +503,13 @@ mod tests {
             "input",
             "cwd",
             "approvalPolicy",
+            "approvalsReviewer",
             "sandboxPolicy",
             "model",
+            "serviceTier",
             "effort",
             "summary",
+            "personality",
             "outputSchema",
             "collaborationMode",
         ] {
@@ -639,7 +673,6 @@ mod tests {
                 id: RequestId::Integer(9),
                 result: serde_json::json!({
                     "userAgent": "codex-app-server",
-                    "codexHome": "/tmp/codex-home",
                     "platformFamily": "unix",
                     "platformOs": "macos",
                 }),
@@ -656,10 +689,9 @@ mod tests {
                     platform_os,
                     ..
                 },
-                ..
-            } if user_agent == "codex-app-server"
-                && platform_family == "unix"
-                && platform_os == "macos"
+            } if user_agent.as_deref() == Some("codex-app-server")
+                && platform_family.as_deref() == Some("unix")
+                && platform_os.as_deref() == Some("macos")
         ));
     }
 }

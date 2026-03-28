@@ -700,13 +700,21 @@ impl ThreadStartSettings {
         ThreadStartParams {
             model: self.model,
             model_provider: None,
+            service_tier: None,
             cwd: self.cwd.map(|cwd| cwd.to_string_lossy().to_string()),
             approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
+            approvals_reviewer: None,
             sandbox: self.sandbox_mode,
             config: None,
+            service_name: None,
             base_instructions: None,
             developer_instructions: self.developer_instructions,
+            personality: None,
+            ephemeral: None,
+            dynamic_tools: None,
+            mock_experimental_field: None,
             experimental_raw_events: false,
+            persist_extended_history: false,
         }
     }
 }
@@ -715,14 +723,20 @@ impl ThreadResumeSettings {
     fn into_params(self) -> ThreadResumeParams {
         ThreadResumeParams {
             thread_id: self.thread_id.to_string(),
+            history: None,
+            path: None,
             model: self.model,
             model_provider: None,
+            service_tier: None,
             cwd: self.cwd.map(|cwd| cwd.to_string_lossy().to_string()),
             approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
+            approvals_reviewer: None,
             sandbox: self.sandbox_mode,
             config: None,
             base_instructions: None,
             developer_instructions: self.developer_instructions,
+            personality: None,
+            persist_extended_history: false,
         }
     }
 }
@@ -833,10 +847,13 @@ async fn handle_op(
                     input,
                     cwd: None,
                     approval_policy: None,
+                    approvals_reviewer: None,
                     sandbox_policy: None,
                     model: None,
+                    service_tier: None,
                     effort: None,
                     summary: None,
+                    personality: None,
                     output_schema: final_output_json_schema,
                     collaboration_mode: Some(default_collaboration_mode(
                         ctx.model,
@@ -1564,7 +1581,10 @@ fn hook_run_summary_from_upstream(run: UpstreamHookRunSummary) -> HookRunSummary
     HookRunSummary {
         id: run.id,
         event_name: match run.event_name {
+            UpstreamHookEventName::PreToolUse => HookEventName::PreToolUse,
+            UpstreamHookEventName::PostToolUse => HookEventName::PostToolUse,
             UpstreamHookEventName::SessionStart => HookEventName::SessionStart,
+            UpstreamHookEventName::UserPromptSubmit => HookEventName::UserPromptSubmit,
             UpstreamHookEventName::Stop => HookEventName::Stop,
         },
         handler_type: match run.handler_type {
@@ -2420,7 +2440,7 @@ fn synthesize_session_configured(
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: None,
-        rollout_path: thread_start_or_resume.rollout_path().to_path_buf(),
+        rollout_path: thread_start_or_resume.rollout_path()?.to_path_buf(),
     })
 }
 
@@ -2472,10 +2492,18 @@ impl ThreadStartOrResume {
         }
     }
 
-    fn rollout_path(&self) -> &Path {
+    fn rollout_path(&self) -> anyhow::Result<&Path> {
         match self {
-            ThreadStartOrResume::Start(resp) => resp.thread.path.as_path(),
-            ThreadStartOrResume::Resume(resp) => resp.thread.path.as_path(),
+            ThreadStartOrResume::Start(resp) => resp
+                .thread
+                .path
+                .as_deref()
+                .context("thread/start response missing rollout path"),
+            ThreadStartOrResume::Resume(resp) => resp
+                .thread
+                .path
+                .as_deref()
+                .context("thread/resume response missing rollout path"),
         }
     }
 }
@@ -3658,6 +3686,117 @@ done
             saw_round_finished,
             Ok(true),
             "did not observe TurnStarted + PotterRoundFinished(Completed)"
+        );
+
+        drop(op_tx);
+
+        timeout(Duration::from_secs(5), backend)
+            .await
+            .expect("backend timed out")
+            .expect("backend panicked")
+            .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_accepts_initialize_response_without_codex_home() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r initialize
+echo "$initialize" | grep -q '"method":"initialize"' || {
+  echo "expected initialize, got: $initialize" >&2
+  exit 1
+}
+echo '{"id":1,"result":{"userAgent":"test-agent","platformFamily":"unix","platformOs":"test-os"}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
+
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        let backend = tokio::spawn(async move {
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            )
+            .await
+        });
+
+        op_tx
+            .send(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+            })
+            .expect("send user input");
+
+        let saw_round_finished = timeout(Duration::from_secs(5), async {
+            while let Some(event) = event_rx.recv().await {
+                if let EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                } = event.msg
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+
+        assert_eq!(
+            saw_round_finished,
+            Ok(true),
+            "did not observe PotterRoundFinished(Completed)"
         );
 
         drop(op_tx);

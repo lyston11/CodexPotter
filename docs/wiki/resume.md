@@ -53,8 +53,14 @@ Replay is driven by `potter-rollout.jsonl` (`cli/src/resume.rs`):
 
 - `project_started`: injects `EventMsg::PotterProjectStarted` (once at the top).
 - `round_started`: injects `EventMsg::PotterRoundStarted` (updates the live status banner prefix).
-- `round_configured`: triggers replay of the referenced upstream rollout file.
+- `round_configured`: when present, triggers replay of the referenced upstream rollout file.
 - `project_succeeded` / `round_finished`: injects terminal summary + control-plane boundaries.
+
+If a round fails before the upstream app-server reaches `SessionConfigured` (for example
+`codex app-server` exits during `initialize`), `potter-rollout.jsonl` can contain
+`round_started` followed directly by `round_finished` with no `round_configured`. Resume treats
+that as a completed failed round: it replays the project/round boundaries and terminal outcome,
+but skips session/upstream-rollout replay because no upstream thread was created.
 
 ### Unfinished rounds (EOF without `round_finished`)
 

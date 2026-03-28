@@ -744,23 +744,26 @@ fn build_round_replay_plans(
             total: round.round_total,
         });
 
-        let rollout_path = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            &project.workdir,
-            &round.rollout_path,
-        );
-        if let Some(cfg) =
-            crate::workflow::replay_session_config::synthesize_session_configured_event(
-                round.thread_id,
-                round.service_tier,
-                rollout_path.clone(),
-            )?
-        {
-            events.push(EventMsg::SessionConfigured(cfg));
-        }
+        if let Some(configured) = round.configured {
+            let rollout_path =
+                crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+                    &project.workdir,
+                    &configured.rollout_path,
+                );
+            if let Some(cfg) =
+                crate::workflow::replay_session_config::synthesize_session_configured_event(
+                    configured.thread_id,
+                    configured.service_tier,
+                    rollout_path.clone(),
+                )?
+            {
+                events.push(EventMsg::SessionConfigured(cfg));
+            }
 
-        let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
-            .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
-        events.append(&mut rollout_events);
+            let mut rollout_events = read_upstream_rollout_event_msgs(&rollout_path)
+                .with_context(|| format!("replay rollout {}", rollout_path.display()))?;
+            events.append(&mut rollout_events);
+        }
 
         if let Some(project_succeeded) = round.project_succeeded {
             events.push(EventMsg::PotterProjectSucceeded {
@@ -1951,6 +1954,65 @@ mod tests {
             message.contains("missing round_configured"),
             "unexpected error: {message}"
         );
+    }
+
+    #[test]
+    fn build_round_replay_plans_replays_failed_round_without_configured_session() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _main = write_main(temp.path(), ".codexpotter/projects/2026/02/01/1");
+        let resolved =
+            resolve_project_paths(temp.path(), Path::new("2026/02/01/1")).expect("resolve");
+
+        let potter_rollout_lines = vec![
+            crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md"),
+            },
+            crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::TaskFailed {
+                    message: "Failed to run `codex app-server`: decode initialize response"
+                        .to_string(),
+                },
+            },
+        ];
+
+        let plans =
+            build_round_replay_plans(&resolved, &potter_rollout_lines).expect("build replay plans");
+
+        assert_eq!(plans.completed_rounds.len(), 1);
+        let round = plans.completed_rounds.first().expect("completed round");
+        assert_eq!(round.events.len(), 3);
+        assert!(matches!(
+            round.events.first(),
+            Some(EventMsg::PotterProjectStarted {
+                user_message: Some(user_message),
+                working_dir,
+                project_dir,
+                user_prompt_file,
+            }) if user_message == "hello"
+                && working_dir == &resolved.workdir
+                && project_dir == &resolved.project_dir
+                && user_prompt_file
+                    == &PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md")
+        ));
+        assert!(matches!(
+            round.events.get(1),
+            Some(EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 10
+            })
+        ));
+        assert!(matches!(
+            round.events.last(),
+            Some(EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::TaskFailed { message },
+            }) if message == "Failed to run `codex app-server`: decode initialize response"
+        ));
+        assert!(plans.unfinished_round.is_none());
     }
 
     #[test]
