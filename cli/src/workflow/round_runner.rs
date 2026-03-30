@@ -22,6 +22,8 @@ use codex_protocol::protocol::Op;
 use codex_tui::ExitReason;
 use tokio::sync::mpsc::unbounded_channel;
 
+const POTTER_XMODEL_REASONING_EFFORT: &str = "xhigh";
+
 /// Boxed future returned by [`PotterRoundUi`] implementations.
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + 'a>>;
 
@@ -319,12 +321,23 @@ async fn run_potter_round_inner(
         })
     };
 
+    let mut upstream_cli_args = context.upstream_cli_args.clone();
+    if resume_thread_id.is_none()
+        && crate::workflow::project::progress_file_potter_xmodel_enabled(
+            &context.workdir,
+            &context.progress_file_rel,
+        )
+        .context("read progress file potter.xmodel")?
+    {
+        apply_potter_xmodel_overrides(&mut upstream_cli_args, round_current);
+    }
+
     let backend = tokio::spawn(crate::app_server::run_app_server_backend(
         crate::app_server::AppServerBackendConfig {
             codex_bin: context.codex_bin.clone(),
             developer_instructions: Some(context.developer_prompt.clone()),
             launch: context.backend_launch,
-            upstream_cli_args: context.upstream_cli_args.clone(),
+            upstream_cli_args,
             codex_home: context.codex_compat_home.clone(),
             thread_cwd: context.thread_cwd.clone(),
             resume_thread_id,
@@ -390,4 +403,57 @@ async fn run_potter_round_inner(
         stop_due_to_finite_incantatem,
         thread_id,
     })
+}
+
+fn apply_potter_xmodel_overrides(
+    upstream_cli_args: &mut crate::app_server::UpstreamCodexCliArgs,
+    round_current: u32,
+) {
+    let model = if round_current >= 4 {
+        "gpt-5.4"
+    } else {
+        "gpt-5.2"
+    };
+    upstream_cli_args.model = Some(model.to_string());
+    upstream_cli_args.config_overrides.push(format!(
+        "model_reasoning_effort=\"{POTTER_XMODEL_REASONING_EFFORT}\""
+    ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn potter_xmodel_overrides_rounds_1_to_3_to_gpt_5_2_xhigh() {
+        let mut args = crate::app_server::UpstreamCodexCliArgs {
+            model: Some("user-model".to_string()),
+            config_overrides: vec!["model_reasoning_effort=\"low\"".to_string()],
+            ..Default::default()
+        };
+
+        apply_potter_xmodel_overrides(&mut args, 3);
+        assert_eq!(args.model.as_deref(), Some("gpt-5.2"));
+        assert_eq!(
+            args.config_overrides.last().map(String::as_str),
+            Some("model_reasoning_effort=\"xhigh\"")
+        );
+    }
+
+    #[test]
+    fn potter_xmodel_overrides_round_4_plus_to_gpt_5_4_xhigh() {
+        let mut args = crate::app_server::UpstreamCodexCliArgs {
+            model: Some("user-model".to_string()),
+            config_overrides: Vec::new(),
+            ..Default::default()
+        };
+
+        apply_potter_xmodel_overrides(&mut args, 4);
+        assert_eq!(args.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            args.config_overrides,
+            vec!["model_reasoning_effort=\"xhigh\"".to_string()]
+        );
+    }
 }

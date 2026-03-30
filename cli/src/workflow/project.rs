@@ -119,6 +119,19 @@ pub fn fixed_prompt() -> &'static str {
     PROMPT_TEMPLATE
 }
 
+/// Return whether the project progress file has `potter.xmodel: true` in YAML front matter.
+///
+/// Missing values are treated as `false`.
+pub fn progress_file_potter_xmodel_enabled(
+    workdir: &Path,
+    progress_file_rel: &Path,
+) -> anyhow::Result<bool> {
+    let progress_file = workdir.join(progress_file_rel);
+    let contents = std::fs::read_to_string(&progress_file)
+        .with_context(|| format!("read {}", progress_file.display()))?;
+    Ok(front_matter_bool(&contents, "potter.xmodel")?.unwrap_or(false))
+}
+
 pub fn progress_file_has_finite_incantatem_true(
     workdir: &Path,
     progress_file_rel: &Path,
