@@ -1807,6 +1807,12 @@ impl RenderAppState {
                     self.bottom_pane.composer_mut().insert_str("@");
                     frame_requester.schedule_frame();
                 }
+                SlashCommand::PotterXModel => {
+                    self.bottom_pane
+                        .composer_mut()
+                        .insert_str("/potter:xmodel ");
+                    frame_requester.schedule_frame();
+                }
                 SlashCommand::Exit => {
                     if self.codex_op_tx.is_none() {
                         self.prompt_action = Some(PromptScreenAction::CancelledByUser);

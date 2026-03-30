@@ -773,15 +773,19 @@ impl ChatComposer {
                 let first_line = self.textarea.text().lines().next().unwrap_or("");
                 popup.on_composer_text_change(first_line.to_string());
                 if let Some(cmd) = popup.selected_item() {
-                    let starts_with_cmd = first_line
-                        .trim_start()
-                        .starts_with(&format!("/{}", cmd.command()));
-                    if !starts_with_cmd {
-                        self.textarea
-                            .set_text_clearing_elements(&format!("/{} ", cmd.command()));
-                    }
-                    if !self.textarea.text().is_empty() {
-                        self.textarea.set_cursor(self.textarea.text().len());
+                    if cmd == SlashCommand::PotterXModel {
+                        self.insert_selected_mention("/potter:xmodel");
+                    } else {
+                        let starts_with_cmd = first_line
+                            .trim_start()
+                            .starts_with(&format!("/{}", cmd.command()));
+                        if !starts_with_cmd {
+                            self.textarea
+                                .set_text_clearing_elements(&format!("/{} ", cmd.command()));
+                        }
+                        if !self.textarea.text().is_empty() {
+                            self.textarea.set_cursor(self.textarea.text().len());
+                        }
                     }
                 }
                 (InputResult::None, true)
@@ -792,6 +796,12 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(cmd) = popup.selected_item() {
+                    if cmd == SlashCommand::PotterXModel {
+                        self.insert_selected_mention("/potter:xmodel");
+                        self.active_popup = ActivePopup::None;
+                        return (InputResult::None, true);
+                    }
+
                     self.pending_pastes.clear();
                     self.textarea.set_text_clearing_elements("");
                     self.active_popup = ActivePopup::None;
@@ -1693,6 +1703,7 @@ impl ChatComposer {
         if let Some((name, rest, _rest_offset)) = parse_slash_name(first_line)
             && rest.is_empty()
             && let Some(cmd) = slash_commands::find_builtin_command(name)
+            && cmd != SlashCommand::PotterXModel
         {
             self.pending_pastes.clear();
             self.textarea.set_text_clearing_elements("");
@@ -3430,6 +3441,62 @@ End of payload.";
 
         assert_eq!(result, InputResult::Command(SlashCommand::Mention));
         assert!(composer.textarea.is_empty(), "composer should be cleared");
+    }
+
+    #[test]
+    fn slash_popup_selecting_potter_xmodel_inserts_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            true,
+        );
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+
+        assert!(matches!(composer.active_popup, ActivePopup::Command(_)));
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.textarea.text(), "/potter:xmodel ");
+        assert!(!composer.popup_active());
+    }
+
+    #[test]
+    fn potter_xmodel_is_submitted_as_plain_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        composer
+            .textarea
+            .set_text_clearing_elements("/potter:xmodel");
+        composer.textarea.set_cursor("/potter:xmodel".len());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::Queued("/potter:xmodel".to_string()));
     }
 
     #[test]

@@ -6,6 +6,8 @@
 pub enum SlashCommand {
     /// Insert a file mention trigger (`@`) into the composer.
     Mention,
+    /// Insert the `/potter:xmodel` marker into the composer.
+    PotterXModel,
     /// Open the syntax theme picker (`/theme`).
     Theme,
     /// Open the transcript verbosity picker (`/verbosity`).
@@ -19,6 +21,9 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention a file",
+            SlashCommand::PotterXModel => {
+                "(Experimental) Enable cross model review (round 1~3: GPT 5.2 xhigh, round 4+: GPT 5.4 xhigh)"
+            }
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Verbosity => "choose how much detail to show",
             SlashCommand::Exit => "exit Codex",
@@ -29,6 +34,7 @@ impl SlashCommand {
     pub fn command(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention",
+            SlashCommand::PotterXModel => "potter:xmodel",
             SlashCommand::Theme => "theme",
             SlashCommand::Verbosity => "verbosity",
             SlashCommand::Exit => "exit",
@@ -39,7 +45,10 @@ impl SlashCommand {
     pub fn available_during_task(self) -> bool {
         match self {
             SlashCommand::Theme => false,
-            SlashCommand::Mention | SlashCommand::Verbosity | SlashCommand::Exit => true,
+            SlashCommand::Mention
+            | SlashCommand::PotterXModel
+            | SlashCommand::Verbosity
+            | SlashCommand::Exit => true,
         }
     }
 
@@ -56,6 +65,10 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         (SlashCommand::Mention.command(), SlashCommand::Mention),
         (SlashCommand::Theme.command(), SlashCommand::Theme),
         (SlashCommand::Verbosity.command(), SlashCommand::Verbosity),
+        (
+            SlashCommand::PotterXModel.command(),
+            SlashCommand::PotterXModel,
+        ),
         (SlashCommand::Exit.command(), SlashCommand::Exit),
     ]
 }
