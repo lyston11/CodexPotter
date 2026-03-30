@@ -29,6 +29,10 @@ const DEVELOPER_PROMPT_TEMPLATE: &str = include_str!(concat!(
 const PROMPT_TEMPLATE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/prompt.md"));
 
+const POTTER_XMODEL_MARKER: &str = "/potter:xmodel";
+const POTTER_XMODEL_MARKER_WITH_TRAILING_SPACE: &str = "/potter:xmodel ";
+const POTTER_XMODEL_FRONT_MATTER_PLACEHOLDER: &str = "{{POTTER_XMODEL_FRONT_MATTER}}";
+
 #[derive(Debug, Clone)]
 pub struct ProjectInit {
     pub progress_file_rel: PathBuf,
@@ -41,6 +45,7 @@ pub fn init_project(
     now: DateTime<Local>,
 ) -> anyhow::Result<ProjectInit> {
     let (git_commit, git_branch) = resolve_git_metadata(workdir);
+    let potter_xmodel = user_prompt.contains(POTTER_XMODEL_MARKER);
 
     let codexpotter_dir = workdir.join(".codexpotter");
     let projects_root = codexpotter_dir.join("projects");
@@ -57,7 +62,8 @@ pub fn init_project(
         create_next_project_dir(&projects_root, &year, &month, &day)?;
 
     let main_md = project_dir.join("MAIN.md");
-    let main_md_contents = render_project_main(user_prompt, &git_commit, &git_branch);
+    let main_md_contents =
+        render_project_main(user_prompt, &git_commit, &git_branch, potter_xmodel);
     std::fs::write(&main_md, main_md_contents)
         .with_context(|| format!("write {}", main_md.display()))?;
 
@@ -79,14 +85,29 @@ pub fn resolve_git_branch(workdir: &Path) -> Option<String> {
     git_stdout_trimmed(workdir, &["symbolic-ref", "-q", "--short", "HEAD"])
 }
 
-pub fn render_project_main(user_prompt: &str, git_commit: &str, git_branch: &str) -> String {
+pub fn render_project_main(
+    user_prompt: &str,
+    git_commit: &str,
+    git_branch: &str,
+    potter_xmodel: bool,
+) -> String {
     let git_commit = yaml_escape_double_quoted(git_commit);
     let git_branch = yaml_escape_double_quoted(git_branch);
+    let user_prompt = user_prompt.replace(POTTER_XMODEL_MARKER_WITH_TRAILING_SPACE, "");
+    let potter_xmodel_front_matter = if potter_xmodel {
+        "potter.xmodel: true"
+    } else {
+        ""
+    };
 
     PROJECT_MAIN_TEMPLATE
-        .replace("{{USER_PROMPT}}", user_prompt)
         .replace("{{GIT_COMMIT}}", &git_commit)
         .replace("{{GIT_BRANCH}}", &git_branch)
+        .replace(
+            POTTER_XMODEL_FRONT_MATTER_PLACEHOLDER,
+            potter_xmodel_front_matter,
+        )
+        .replace("{{USER_PROMPT}}", &user_prompt)
 }
 
 pub fn render_developer_prompt(progress_file_rel: &Path) -> String {
@@ -438,6 +459,41 @@ mod tests {
 
         let developer = render_developer_prompt(&second.progress_file_rel);
         assert!(developer.contains(".codexpotter/projects/2026/01/27/2/MAIN.md"));
+    }
+
+    #[test]
+    fn init_project_sets_potter_xmodel_and_strips_marker_from_overall_goal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let now = Local
+            .with_ymd_and_hms(2026, 1, 27, 12, 0, 0)
+            .single()
+            .expect("timestamp");
+
+        let init =
+            init_project(temp.path(), "do /potter:xmodel something", now).expect("init project");
+
+        let main = std::fs::read_to_string(temp.path().join(&init.progress_file_rel))
+            .expect("read MAIN.md");
+        assert!(main.contains("potter.xmodel: true"));
+        assert!(!main.contains("/potter:xmodel"));
+        assert!(main.contains("do something"));
+    }
+
+    #[test]
+    fn init_project_keeps_potter_xmodel_without_trailing_space_in_main_md() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let now = Local
+            .with_ymd_and_hms(2026, 1, 27, 12, 0, 0)
+            .single()
+            .expect("timestamp");
+
+        let init =
+            init_project(temp.path(), "do /potter:xmodel\nsomething", now).expect("init project");
+
+        let main = std::fs::read_to_string(temp.path().join(&init.progress_file_rel))
+            .expect("read MAIN.md");
+        assert!(main.contains("potter.xmodel: true"));
+        assert!(main.contains("/potter:xmodel\nsomething"));
     }
 
     #[test]
