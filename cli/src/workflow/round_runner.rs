@@ -321,16 +321,22 @@ async fn run_potter_round_inner(
         })
     };
 
-    let mut upstream_cli_args = context.upstream_cli_args.clone();
-    if resume_thread_id.is_none()
-        && crate::workflow::project::progress_file_potter_xmodel_enabled(
+    let potter_xmodel_enabled = if resume_thread_id.is_none() {
+        crate::workflow::project::progress_file_potter_xmodel_enabled(
             &context.workdir,
             &context.progress_file_rel,
         )
         .context("read progress file potter.xmodel")?
-    {
-        apply_potter_xmodel_overrides(&mut upstream_cli_args, round_current);
-    }
+    } else {
+        false
+    };
+
+    let upstream_cli_args = prepare_upstream_cli_args_for_round(
+        context.upstream_cli_args.clone(),
+        round_current,
+        resume_thread_id.is_some(),
+        potter_xmodel_enabled,
+    );
 
     let backend = tokio::spawn(crate::app_server::run_app_server_backend(
         crate::app_server::AppServerBackendConfig {
@@ -420,10 +426,42 @@ fn apply_potter_xmodel_overrides(
     ));
 }
 
+fn prepare_upstream_cli_args_for_round(
+    mut upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+    round_current: u32,
+    is_resume_unfinished_round: bool,
+    potter_xmodel_enabled: bool,
+) -> crate::app_server::UpstreamCodexCliArgs {
+    if is_resume_unfinished_round {
+        // Unfinished round continuation must resume the original session configuration, so
+        // explicitly ignore runtime `--model` overrides.
+        upstream_cli_args.model = None;
+        return upstream_cli_args;
+    }
+
+    if potter_xmodel_enabled {
+        apply_potter_xmodel_overrides(&mut upstream_cli_args, round_current);
+    }
+
+    upstream_cli_args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn unfinished_round_resume_ignores_model_override() {
+        let args = crate::app_server::UpstreamCodexCliArgs {
+            model: Some("user-model".to_string()),
+            ..Default::default()
+        };
+
+        let prepared = prepare_upstream_cli_args_for_round(args, 1, true, true);
+        assert_eq!(prepared.model, None);
+        assert_eq!(prepared.config_overrides, Vec::<String>::new());
+    }
 
     #[test]
     fn potter_xmodel_overrides_rounds_1_to_3_to_gpt_5_2_xhigh() {
