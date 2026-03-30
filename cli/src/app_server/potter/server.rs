@@ -1313,9 +1313,14 @@ async fn run_fresh_project(
                 return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::Fatal(message) => {
-                outcome = PotterProjectOutcome::Fatal { message };
-                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(ProjectRunExit::Completed);
+                // Fatal rounds still consume round budget, but should not prevent later rounds
+                // from running unless this was the last available round.
+                if initial_continue_round.round_current >= initial_continue_round.round_total {
+                    outcome = PotterProjectOutcome::Fatal { message };
+                    ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                    return Ok(ProjectRunExit::Completed);
+                }
+                next_round_index = initial_continue_round.round_current;
             }
             codex_tui::ExitReason::UserRequested => {
                 outcome = PotterProjectOutcome::Fatal {
@@ -1402,8 +1407,12 @@ async fn run_fresh_project(
                 break;
             }
             codex_tui::ExitReason::Fatal(message) => {
-                outcome = PotterProjectOutcome::Fatal { message };
-                break;
+                // Fatal rounds are project-local failures. Preserve the fatal outcome only when
+                // no later round remains to recover within the current project budget.
+                if round_index.saturating_add(1) >= plan.rounds_total {
+                    outcome = PotterProjectOutcome::Fatal { message };
+                    break;
+                }
             }
             codex_tui::ExitReason::UserRequested => {
                 outcome = PotterProjectOutcome::Fatal {
@@ -1595,9 +1604,19 @@ async fn run_resumed_project(
                 return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::Fatal(message) => {
-                outcome = PotterProjectOutcome::Fatal { message };
-                ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                return Ok(ProjectRunExit::Completed);
+                // Continuing an unfinished round still consumes one round from the resumed
+                // iteration window. Only the final available round should end the project fatally.
+                rounds_run = initial_continue_round.project_rounds_run;
+                anyhow::ensure!(
+                    rounds_run <= rounds_total,
+                    "continued resumed round exceeded configured rounds_total: rounds_run={rounds_run} rounds_total={rounds_total}"
+                );
+                if rounds_run >= rounds_total {
+                    outcome = PotterProjectOutcome::Fatal { message };
+                    ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                    return Ok(ProjectRunExit::Completed);
+                }
+                next_round_current = initial_continue_round.round_current.saturating_add(1);
             }
             codex_tui::ExitReason::UserRequested => {
                 outcome = PotterProjectOutcome::Fatal {
@@ -1670,8 +1689,12 @@ async fn run_resumed_project(
                 break;
             }
             codex_tui::ExitReason::Fatal(message) => {
-                outcome = PotterProjectOutcome::Fatal { message };
-                break;
+                // Fatal rounds should not block later resumed rounds from running unless the
+                // resumed iteration budget is already exhausted.
+                if rounds_run >= rounds_total {
+                    outcome = PotterProjectOutcome::Fatal { message };
+                    break;
+                }
             }
             codex_tui::ExitReason::UserRequested => {
                 outcome = PotterProjectOutcome::Fatal {
@@ -2392,6 +2415,179 @@ git_branch: "main"
         assert!(
             matches!(completed, PotterProjectOutcome::Fatal { .. }),
             "expected fatal outcome, got {completed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fresh_project_continues_after_fatal_round_until_budget_exhausted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        let codex_bin = temp.path().join("dummy-codex");
+        let invocation_counter = temp.path().join("invocation-count");
+
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${{1:-}}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+counter_file="{counter_file}"
+count=0
+if [[ -f "$counter_file" ]]; then
+  count="$(cat "$counter_file")"
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$counter_file"
+
+# initialize request
+IFS= read -r _line
+echo '{{"id":1,"result":{{"userAgent":"test-agent","platformFamily":"unix","platformOs":"test-os"}}}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r _line
+if [[ "$count" == "1" ]]; then
+  echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000001","path":"rollout-1.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+else
+  echo '{{"id":2,"result":{{"thread":{{"id":"00000000-0000-0000-0000-000000000002","path":"rollout-2.jsonl"}},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{{"type":"readOnly"}},"reasoningEffort":null}}}}'
+fi
+
+# turn/start request
+IFS= read -r _line
+echo '{{"id":3,"result":{{"turn":{{"id":"turn-1"}}}}}}'
+if [[ "$count" == "1" ]]; then
+  echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000001","turn":{{"id":"turn-1","items":[],"status":"failed","error":{{"message":"fatal round 1"}}}}}}}}'
+else
+  echo '{{"method":"turn/completed","params":{{"threadId":"00000000-0000-0000-0000-000000000002","turn":{{"id":"turn-1","items":[],"status":"completed","error":null}}}}}}'
+fi
+
+while IFS= read -r _line; do
+  :
+done
+"#,
+            counter_file = invocation_counter.display(),
+        );
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let project_dir_rel = PathBuf::from(".codexpotter/projects/2026/03/30/1");
+        let project_dir = workdir.join(&project_dir_rel);
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+
+        let progress_file_rel = project_dir_rel.join("MAIN.md");
+        let progress_file = workdir.join(&progress_file_rel);
+        std::fs::write(
+            &progress_file,
+            r#"---
+status: open
+finite_incantatem: false
+short_title: test
+git_commit: "start"
+git_branch: "main"
+---
+
+# Overall Goal
+"#,
+        )
+        .expect("write progress file");
+
+        let config = PotterAppServerConfig {
+            default_workdir: workdir.clone(),
+            codex_bin: codex_bin.display().to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(2).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
+        };
+
+        let plan = FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: String::from("hello"),
+            project_dir_rel: project_dir_rel.clone(),
+            progress_file_rel: progress_file_rel.clone(),
+            git_commit_start: String::from("start"),
+            potter_rollout_path: crate::workflow::rollout::potter_rollout_path(&project_dir),
+            rounds_total: 2,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            round_start_index: 0,
+            emit_project_started_event: true,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
+        };
+
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (_interrupt_tx, interrupt_rx) = watch::channel(false);
+
+        let exit = run_fresh_project(config, writer_tx, plan, interrupt_rx)
+            .await
+            .expect("run fresh project");
+        assert!(matches!(exit, ProjectRunExit::Completed));
+
+        let events = drain_potter_events(writer_rx);
+        let round_outcomes = events
+            .iter()
+            .filter_map(|event| match &event.msg {
+                EventMsg::PotterRoundFinished { outcome } => Some(outcome.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            round_outcomes,
+            vec![
+                PotterRoundOutcome::Fatal {
+                    message: String::from("fatal round 1"),
+                },
+                PotterRoundOutcome::Completed,
+            ]
+        );
+
+        let completed = events
+            .iter()
+            .find_map(|event| match &event.msg {
+                EventMsg::PotterProjectCompleted { outcome } => Some(outcome),
+                _ => None,
+            })
+            .expect("PotterProjectCompleted marker");
+        assert_eq!(*completed, PotterProjectOutcome::BudgetExhausted);
+
+        let rollout_lines =
+            crate::workflow::rollout::read_lines(&project_dir.join("potter-rollout.jsonl"))
+                .expect("read potter-rollout");
+        let rollout_round_outcomes = rollout_lines
+            .iter()
+            .filter_map(|line| match line {
+                crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome } => {
+                    Some(outcome.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rollout_round_outcomes,
+            vec![
+                PotterRoundOutcome::Fatal {
+                    message: String::from("fatal round 1"),
+                },
+                PotterRoundOutcome::Completed,
+            ]
         );
     }
 

@@ -66,7 +66,8 @@ pub enum PotterProjectRenderExit {
     },
     /// The user requested exit while a round UI was running.
     UserRequested,
-    /// The UI requested a fatal exit.
+    /// The UI requested a fatal exit before the current round or project reached a terminal
+    /// marker.
     FatalExitRequested,
 }
 
@@ -141,6 +142,7 @@ where
 
         let mut waiting_for_render_exit = false;
         let mut interrupt_requested = false;
+        let mut saw_round_finished_for_active_render = false;
 
         loop {
             if waiting_for_render_exit {
@@ -149,6 +151,9 @@ where
                 match exit_info.exit_reason {
                     ExitReason::UserRequested => return Ok(PotterProjectRenderExit::UserRequested),
                     ExitReason::Fatal(_) => {
+                        if saw_round_finished_for_active_render || project_outcome.is_some() {
+                            break;
+                        }
                         return Ok(PotterProjectRenderExit::FatalExitRequested);
                     }
                     ExitReason::Interrupted => {
@@ -205,7 +210,12 @@ where
                     rendered_rounds = rendered_rounds.saturating_add(1);
                     match exit_info.exit_reason {
                         ExitReason::UserRequested => return Ok(PotterProjectRenderExit::UserRequested),
-                        ExitReason::Fatal(_) => return Ok(PotterProjectRenderExit::FatalExitRequested),
+                        ExitReason::Fatal(_) => {
+                            if saw_round_finished_for_active_render || project_outcome.is_some() {
+                                break;
+                            }
+                            return Ok(PotterProjectRenderExit::FatalExitRequested);
+                        }
                         ExitReason::Interrupted => {
                             match wait_for_project_interrupted_marker(project_id, event_source, &mut pending_events).await? {
                                 ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
@@ -238,11 +248,13 @@ where
                         continue;
                     }
 
-                    let saw_round_finished = matches!(&event.msg, EventMsg::PotterRoundFinished { .. });
+                    let saw_round_finished =
+                        matches!(&event.msg, EventMsg::PotterRoundFinished { .. });
                     if event_tx.send(event).is_err() {
                         continue;
                     }
                     if saw_round_finished {
+                        saw_round_finished_for_active_render = true;
                         // Avoid reading events for the next round until the UI exits.
                         waiting_for_render_exit = true;
                     }
@@ -482,6 +494,130 @@ mod tests {
                 user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/06/4/MAIN.md"),
                 status_header_prefix: String::from("Round 1/2"),
             }
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingUi {
+        status_header_prefixes: Vec<Option<String>>,
+    }
+
+    impl PotterRoundUi for RecordingUi {
+        fn set_project_started_at(&mut self, _started_at: std::time::Instant) {}
+
+        fn render_round<'a>(
+            &'a mut self,
+            params: codex_tui::RenderRoundParams,
+        ) -> UiFuture<'a, codex_tui::AppExitInfo> {
+            self.status_header_prefixes
+                .push(params.status_header_prefix.clone());
+            Box::pin(async move {
+                let codex_tui::RenderRoundParams {
+                    mut codex_event_rx, ..
+                } = params;
+
+                while let Some(event) = codex_event_rx.recv().await {
+                    if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                        return Ok(codex_tui::AppExitInfo {
+                            token_usage: TokenUsage::default(),
+                            thread_id: None,
+                            exit_reason: match outcome {
+                                PotterRoundOutcome::Completed => codex_tui::ExitReason::Completed,
+                                PotterRoundOutcome::Interrupted => {
+                                    codex_tui::ExitReason::Interrupted
+                                }
+                                PotterRoundOutcome::UserRequested => {
+                                    codex_tui::ExitReason::UserRequested
+                                }
+                                PotterRoundOutcome::TaskFailed { message } => {
+                                    codex_tui::ExitReason::TaskFailed(message.clone())
+                                }
+                                PotterRoundOutcome::Fatal { message } => {
+                                    codex_tui::ExitReason::Fatal(message.clone())
+                                }
+                            },
+                        });
+                    }
+                }
+
+                Ok(codex_tui::AppExitInfo {
+                    token_usage: TokenUsage::default(),
+                    thread_id: None,
+                    exit_reason: codex_tui::ExitReason::Fatal(
+                        "event stream closed unexpectedly".to_string(),
+                    ),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fatal_round_continues_when_project_stream_has_more_rounds() {
+        let mut ui = RecordingUi::default();
+        let mut source = MockEventSource::default();
+
+        let exit = run_potter_project_render_loop(
+            &mut ui,
+            &mut source,
+            "project_1",
+            PotterProjectRenderOptions {
+                turn_prompt: String::from("Continue"),
+                prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None),
+                pad_before_first_cell: false,
+                initial_status_header_prefix: None,
+            },
+            vec![
+                Event {
+                    id: "round-1-start".to_string(),
+                    msg: EventMsg::PotterRoundStarted {
+                        current: 1,
+                        total: 2,
+                    },
+                },
+                Event {
+                    id: "round-1-finished".to_string(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Fatal {
+                            message: String::from("access token refresh failed"),
+                        },
+                    },
+                },
+                Event {
+                    id: "round-2-start".to_string(),
+                    msg: EventMsg::PotterRoundStarted {
+                        current: 2,
+                        total: 2,
+                    },
+                },
+                Event {
+                    id: "round-2-finished".to_string(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                    },
+                },
+                Event {
+                    id: "project-completed".to_string(),
+                    msg: EventMsg::PotterProjectCompleted {
+                        outcome: PotterProjectOutcome::BudgetExhausted,
+                    },
+                },
+            ],
+        )
+        .await
+        .expect("render loop");
+
+        assert_eq!(
+            exit,
+            PotterProjectRenderExit::Completed {
+                outcome: PotterProjectOutcome::BudgetExhausted,
+            }
+        );
+        assert_eq!(
+            ui.status_header_prefixes,
+            vec![
+                Some(String::from("Round 1/2")),
+                Some(String::from("Round 2/2")),
+            ]
         );
     }
 }

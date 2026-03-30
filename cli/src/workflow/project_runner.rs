@@ -41,8 +41,6 @@ pub enum ProjectQueueExit {
         /// The project directory relative path (e.g. `.codexpotter/projects/.../N`).
         project_dir: PathBuf,
     },
-    /// Fatal error exit requested.
-    FatalExitRequested,
 }
 
 /// Run CodexPotter projects until the queue is exhausted.
@@ -337,8 +335,11 @@ where
                     return Ok(ProjectQueueExit::UserRequestedExit { project_dir });
                 }
                 crate::workflow::project_render_loop::PotterProjectRenderExit::FatalExitRequested => {
+                    // Treat live round fatals as project-local failures. The project queue should
+                    // keep draining later prompts so transient Codex/runtime failures do not
+                    // terminate the whole interactive session.
                     let _ = app_server.project_interrupt(project_id.clone()).await;
-                    return Ok(ProjectQueueExit::FatalExitRequested);
+                    break;
                 }
             }
         }
@@ -363,6 +364,7 @@ mod tests {
         queued_prompts: VecDeque<String>,
         prompt_user_responses: VecDeque<Option<String>>,
         prompt_interrupted_project_action_responses: VecDeque<Option<InterruptedProjectAction>>,
+        queue_prompt_on_first_render: Option<String>,
         prompt_user_calls: usize,
         prompt_interrupted_project_action_calls: usize,
         clear_calls: usize,
@@ -376,6 +378,7 @@ mod tests {
                 queued_prompts: VecDeque::from(queued_prompts),
                 prompt_user_responses: VecDeque::from(prompt_user_responses),
                 prompt_interrupted_project_action_responses: VecDeque::new(),
+                queue_prompt_on_first_render: None,
                 prompt_user_calls: 0,
                 prompt_interrupted_project_action_calls: 0,
                 clear_calls: 0,
@@ -394,6 +397,9 @@ mod tests {
             &'a mut self,
             params: codex_tui::RenderRoundParams,
         ) -> crate::workflow::round_runner::UiFuture<'a, codex_tui::AppExitInfo> {
+            if let Some(prompt) = self.queue_prompt_on_first_render.take() {
+                self.queued_prompts.push_back(prompt);
+            }
             self.render_status_header_prefixes
                 .push(params.status_header_prefix.clone());
             Box::pin(async move {
@@ -714,6 +720,117 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ScriptedAppServer {
+        started_prompts: std::sync::Mutex<Vec<String>>,
+        interrupt_calls: std::sync::Mutex<Vec<String>>,
+        next_project: std::sync::Mutex<u32>,
+        buffered_events_by_project: std::sync::Mutex<VecDeque<Vec<Event>>>,
+    }
+
+    impl ScriptedAppServer {
+        fn new(buffered_events_by_project: Vec<Vec<Event>>) -> Self {
+            Self {
+                started_prompts: std::sync::Mutex::new(Vec::new()),
+                interrupt_calls: std::sync::Mutex::new(Vec::new()),
+                next_project: std::sync::Mutex::new(0),
+                buffered_events_by_project: std::sync::Mutex::new(VecDeque::from(
+                    buffered_events_by_project,
+                )),
+            }
+        }
+
+        fn started_prompts(&self) -> Vec<String> {
+            self.started_prompts.lock().expect("lock").clone()
+        }
+
+        fn interrupt_calls(&self) -> Vec<String> {
+            self.interrupt_calls.lock().expect("lock").clone()
+        }
+    }
+
+    impl crate::workflow::project_render_loop::PotterEventSource for ScriptedAppServer {
+        fn read_next_event<'a>(&'a mut self) -> UiFuture<'a, Option<Event>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    impl crate::workflow::project_render_loop::PotterProjectController for ScriptedAppServer {
+        fn interrupt_project<'a>(&'a mut self, project_id: String) -> UiFuture<'a, Vec<Event>> {
+            self.interrupt_calls.lock().expect("lock").push(project_id);
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    impl ProjectAppServer for ScriptedAppServer {
+        fn project_start<'a>(
+            &'a mut self,
+            params: crate::app_server::potter::ProjectStartParams,
+        ) -> UiFuture<'a, (crate::app_server::potter::ProjectStartResponse, Vec<Event>)> {
+            Box::pin(async move {
+                self.started_prompts
+                    .lock()
+                    .expect("lock")
+                    .push(params.user_message.clone());
+
+                let idx = {
+                    let mut guard = self.next_project.lock().expect("lock");
+                    *guard = guard.saturating_add(1);
+                    *guard
+                };
+
+                let progress_file_rel =
+                    PathBuf::from(format!(".codexpotter/projects/2026/02/01/{idx}/MAIN.md"));
+                let project_dir = PathBuf::from(format!("/tmp/project_{idx}"));
+                let progress_file = PathBuf::from(format!("/tmp/project_{idx}/MAIN.md"));
+                let project_id = format!("project_{idx}");
+                let buffered_events = self
+                    .buffered_events_by_project
+                    .lock()
+                    .expect("lock")
+                    .pop_front()
+                    .expect("buffered events for project");
+
+                Ok((
+                    crate::app_server::potter::ProjectStartResponse {
+                        project_id,
+                        working_dir: PathBuf::from("/tmp"),
+                        project_dir,
+                        progress_file_rel,
+                        progress_file,
+                        git_commit_start: String::new(),
+                        git_branch: None,
+                        rounds_total: 1,
+                    },
+                    buffered_events,
+                ))
+            })
+        }
+
+        fn project_interrupt<'a>(&'a mut self, project_id: String) -> UiFuture<'a, ()> {
+            self.interrupt_calls.lock().expect("lock").push(project_id);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn project_resolve_interrupt<'a>(
+            &'a mut self,
+            _params: crate::app_server::potter::ProjectResolveInterruptParams,
+        ) -> UiFuture<
+            'a,
+            (
+                crate::app_server::potter::ProjectResolveInterruptResponse,
+                Vec<Event>,
+            ),
+        > {
+            Box::pin(async {
+                Ok((
+                    crate::app_server::potter::ProjectResolveInterruptResponse { summary: None },
+                    Vec::new(),
+                ))
+            })
+        }
+    }
+
     #[tokio::test]
     async fn drains_queued_prompts_before_prompting_user() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -839,5 +956,76 @@ mod tests {
                 Some(String::from("Round 1/2")),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn fatal_project_does_not_abort_queue_or_drop_queued_prompts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut ui = MockUi::new(Vec::new(), vec![Some(String::from("initial")), None]);
+        ui.queue_prompt_on_first_render = Some(String::from("follow-up"));
+        let mut app_server = ScriptedAppServer::new(vec![
+            vec![
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundStarted {
+                        current: 1,
+                        total: 1,
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Fatal {
+                            message: String::from("access token refresh failed"),
+                        },
+                    },
+                },
+            ],
+            vec![
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundStarted {
+                        current: 1,
+                        total: 1,
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterProjectCompleted {
+                        outcome: PotterProjectOutcome::BudgetExhausted,
+                    },
+                },
+            ],
+        ]);
+        let clock = TestClock;
+
+        let exit = run_project_queue_with_deps(
+            &mut ui,
+            &mut app_server,
+            temp.path().to_path_buf(),
+            ProjectQueueOptions {
+                rounds: NonZeroUsize::new(1).expect("rounds"),
+                turn_prompt: String::from("Continue"),
+            },
+            &clock,
+        )
+        .await
+        .expect("run project queue");
+
+        assert_eq!(exit, ProjectQueueExit::Completed);
+        assert_eq!(
+            app_server.started_prompts(),
+            vec![String::from("initial"), String::from("follow-up")]
+        );
+        assert_eq!(app_server.interrupt_calls(), Vec::<String>::new());
+        assert_eq!(ui.prompt_user_calls, 2);
+        assert_eq!(ui.clear_calls, 1);
+        assert_eq!(ui.queued_prompts, VecDeque::<String>::new());
     }
 }

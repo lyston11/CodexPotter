@@ -519,8 +519,11 @@ where
                 return Ok(ResumeExit::UserRequested);
             }
             crate::workflow::project_render_loop::PotterProjectRenderExit::FatalExitRequested => {
+                // Replay/protocol fatals still exit the resume flow, but a live round fatal only
+                // means the resumed project failed. Keep the interactive session alive so the
+                // caller can continue with later prompts.
                 let _ = app_server.project_interrupt(project_id.clone()).await;
-                return Ok(ResumeExit::FatalExitRequested);
+                return Ok(ResumeExit::Completed);
             }
         }
     }
@@ -1615,6 +1618,98 @@ mod tests {
                 MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
                 MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
                 MockUiOp::InsertInterruptedProjectSummary(summary),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_live_fatal_round_continues_remaining_rounds() {
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = Instant::now();
+        let replay_started_at = base + Duration::from_secs(10);
+        let continue_started_at = base + Duration::from_secs(20);
+        let clock = FixedResumeClock::new(vec![replay_started_at, continue_started_at]);
+
+        let project_id = String::from("project_1");
+        let resume = crate::app_server::potter::ProjectResumeResponse {
+            project_id: project_id.clone(),
+            working_dir: temp.path().to_path_buf(),
+            project_dir: temp.path().join("project"),
+            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md"),
+            progress_file: temp
+                .path()
+                .join(".codexpotter/projects/2026/02/01/1/MAIN.md"),
+            git_branch: None,
+            replay: crate::app_server::potter::ProjectResumeReplay {
+                completed_rounds: Vec::new(),
+            },
+            unfinished_round: None,
+        };
+
+        let mut app_server = InterruptHandlingAppServer {
+            start_rounds_buffered_events: vec![
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundStarted {
+                        current: 1,
+                        total: 2,
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Fatal {
+                            message: String::from("access token refresh failed"),
+                        },
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundStarted {
+                        current: 2,
+                        total: 2,
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterRoundFinished {
+                        outcome: PotterRoundOutcome::Completed,
+                    },
+                },
+                Event {
+                    id: String::new(),
+                    msg: EventMsg::PotterProjectCompleted {
+                        outcome: PotterProjectOutcome::BudgetExhausted,
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let mut ui = MockResumeUi::default();
+
+        let exit = run_resume_with_deps(
+            &mut ui,
+            &mut app_server,
+            resume,
+            NonZeroUsize::new(2).expect("iterate rounds"),
+            &clock,
+        )
+        .await
+        .expect("run resume");
+
+        assert_eq!(exit, ResumeExit::Completed);
+        assert_eq!(app_server.interrupt_calls, Vec::<String>::new());
+        assert_eq!(
+            ui.ops,
+            vec![
+                MockUiOp::Clear,
+                MockUiOp::SetProjectStartedAt(replay_started_at),
+                MockUiOp::PromptActionPicker(vec![String::from("Iterate 2 more rounds")]),
+                MockUiOp::SetProjectStartedAt(continue_started_at),
+                MockUiOp::RenderRound(Some(String::from("Round 1/2"))),
+                MockUiOp::RenderRound(Some(String::from("Round 2/2"))),
             ]
         );
     }

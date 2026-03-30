@@ -504,17 +504,6 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|| project_dir.to_string_lossy().to_string()),
             );
         }
-        crate::workflow::project_runner::ProjectQueueExit::FatalExitRequested => {
-            // `std::process::exit` skips destructors, so explicitly drop the UI to restore terminal
-            // state before exiting.
-            queued_prompts_on_exit = ui
-                .take_queued_user_prompts()
-                .into_iter()
-                .collect::<Vec<_>>();
-            drop(ui);
-            print_queued_prompts_note(&queued_prompts_on_exit);
-            std::process::exit(1);
-        }
     }
 
     let _ = potter_app_server.shutdown().await;
