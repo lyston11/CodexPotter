@@ -483,6 +483,7 @@ struct AppServerEventProcessor {
     /// `Verbosity::Minimal` until a later visible event confirms whether it is final.
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
     pending_potter_project_summary: Option<PendingPotterProjectSummary>,
+    pending_potter_round_marker: Option<(u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -530,6 +531,7 @@ impl AppServerEventProcessor {
             pending_compact_patch_preview: None,
             pending_minimal_agent_message_lines: None,
             pending_potter_project_summary: None,
+            pending_potter_round_marker: None,
         }
     }
 
@@ -750,6 +752,17 @@ impl AppServerEventProcessor {
                             &self.cwd,
                         ));
                 }
+                if let Some((current, total)) = self.pending_potter_round_marker.take() {
+                    self.emit_history_cell(Box::new(
+                        crate::history_cell_potter::new_potter_round_marker(
+                            current,
+                            total,
+                            &cfg.model,
+                            cfg.reasoning_effort,
+                            cfg.service_tier,
+                        ),
+                    ));
+                }
             }
             EventMsg::PotterProjectStarted {
                 user_message,
@@ -768,9 +781,7 @@ impl AppServerEventProcessor {
             EventMsg::PotterRoundStarted { current, total } => {
                 self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
-                self.emit_history_cell(Box::new(
-                    crate::history_cell_potter::new_potter_round_started(current, total),
-                ));
+                self.pending_potter_round_marker = Some((current, total));
             }
             EventMsg::PotterProjectSucceeded {
                 rounds,
@@ -4147,8 +4158,14 @@ mod tests {
         let transient_height = u16::try_from(transient_lines.len()).unwrap_or(u16::MAX);
         let viewport_height = pane_height.saturating_add(transient_height);
 
-        let history_lines =
-            crate::history_cell_potter::new_potter_round_started(1, 10).display_lines(width);
+        let history_lines = crate::history_cell_potter::new_potter_round_marker(
+            1,
+            10,
+            "gpt-5.2",
+            Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+            None,
+        )
+        .display_lines(width);
         let history_height = u16::try_from(history_lines.len()).unwrap_or(u16::MAX);
         let height = history_height.saturating_add(viewport_height).max(1);
 
@@ -4244,8 +4261,14 @@ mod tests {
         let transient_height = u16::try_from(transient_lines.len()).unwrap_or(u16::MAX);
         let viewport_height = pane_height.saturating_add(transient_height);
 
-        let history_lines =
-            crate::history_cell_potter::new_potter_round_started(1, 10).display_lines(width);
+        let history_lines = crate::history_cell_potter::new_potter_round_marker(
+            1,
+            10,
+            "gpt-5.2",
+            Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+            None,
+        )
+        .display_lines(width);
         let history_height = u16::try_from(history_lines.len()).unwrap_or(u16::MAX);
         let height = history_height.saturating_add(viewport_height).max(1);
 
@@ -6126,6 +6149,22 @@ mod tests {
                 total: 10,
             },
         });
+        proc.handle_codex_event(Event {
+            id: "session-configured".into(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                model: "gpt-5.2".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: None,
+                cwd: PathBuf::from("project"),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                rollout_path: PathBuf::from("rollout.jsonl"),
+            }),
+        });
 
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
@@ -7484,6 +7523,29 @@ mod tests {
                 current: 1,
                 total: 15,
             },
+        });
+
+        let events = drain_history_cell_strings(&mut rx, u16::MAX);
+        assert!(
+            events.is_empty(),
+            "expected no marker before SessionConfigured; got: {events:?}"
+        );
+
+        proc.handle_codex_event(Event {
+            id: "session-configured".into(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                model: "gpt-5.2".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: Some(codex_protocol::protocol::ServiceTier::Fast),
+                cwd: PathBuf::from("project"),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                rollout_path: PathBuf::from("rollout.jsonl"),
+            }),
         });
 
         let events = drain_history_cell_strings(&mut rx, u16::MAX);

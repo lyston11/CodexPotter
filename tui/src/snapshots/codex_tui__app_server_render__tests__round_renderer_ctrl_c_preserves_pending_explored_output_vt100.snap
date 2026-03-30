@@ -9,7 +9,7 @@ expression: terminal.backend().vt100().screen().contents()
 
   ↳ Project created: .codexpotter/projects/2026/01/29/18/MAIN.md
 
-• CodexPotter: iteration round 1/10
+• CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)
 
 • Explored
   └ List ls -la

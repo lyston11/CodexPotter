@@ -20,6 +20,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::ServiceTier;
 use codex_protocol::protocol::TokenUsage;
 use crossterm::queue;
 use crossterm::style::Color as CrosstermColor;
@@ -90,6 +91,7 @@ struct PendingExecMetaInfo {
 struct SessionMetaInfo {
     model: String,
     reasoning_effort: Option<ReasoningEffortConfig>,
+    service_tier: Option<ServiceTier>,
 }
 
 /// Append-only human-readable renderer used by `codex-potter exec` without `--json`.
@@ -113,6 +115,7 @@ pub struct ExecHumanRenderer {
     reasoning_status: ReasoningStatusTracker,
     pending_exec_meta: Option<PendingExecMetaInfo>,
     session_meta: Option<SessionMetaInfo>,
+    pending_round_marker: Option<(u32, u32)>,
     pending_initial_blocks: Vec<String>,
     emitted_exec_meta: bool,
 }
@@ -141,6 +144,7 @@ impl ExecHumanRenderer {
             reasoning_status: ReasoningStatusTracker::new(),
             pending_exec_meta: None,
             session_meta: None,
+            pending_round_marker: None,
             pending_initial_blocks: Vec::new(),
             emitted_exec_meta: false,
         }
@@ -200,8 +204,31 @@ impl ExecHumanRenderer {
                 self.session_meta = Some(SessionMetaInfo {
                     model: cfg.model.clone(),
                     reasoning_effort: cfg.reasoning_effort,
+                    service_tier: cfg.service_tier,
                 });
                 out.extend(self.flush_pending_exec_meta(false)?);
+                if let Some((current, total)) = self.pending_round_marker.take()
+                    && let Some(session_meta) = self.session_meta.as_ref()
+                {
+                    let label = crate::history_cell_potter::format_potter_round_session_label(
+                        &session_meta.model,
+                        session_meta.reasoning_effort,
+                        session_meta.service_tier,
+                    );
+                    let mut spans = vec![
+                        Span::styled(
+                            "CodexPotter: ",
+                            Style::default()
+                                .fg(secondary_color())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        format!("iteration round {current}/{total}").into(),
+                    ];
+                    if !label.is_empty() {
+                        spans.push(format!(" ({label})").into());
+                    }
+                    self.push_block(&mut out, self.render_lines(vec![Line::from(spans)])?);
+                }
             }
             EventMsg::TurnStarted(ev) => {
                 self.pending_simple_final_message_separator = false;
@@ -225,18 +252,7 @@ impl ExecHumanRenderer {
             EventMsg::PotterRoundStarted { current, total } => {
                 self.pending_simple_final_message_separator = false;
                 self.separator_baseline = Some(Instant::now());
-                self.push_block(
-                    &mut out,
-                    self.render_lines(vec![Line::from(vec![
-                        Span::styled(
-                            "CodexPotter: ",
-                            Style::default()
-                                .fg(secondary_color())
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        format!("iteration round {current}/{total}").into(),
-                    ])])?,
-                );
+                self.pending_round_marker = Some((*current, *total));
             }
             EventMsg::TokenCount(ev) => {
                 if let Some(info) = &ev.info {
@@ -1328,9 +1344,31 @@ mod tests {
                 total: 10,
             })
             .expect("round marker");
+        assert!(blocks.is_empty());
+
+        let blocks = renderer
+            .handle_event(&EventMsg::SessionConfigured(
+                codex_protocol::protocol::SessionConfiguredEvent {
+                    session_id: codex_protocol::ThreadId::from_string(
+                        "019ca423-63d9-7641-ae83-db060ad3c000",
+                    )
+                    .expect("thread id"),
+                    forked_from_id: None,
+                    model: "gpt-5.2".to_string(),
+                    model_provider_id: "openai".to_string(),
+                    service_tier: None,
+                    cwd: PathBuf::from("/repo"),
+                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+                    history_log_id: 0,
+                    history_entry_count: 0,
+                    initial_messages: None,
+                    rollout_path: PathBuf::from("/repo/rollout.jsonl"),
+                },
+            ))
+            .expect("session configured");
         assert_eq!(
             blocks,
-            vec!["CodexPotter: iteration round 1/10".to_string()]
+            vec!["CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string()]
         );
     }
 
@@ -1387,7 +1425,7 @@ reasoning effort: xhigh\n\
 codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
 --------"
                     .to_string(),
-                "CodexPotter: iteration round 1/10".to_string(),
+                "CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string(),
             ]
         );
     }

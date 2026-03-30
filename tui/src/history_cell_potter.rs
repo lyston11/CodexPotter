@@ -20,6 +20,9 @@ use ratatui::text::Span;
 use ratatui::text::Text;
 use unicode_width::UnicodeWidthStr;
 
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::ServiceTier;
+
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PrefixedWrappedHistoryCell;
 use crate::text_formatting::capitalize_first;
@@ -27,16 +30,58 @@ use crate::ui_colors::secondary_color;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
+/// Render the session label suffix shown in CodexPotter's round marker.
+///
+/// Format:
+/// - Always includes the model name.
+/// - Appends `reasoning_effort` when present.
+/// - Appends `[fast]` when `service_tier == fast`.
+pub fn format_potter_round_session_label(
+    model: &str,
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    service_tier: Option<ServiceTier>,
+) -> String {
+    let model = model.trim();
+    if model.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str(model);
+
+    if let Some(reasoning_effort) = reasoning_effort {
+        out.push(' ');
+        out.push_str(&reasoning_effort.to_string());
+    }
+
+    if matches!(service_tier, Some(ServiceTier::Fast)) {
+        out.push(' ');
+        out.push_str("[fast]");
+    }
+
+    out
+}
+
 /// Render a marker that indicates an iteration round boundary.
-pub fn new_potter_round_started(current: u32, total: u32) -> PrefixedWrappedHistoryCell {
+pub fn new_potter_round_marker(
+    current: u32,
+    total: u32,
+    model: &str,
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    service_tier: Option<ServiceTier>,
+) -> PrefixedWrappedHistoryCell {
     let style = Style::default()
         .fg(secondary_color())
         .add_modifier(Modifier::BOLD);
-    let text: Text<'static> = Line::from(vec![
+    let session_label = format_potter_round_session_label(model, reasoning_effort, service_tier);
+    let mut spans = vec![
         Span::styled("CodexPotter: ", style),
         format!("iteration round {current}/{total}").into(),
-    ])
-    .into();
+    ];
+    if !session_label.is_empty() {
+        spans.push(format!(" ({session_label})").into());
+    }
+    let text: Text<'static> = Line::from(spans).into();
     PrefixedWrappedHistoryCell::new(text, "• ".dim(), "  ")
 }
 
