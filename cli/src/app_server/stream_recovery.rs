@@ -1,8 +1,9 @@
-//! CodexPotter-specific stream recovery policy.
+//! CodexPotter-specific turn recovery policy.
 //!
 //! CodexPotter runs multi-round workflows. When Codex emits certain transient network/streaming
-//! errors mid-turn (e.g. response stream disconnected), we want to keep the current round alive
-//! and let the agent recover by issuing a follow-up `continue` prompt.
+//! errors mid-turn (e.g. response stream disconnected), or certain known auth-refresh noise, we
+//! want to keep the current round alive and let the agent recover by issuing a follow-up
+//! `continue` prompt.
 
 use std::time::Duration;
 
@@ -116,6 +117,13 @@ mod tests {
         }
     }
 
+    fn retryable_sign_in_again_error_event() -> ErrorEvent {
+        ErrorEvent {
+            message: "unexpected status 401: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.".to_string(),
+            codex_error_info: Some(CodexErrorInfo::Unauthorized),
+        }
+    }
+
     #[test]
     fn plan_retry_sends_immediately_then_backs_off_exponentially() {
         let mut state = PotterStreamRecovery::new();
@@ -174,6 +182,26 @@ mod tests {
             panic!("expected retry plan");
         };
         assert_eq!(reset.attempt, 1);
+    }
+
+    #[test]
+    fn plan_retry_accepts_sign_in_again_message() {
+        let mut state = PotterStreamRecovery::new();
+
+        let Some(ContinueRetryDecision::Retry(plan)) =
+            state.plan_retry(&retryable_sign_in_again_error_event())
+        else {
+            panic!("expected retry plan");
+        };
+
+        assert_eq!(
+            plan,
+            ContinueRetryPlan {
+                attempt: 1,
+                max_attempts: 10,
+                backoff: Duration::from_secs(0),
+            }
+        );
     }
 
     #[test]

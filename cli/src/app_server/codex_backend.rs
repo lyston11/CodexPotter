@@ -2533,6 +2533,13 @@ mod stream_recovery_tests {
         }
     }
 
+    fn retryable_sign_in_again_error_event() -> ErrorEvent {
+        ErrorEvent {
+            message: "unexpected status 401: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.".to_string(),
+            codex_error_info: Some(CodexErrorInfo::Unauthorized),
+        }
+    }
+
     #[test]
     fn stream_recovery_translates_retryable_error_to_potter_events() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
@@ -2666,6 +2673,76 @@ mod stream_recovery_tests {
             }
         ));
         assert!(action_rx.try_recv().is_err(), "expected no continue action");
+    }
+
+    #[test]
+    fn stream_recovery_retries_sign_in_again_error_within_round() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
+        let mut recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx: action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode: AppServerEventMode::Interactive,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        handle_codex_event(
+            Event {
+                id: "err".into(),
+                msg: EventMsg::Error(retryable_sign_in_again_error_event()),
+            },
+            &mut recovery,
+            &event_tx,
+        );
+
+        let update = event_rx
+            .try_recv()
+            .expect("expected recovery update for auth refresh noise");
+        let EventMsg::PotterStreamRecoveryUpdate {
+            attempt,
+            max_attempts,
+            error_message,
+        } = update.msg
+        else {
+            panic!("expected PotterStreamRecoveryUpdate, got: {:?}", update.msg);
+        };
+        assert_eq!((attempt, max_attempts), (1, 10));
+        assert!(error_message.contains("Please sign in again."));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected auth retry error to be suppressed"
+        );
+
+        handle_codex_event(
+            Event {
+                id: "turn-complete".into(),
+                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-1".to_string(),
+                    last_agent_message: None,
+                }),
+            },
+            &mut recovery,
+            &event_tx,
+        );
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected empty TurnComplete to be suppressed during auth retry"
+        );
+        assert_eq!(
+            action_rx.try_recv().expect("expected RetryContinue action"),
+            RecoveryAction::RetryContinue { attempt: 1 }
+        );
+        assert!(
+            !recovery.has_finished_round,
+            "round should stay alive for automatic Continue"
+        );
     }
 
     #[test]

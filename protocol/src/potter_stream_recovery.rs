@@ -1,8 +1,9 @@
-//! CodexPotter-specific helpers for recovering from transient streaming errors.
+//! CodexPotter-specific helpers for recovering from transient turn failures.
 //!
 //! `codex-potter` runs multi-round workflows. When Codex emits certain transient network/streaming
-//! errors mid-turn (e.g. response stream disconnected), we want to keep the current round alive
-//! and let the agent recover by issuing a follow-up `continue` prompt.
+//! errors mid-turn (e.g. response stream disconnected), or certain known auth-refresh noise, we
+//! want to keep the current round alive and let the agent recover by issuing a follow-up
+//! `continue` prompt.
 
 use crate::protocol::CodexErrorInfo;
 use crate::protocol::ErrorEvent;
@@ -25,10 +26,16 @@ fn is_retryable_http_status(code: u16) -> bool {
     code == 408 || code == 429 || (500..600).contains(&code)
 }
 
-/// Returns `true` when `event` represents a transient streaming/network failure.
+fn has_retryable_continue_message(message: &str) -> bool {
+    // Keep this heuristic intentionally narrow. Only auth/session failures that still instruct the
+    // user to "sign in again" should reuse the in-round `Continue` recovery flow.
+    message.contains("sign in again")
+}
+
+/// Returns `true` when `event` represents a transient turn failure.
 ///
-/// These errors are typically recoverable by retrying the turn via a follow-up `continue`
-/// prompt, instead of ending the round and starting a new one.
+/// These errors are typically recoverable by retrying the turn via a follow-up `continue` prompt,
+/// instead of ending the round and starting a new one.
 pub fn is_retryable_stream_error(event: &ErrorEvent) -> bool {
     match event.codex_error_info {
         Some(CodexErrorInfo::HttpConnectionFailed { .. })
@@ -45,6 +52,7 @@ pub fn is_retryable_stream_error(event: &ErrorEvent) -> bool {
             message.contains("stream disconnected before completion")
                 || message.contains("error sending request for url")
                 || parse_unexpected_status_code(message).is_some_and(is_retryable_http_status)
+                || has_retryable_continue_message(message)
         }
     }
 }
@@ -110,6 +118,24 @@ mod tests {
         let event = ErrorEvent {
             message: "unexpected status 503 Service Unavailable: overloaded".to_string(),
             codex_error_info: None,
+        };
+        assert!(is_retryable_stream_error(&event));
+    }
+
+    #[test]
+    fn retryable_stream_error_accepts_sign_in_again_message() {
+        let event = ErrorEvent {
+            message: "unexpected status 401: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.".to_string(),
+            codex_error_info: Some(CodexErrorInfo::Unauthorized),
+        };
+        assert!(is_retryable_stream_error(&event));
+    }
+
+    #[test]
+    fn retryable_stream_error_accepts_log_out_and_sign_in_again_message() {
+        let event = ErrorEvent {
+            message: "unexpected status 401: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.".to_string(),
+            codex_error_info: Some(CodexErrorInfo::Unauthorized),
         };
         assert!(is_retryable_stream_error(&event));
     }
