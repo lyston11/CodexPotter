@@ -54,6 +54,7 @@ pub struct PotterRoundEventBridge {
     round_total: u32,
     project_rounds_run: u32,
     has_recorded_round_configured: bool,
+    session_model: Option<String>,
 }
 
 impl PotterRoundEventBridge {
@@ -69,10 +70,15 @@ impl PotterRoundEventBridge {
             round_current: config.round_current,
             round_total: config.round_total,
             project_rounds_run: config.project_rounds_run,
+            session_model: None,
         }
     }
 
     pub fn observe_backend_event(&mut self, event: &Event) -> anyhow::Result<Option<Event>> {
+        if let EventMsg::SessionConfigured(cfg) = &event.msg {
+            self.session_model = Some(cfg.model.clone());
+        }
+
         if !self.has_recorded_round_configured
             && let EventMsg::SessionConfigured(cfg) = &event.msg
         {
@@ -101,30 +107,41 @@ impl PotterRoundEventBridge {
                     .context("check progress file finite_incantatem")?;
 
                 if stop_due_to_finite_incantatem {
-                    let git_commit_end =
-                        crate::workflow::project::resolve_git_commit(&self.workdir);
-                    crate::workflow::rollout::append_line(
-                        &self.potter_rollout_path,
-                        &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
-                            rounds: self.project_rounds_run,
-                            duration_secs: self.project_started_at.elapsed().as_secs(),
-                            user_prompt_file: self.user_prompt_file.clone(),
-                            git_commit_start: self.git_commit_start.clone(),
-                            git_commit_end: git_commit_end.clone(),
-                        },
-                    )
-                    .context("append potter-rollout project_succeeded")?;
+                    let potter_xmodel_enabled =
+                        crate::workflow::project::progress_file_potter_xmodel_enabled(
+                            &self.workdir,
+                            &self.progress_file_rel,
+                        )
+                        .context("read progress file potter.xmodel")?;
 
-                    injected = Some(Event {
-                        id: "".to_string(),
-                        msg: EventMsg::PotterProjectSucceeded {
-                            rounds: self.project_rounds_run,
-                            duration: self.project_started_at.elapsed(),
-                            user_prompt_file: self.user_prompt_file.clone(),
-                            git_commit_start: self.git_commit_start.clone(),
-                            git_commit_end,
-                        },
-                    });
+                    let should_emit_project_succeeded =
+                        !potter_xmodel_enabled || self.session_model.as_deref() == Some("gpt-5.4");
+                    if should_emit_project_succeeded {
+                        let git_commit_end =
+                            crate::workflow::project::resolve_git_commit(&self.workdir);
+                        crate::workflow::rollout::append_line(
+                            &self.potter_rollout_path,
+                            &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                                rounds: self.project_rounds_run,
+                                duration_secs: self.project_started_at.elapsed().as_secs(),
+                                user_prompt_file: self.user_prompt_file.clone(),
+                                git_commit_start: self.git_commit_start.clone(),
+                                git_commit_end: git_commit_end.clone(),
+                            },
+                        )
+                        .context("append potter-rollout project_succeeded")?;
+
+                        injected = Some(Event {
+                            id: "".to_string(),
+                            msg: EventMsg::PotterProjectSucceeded {
+                                rounds: self.project_rounds_run,
+                                duration: self.project_started_at.elapsed(),
+                                user_prompt_file: self.user_prompt_file.clone(),
+                                git_commit_start: self.git_commit_start.clone(),
+                                git_commit_end,
+                            },
+                        });
+                    }
                 } else if self.round_current == self.round_total {
                     let git_commit_end =
                         crate::workflow::project::resolve_git_commit(&self.workdir);
@@ -181,6 +198,15 @@ mod tests {
     use std::path::Path;
 
     fn write_progress_file(workdir: &Path, progress_file_rel: &Path, finite: bool) {
+        write_progress_file_with_potter_xmodel(workdir, progress_file_rel, finite, false);
+    }
+
+    fn write_progress_file_with_potter_xmodel(
+        workdir: &Path,
+        progress_file_rel: &Path,
+        finite: bool,
+        potter_xmodel: bool,
+    ) {
         let progress_file = workdir.join(progress_file_rel);
         std::fs::create_dir_all(progress_file.parent().expect("parent")).expect("mkdir");
         std::fs::write(
@@ -188,6 +214,7 @@ mod tests {
             format!(
                 r#"---
 finite_incantatem: {finite}
+potter.xmodel: {potter_xmodel}
 ---
 
 # Overall Goal
@@ -201,6 +228,7 @@ finite_incantatem: {finite}
         workdir: &Path,
         rollout_path: PathBuf,
         service_tier: Option<codex_protocol::protocol::ServiceTier>,
+        model: &str,
     ) -> Event {
         Event {
             id: "event_1".to_string(),
@@ -210,7 +238,7 @@ finite_incantatem: {finite}
                 )
                 .expect("thread id"),
                 forked_from_id: None,
-                model: "test".to_string(),
+                model: model.to_string(),
                 model_provider_id: "test".to_string(),
                 service_tier,
                 cwd: workdir.to_path_buf(),
@@ -245,7 +273,7 @@ finite_incantatem: {finite}
             project_rounds_run: 1,
         });
 
-        let ev = session_configured_event(workdir, PathBuf::from("upstream.jsonl"), None);
+        let ev = session_configured_event(workdir, PathBuf::from("upstream.jsonl"), None, "test");
         bridge.observe_backend_event(&ev).expect("observe #1");
         bridge.observe_backend_event(&ev).expect("observe #2");
 
@@ -293,6 +321,7 @@ finite_incantatem: {finite}
             workdir,
             PathBuf::from("upstream.jsonl"),
             Some(codex_protocol::protocol::ServiceTier::Fast),
+            "test",
         );
         bridge.observe_backend_event(&ev).expect("observe");
 
@@ -384,6 +413,58 @@ finite_incantatem: {finite}
             round_total: 10,
             project_rounds_run: 3,
         });
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        };
+
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .expect("observe finished");
+        assert!(injected.is_none());
+
+        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+        assert_eq!(lines.len(), 1);
+        assert!(matches!(
+            &lines[0],
+            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed
+            }
+        ));
+    }
+
+    #[test]
+    fn observe_backend_event_does_not_inject_project_succeeded_for_xmodel_before_gpt_5_4() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+        write_progress_file_with_potter_xmodel(workdir, &progress_file_rel, true, true);
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: false,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            user_prompt_file: progress_file_rel.clone(),
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 1,
+            round_total: 10,
+            project_rounds_run: 1,
+        });
+
+        bridge
+            .observe_backend_event(&session_configured_event(
+                workdir,
+                PathBuf::from("upstream.jsonl"),
+                None,
+                "gpt-5.2",
+            ))
+            .expect("observe session configured");
 
         let finished = Event {
             id: "event_2".to_string(),

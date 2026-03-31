@@ -21,8 +21,11 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_tui::ExitReason;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::watch;
 
 const POTTER_XMODEL_REASONING_EFFORT: &str = "xhigh";
+const POTTER_XMODEL_GPT_5_4_MODEL: &str = "gpt-5.4";
+const POTTER_XMODEL_GPT_5_2_MODEL: &str = "gpt-5.2";
 
 /// Boxed future returned by [`PotterRoundUi`] implementations.
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + 'a>>;
@@ -85,6 +88,11 @@ pub struct PotterRoundOptions {
     pub project_started: Option<PotterProjectStartedInfo>,
     pub round_current: u32,
     pub round_total: u32,
+    /// When `potter.xmodel` is enabled, force gpt-5.4 for this round and all subsequent rounds.
+    ///
+    /// This flag is intentionally transient-only: it is not persisted in the progress file and
+    /// should reset on resume (unless re-triggered).
+    pub potter_xmodel_force_gpt_5_4: bool,
     /// Number of rounds executed in the current iteration window, including this round.
     ///
     /// This intentionally differs from `round_current` when resuming unfinished rounds: resume may
@@ -116,6 +124,7 @@ pub struct PotterRoundResult {
     pub exit_reason: ExitReason,
     pub stop_due_to_finite_incantatem: bool,
     pub thread_id: Option<ThreadId>,
+    pub session_model: Option<String>,
 }
 
 pub async fn run_potter_round(
@@ -128,6 +137,7 @@ pub async fn run_potter_round(
         project_started,
         round_current,
         round_total,
+        potter_xmodel_force_gpt_5_4,
         project_rounds_run,
     } = options;
 
@@ -139,6 +149,7 @@ pub async fn run_potter_round(
             project_started,
             round_current,
             round_total,
+            potter_xmodel_force_gpt_5_4,
             project_rounds_run,
             prompt: context.turn_prompt.clone(),
             resume_thread_id: None,
@@ -177,6 +188,7 @@ pub async fn continue_potter_round(
             project_started: None,
             round_current,
             round_total,
+            potter_xmodel_force_gpt_5_4: false,
             project_rounds_run,
             prompt: context.turn_prompt.clone(),
             resume_thread_id: Some(resume_thread_id),
@@ -194,6 +206,7 @@ struct PotterRoundInnerOptions {
     project_started: Option<PotterProjectStartedInfo>,
     round_current: u32,
     round_total: u32,
+    potter_xmodel_force_gpt_5_4: bool,
     project_rounds_run: u32,
     prompt: String,
     resume_thread_id: Option<codex_protocol::ThreadId>,
@@ -213,6 +226,7 @@ async fn run_potter_round_inner(
         project_started,
         round_current,
         round_total,
+        potter_xmodel_force_gpt_5_4,
         project_rounds_run,
         prompt,
         resume_thread_id,
@@ -226,6 +240,7 @@ async fn run_potter_round_inner(
     let (backend_event_tx, mut backend_event_rx) = unbounded_channel::<Event>();
     let (ui_event_tx, ui_event_rx) = unbounded_channel::<Event>();
     let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+    let (session_model_tx, session_model_rx) = watch::channel::<Option<String>>(None);
 
     if let Some(project_started) = project_started {
         let _ = ui_event_tx.send(Event {
@@ -280,6 +295,7 @@ async fn run_potter_round_inner(
         let ui_event_tx = ui_event_tx.clone();
         let potter_rollout_path = context.potter_rollout_path.clone();
         let fatal_exit_tx = fatal_exit_tx.clone();
+        let session_model_tx = session_model_tx.clone();
         let mut bridge = super::round_event_bridge::PotterRoundEventBridge::new(
             super::round_event_bridge::PotterRoundEventBridgeConfig {
                 record_round_configured,
@@ -297,6 +313,10 @@ async fn run_potter_round_inner(
 
         tokio::spawn(async move {
             while let Some(event) = backend_event_rx.recv().await {
+                if let EventMsg::SessionConfigured(cfg) = &event.msg {
+                    session_model_tx.send_replace(Some(cfg.model.clone()));
+                }
+
                 let injected = match bridge.observe_backend_event(&event) {
                     Ok(injected) => injected,
                     Err(err) => {
@@ -336,6 +356,7 @@ async fn run_potter_round_inner(
         round_current,
         resume_thread_id.is_some(),
         potter_xmodel_enabled,
+        potter_xmodel_force_gpt_5_4,
     );
 
     let backend = tokio::spawn(crate::app_server::run_app_server_backend(
@@ -388,6 +409,7 @@ async fn run_potter_round_inner(
                 exit_reason,
                 stop_due_to_finite_incantatem: false,
                 thread_id,
+                session_model: session_model_rx.borrow().clone(),
             });
         }
     }
@@ -408,17 +430,19 @@ async fn run_potter_round_inner(
         exit_reason,
         stop_due_to_finite_incantatem,
         thread_id,
+        session_model: session_model_rx.borrow().clone(),
     })
 }
 
 fn apply_potter_xmodel_overrides(
     upstream_cli_args: &mut crate::app_server::UpstreamCodexCliArgs,
     round_current: u32,
+    force_gpt_5_4: bool,
 ) {
-    let model = if round_current >= 4 {
-        "gpt-5.4"
+    let model = if force_gpt_5_4 || round_current >= 4 {
+        POTTER_XMODEL_GPT_5_4_MODEL
     } else {
-        "gpt-5.2"
+        POTTER_XMODEL_GPT_5_2_MODEL
     };
     upstream_cli_args.model = Some(model.to_string());
     upstream_cli_args.config_overrides.push(format!(
@@ -431,6 +455,7 @@ fn prepare_upstream_cli_args_for_round(
     round_current: u32,
     is_resume_unfinished_round: bool,
     potter_xmodel_enabled: bool,
+    potter_xmodel_force_gpt_5_4: bool,
 ) -> crate::app_server::UpstreamCodexCliArgs {
     if is_resume_unfinished_round {
         // Unfinished round continuation must resume the original session configuration, so
@@ -440,7 +465,11 @@ fn prepare_upstream_cli_args_for_round(
     }
 
     if potter_xmodel_enabled {
-        apply_potter_xmodel_overrides(&mut upstream_cli_args, round_current);
+        apply_potter_xmodel_overrides(
+            &mut upstream_cli_args,
+            round_current,
+            potter_xmodel_force_gpt_5_4,
+        );
     }
 
     upstream_cli_args
@@ -458,7 +487,7 @@ mod tests {
             ..Default::default()
         };
 
-        let prepared = prepare_upstream_cli_args_for_round(args, 1, true, true);
+        let prepared = prepare_upstream_cli_args_for_round(args, 1, true, true, false);
         assert_eq!(prepared.model, None);
         assert_eq!(prepared.config_overrides, Vec::<String>::new());
     }
@@ -471,8 +500,8 @@ mod tests {
             ..Default::default()
         };
 
-        apply_potter_xmodel_overrides(&mut args, 3);
-        assert_eq!(args.model.as_deref(), Some("gpt-5.2"));
+        apply_potter_xmodel_overrides(&mut args, 3, false);
+        assert_eq!(args.model.as_deref(), Some(POTTER_XMODEL_GPT_5_2_MODEL));
         assert_eq!(
             args.config_overrides.last().map(String::as_str),
             Some("model_reasoning_effort=\"xhigh\"")
@@ -487,8 +516,24 @@ mod tests {
             ..Default::default()
         };
 
-        apply_potter_xmodel_overrides(&mut args, 4);
-        assert_eq!(args.model.as_deref(), Some("gpt-5.4"));
+        apply_potter_xmodel_overrides(&mut args, 4, false);
+        assert_eq!(args.model.as_deref(), Some(POTTER_XMODEL_GPT_5_4_MODEL));
+        assert_eq!(
+            args.config_overrides,
+            vec!["model_reasoning_effort=\"xhigh\"".to_string()]
+        );
+    }
+
+    #[test]
+    fn potter_xmodel_force_gpt_5_4_overrides_round_2_to_gpt_5_4_xhigh() {
+        let mut args = crate::app_server::UpstreamCodexCliArgs {
+            model: Some("user-model".to_string()),
+            config_overrides: Vec::new(),
+            ..Default::default()
+        };
+
+        apply_potter_xmodel_overrides(&mut args, 2, true);
+        assert_eq!(args.model.as_deref(), Some(POTTER_XMODEL_GPT_5_4_MODEL));
         assert_eq!(
             args.config_overrides,
             vec!["model_reasoning_effort=\"xhigh\"".to_string()]
