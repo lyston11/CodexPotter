@@ -6,7 +6,6 @@ git_commit: "{{GIT_COMMIT}}"
 git_branch: "{{GIT_BRANCH}}"
 {{POTTER_XMODEL_FRONT_MATTER}}
 ---
----
 
 # Overall Goal
 

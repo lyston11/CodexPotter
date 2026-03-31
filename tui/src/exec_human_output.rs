@@ -207,28 +207,7 @@ impl ExecHumanRenderer {
                     service_tier: cfg.service_tier,
                 });
                 out.extend(self.flush_pending_exec_meta(false)?);
-                if let Some((current, total)) = self.pending_round_marker.take()
-                    && let Some(session_meta) = self.session_meta.as_ref()
-                {
-                    let label = crate::history_cell_potter::format_potter_round_session_label(
-                        &session_meta.model,
-                        session_meta.reasoning_effort,
-                        session_meta.service_tier,
-                    );
-                    let mut spans = vec![
-                        Span::styled(
-                            "CodexPotter: ",
-                            Style::default()
-                                .fg(secondary_color())
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        format!("iteration round {current}/{total}").into(),
-                    ];
-                    if !label.is_empty() {
-                        spans.push(format!(" ({label})").into());
-                    }
-                    self.push_block(&mut out, self.render_lines(vec![Line::from(spans)])?);
-                }
+                self.maybe_emit_round_marker(&mut out)?;
             }
             EventMsg::TurnStarted(ev) => {
                 self.pending_simple_final_message_separator = false;
@@ -253,6 +232,7 @@ impl ExecHumanRenderer {
                 self.pending_simple_final_message_separator = false;
                 self.separator_baseline = Some(Instant::now());
                 self.pending_round_marker = Some((*current, *total));
+                self.maybe_emit_round_marker(&mut out)?;
             }
             EventMsg::TokenCount(ev) => {
                 if let Some(info) = &ev.info {
@@ -299,6 +279,8 @@ impl ExecHumanRenderer {
                 if let Some(summary) = self.pending_project_summary.take() {
                     out.push(self.render_project_summary(summary)?);
                 }
+                self.session_meta = None;
+                self.pending_round_marker = None;
             }
             EventMsg::TurnComplete(_) => {
                 out.extend(self.flush_agent_output(true)?);
@@ -615,6 +597,40 @@ impl ExecHumanRenderer {
         }
 
         Ok(out)
+    }
+
+    fn maybe_emit_round_marker(&mut self, out: &mut Vec<String>) -> io::Result<()> {
+        if self.pending_round_marker.is_none() || self.session_meta.is_none() {
+            return Ok(());
+        }
+
+        let Some((current, total)) = self.pending_round_marker.take() else {
+            return Ok(());
+        };
+        let Some(session_meta) = self.session_meta.as_ref() else {
+            self.pending_round_marker = Some((current, total));
+            return Ok(());
+        };
+
+        let label = crate::history_cell_potter::format_potter_round_session_label(
+            &session_meta.model,
+            session_meta.reasoning_effort,
+            session_meta.service_tier,
+        );
+        let mut spans = vec![
+            Span::styled(
+                "CodexPotter: ",
+                Style::default()
+                    .fg(secondary_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            format!("iteration round {current}/{total}").into(),
+        ];
+        if !label.is_empty() {
+            spans.push(format!(" ({label})").into());
+        }
+        self.push_block(out, self.render_lines(vec![Line::from(spans)])?);
+        Ok(())
     }
 
     fn push_block(&mut self, out: &mut Vec<String>, block: String) {
@@ -1366,6 +1382,43 @@ mod tests {
                 },
             ))
             .expect("session configured");
+        assert_eq!(
+            blocks,
+            vec!["CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string()]
+        );
+    }
+
+    #[test]
+    fn round_marker_emits_when_session_configured_arrives_before_round_started() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let blocks = renderer
+            .handle_event(&EventMsg::SessionConfigured(
+                codex_protocol::protocol::SessionConfiguredEvent {
+                    session_id: codex_protocol::ThreadId::from_string(
+                        "019ca423-63d9-7641-ae83-db060ad3c000",
+                    )
+                    .expect("thread id"),
+                    forked_from_id: None,
+                    model: "gpt-5.2".to_string(),
+                    model_provider_id: "openai".to_string(),
+                    service_tier: None,
+                    cwd: PathBuf::from("/repo"),
+                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+                    history_log_id: 0,
+                    history_entry_count: 0,
+                    initial_messages: None,
+                    rollout_path: PathBuf::from("/repo/rollout.jsonl"),
+                },
+            ))
+            .expect("session configured");
+        assert!(blocks.is_empty());
+
+        let blocks = renderer
+            .handle_event(&EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 10,
+            })
+            .expect("round marker");
         assert_eq!(
             blocks,
             vec!["CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string()]

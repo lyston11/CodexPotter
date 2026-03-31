@@ -484,6 +484,14 @@ struct AppServerEventProcessor {
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
     pending_potter_project_summary: Option<PendingPotterProjectSummary>,
     pending_potter_round_marker: Option<(u32, u32)>,
+    pending_potter_round_session: Option<PendingPotterRoundSession>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPotterRoundSession {
+    model: String,
+    reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    service_tier: Option<codex_protocol::protocol::ServiceTier>,
 }
 
 #[derive(Debug)]
@@ -532,7 +540,33 @@ impl AppServerEventProcessor {
             pending_minimal_agent_message_lines: None,
             pending_potter_project_summary: None,
             pending_potter_round_marker: None,
+            pending_potter_round_session: None,
         }
+    }
+
+    fn maybe_emit_potter_round_marker(&mut self) {
+        if self.pending_potter_round_marker.is_none() || self.pending_potter_round_session.is_none()
+        {
+            return;
+        }
+
+        let Some((current, total)) = self.pending_potter_round_marker.take() else {
+            return;
+        };
+        let Some(session) = self.pending_potter_round_session.take() else {
+            self.pending_potter_round_marker = Some((current, total));
+            return;
+        };
+
+        self.emit_history_cell(Box::new(
+            crate::history_cell_potter::new_potter_round_marker(
+                current,
+                total,
+                &session.model,
+                session.reasoning_effort,
+                session.service_tier,
+            ),
+        ));
     }
 
     fn maybe_emit_potter_project_summary(&mut self) {
@@ -745,6 +779,11 @@ impl AppServerEventProcessor {
                 self.thread_id = Some(cfg.session_id);
                 self.cwd = cfg.cwd;
                 self.stream = StreamController::new(None, &self.cwd);
+                self.pending_potter_round_session = Some(PendingPotterRoundSession {
+                    model: cfg.model,
+                    reasoning_effort: cfg.reasoning_effort,
+                    service_tier: cfg.service_tier,
+                });
                 if !self.pending_compact_patch_changes.is_empty() {
                     self.pending_compact_patch_preview =
                         Some(history_cell::new_coalesced_compact_patch_event(
@@ -752,17 +791,7 @@ impl AppServerEventProcessor {
                             &self.cwd,
                         ));
                 }
-                if let Some((current, total)) = self.pending_potter_round_marker.take() {
-                    self.emit_history_cell(Box::new(
-                        crate::history_cell_potter::new_potter_round_marker(
-                            current,
-                            total,
-                            &cfg.model,
-                            cfg.reasoning_effort,
-                            cfg.service_tier,
-                        ),
-                    ));
-                }
+                self.maybe_emit_potter_round_marker();
             }
             EventMsg::PotterProjectStarted {
                 user_message,
@@ -782,6 +811,7 @@ impl AppServerEventProcessor {
                 self.flush_pending_live_activity_cells();
                 self.needs_final_message_separator = true;
                 self.pending_potter_round_marker = Some((current, total));
+                self.maybe_emit_potter_round_marker();
             }
             EventMsg::PotterProjectSucceeded {
                 rounds,
@@ -819,6 +849,8 @@ impl AppServerEventProcessor {
             }
             EventMsg::PotterRoundFinished { .. } => {
                 self.flush_pending_live_activity_cells();
+                self.pending_potter_round_marker = None;
+                self.pending_potter_round_session = None;
                 self.maybe_emit_potter_project_summary();
                 self.flush_pending_compact_patch_changes();
             }
@@ -7554,6 +7586,51 @@ mod tests {
         };
         let rendered = marker.join("\n") + "\n";
         assert_snapshot!("round_renderer_potter_round_started", rendered);
+    }
+
+    #[test]
+    fn round_renderer_session_configured_before_potter_round_started_emits_iteration_marker() {
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "session-configured".into(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                model: "gpt-5.2".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: Some(codex_protocol::protocol::ServiceTier::Fast),
+                cwd: PathBuf::from("project"),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                rollout_path: PathBuf::from("rollout.jsonl"),
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, u16::MAX);
+        assert!(
+            events.is_empty(),
+            "expected no marker without PotterRoundStarted; got: {events:?}"
+        );
+
+        proc.handle_codex_event(Event {
+            id: "potter-round-started".into(),
+            msg: EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 15,
+            },
+        });
+
+        let events = drain_history_cell_strings(&mut rx, u16::MAX);
+        let [marker] = events.as_slice() else {
+            panic!("expected exactly one marker cell; got: {events:?}");
+        };
+        pretty_assertions::assert_eq!(
+            marker,
+            &vec!["• CodexPotter: iteration round 1/15 (gpt-5.2 xhigh [fast])".to_string()]
+        );
     }
 
     #[test]

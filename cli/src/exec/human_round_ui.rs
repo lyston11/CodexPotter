@@ -489,20 +489,24 @@ mod tests {
         codex_event_tx
             .send(Event {
                 id: "session-configured".to_string(),
-                msg: EventMsg::SessionConfigured(codex_protocol::protocol::SessionConfiguredEvent {
-                    session_id: ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
-                        .expect("thread id"),
-                    forked_from_id: None,
-                    model: "gpt-5.2".to_string(),
-                    model_provider_id: "openai".to_string(),
-                    service_tier: None,
-                    cwd: PathBuf::from("."),
-                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
-                    history_log_id: 0,
-                    history_entry_count: 0,
-                    initial_messages: None,
-                    rollout_path: PathBuf::from("rollout.jsonl"),
-                }),
+                msg: EventMsg::SessionConfigured(
+                    codex_protocol::protocol::SessionConfiguredEvent {
+                        session_id: ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                            .expect("thread id"),
+                        forked_from_id: None,
+                        model: "gpt-5.2".to_string(),
+                        model_provider_id: "openai".to_string(),
+                        service_tier: None,
+                        cwd: PathBuf::from("."),
+                        reasoning_effort: Some(
+                            codex_protocol::openai_models::ReasoningEffort::XHigh,
+                        ),
+                        history_log_id: 0,
+                        history_entry_count: 0,
+                        initial_messages: None,
+                        rollout_path: PathBuf::from("rollout.jsonl"),
+                    },
+                ),
             })
             .expect("send SessionConfigured");
         codex_event_tx
@@ -532,9 +536,9 @@ mod tests {
         assert!(matches!(op, Op::UserInput { .. }));
 
         assert!(
-            output_reader
-                .contents()
-                .contains("Workspace is clean.\n\nCodexPotter: iteration round 2/10 (gpt-5.2 xhigh)")
+            output_reader.contents().contains(
+                "Workspace is clean.\n\nCodexPotter: iteration round 2/10 (gpt-5.2 xhigh)"
+            )
         );
     }
 }
