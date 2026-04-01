@@ -177,6 +177,7 @@ fn skill_roots_with_dirs(
 
 fn repo_dirs_between(cwd: &Path) -> Vec<&Path> {
     let repo_root = find_repo_root(cwd);
+    let repo_root = repo_root.as_deref().unwrap_or(cwd);
 
     // Highest precedence first (closest to cwd).
     cwd.ancestors()
@@ -184,7 +185,7 @@ fn repo_dirs_between(cwd: &Path) -> Vec<&Path> {
             if *done {
                 None
             } else {
-                if Some(ancestor) == repo_root.as_deref() {
+                if ancestor == repo_root {
                     *done = true;
                 }
                 Some(ancestor)
@@ -594,5 +595,39 @@ description: Installed under dir/.agents/skills.
             .find(|skill| skill.name == "repo-skill")
             .expect("repo-skill should be discovered");
         assert_eq!(repo_skill.scope, SkillScope::Repo);
+    }
+
+    #[test]
+    fn does_not_scan_ancestors_for_repo_skills_outside_git_repo() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parent = tmp.path().join("parent");
+        let cwd = parent.join("child");
+        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+
+        let parent_skill_dir = parent
+            .join(AGENTS_DIR_NAME)
+            .join(SKILLS_DIR_NAME)
+            .join("parent-skill");
+        std::fs::create_dir_all(&parent_skill_dir).expect("mkdir parent skill");
+        std::fs::write(
+            parent_skill_dir.join(SKILL_FILENAME),
+            r#"---
+name: parent-skill
+description: Should not be treated as a repo skill when cwd is outside a git repo.
+---
+
+# Body
+"#,
+        )
+        .expect("write skill");
+
+        let roots = skill_roots_with_dirs(&cwd, /*codex_home*/ None, /*home_dir*/ None);
+        let skills = load_skills_from_roots(roots);
+
+        assert_eq!(
+            skills.iter().any(|skill| skill.name == "parent-skill"),
+            false,
+            "repo skills discovery should not walk past cwd when no .git is present"
+        );
     }
 }
