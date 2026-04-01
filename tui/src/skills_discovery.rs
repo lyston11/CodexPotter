@@ -3,8 +3,11 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+use toml_edit::DocumentMut;
 
 const SKILL_FILENAME: &str = "SKILL.md";
+const CONFIG_TOML_FILENAME: &str = "config.toml";
+const PROJECT_ROOT_MARKERS_KEY: &str = "project_root_markers";
 const AGENTS_DIR_NAME: &str = ".agents";
 const SKILLS_DIR_NAME: &str = "skills";
 const SYSTEM_SKILLS_DIR_NAME: &str = ".system";
@@ -94,7 +97,13 @@ struct SkillRoot {
 fn skill_roots(cwd: &Path) -> Vec<SkillRoot> {
     let home_dir = dirs::home_dir();
     let codex_home = codex_home_from_env_or_home(home_dir.as_deref());
-    let mut roots = skill_roots_with_dirs(cwd, codex_home.as_deref(), home_dir.as_deref());
+    let project_root_markers = project_root_markers_from_configs(codex_home.as_deref());
+    let mut roots = skill_roots_with_dirs(
+        cwd,
+        codex_home.as_deref(),
+        home_dir.as_deref(),
+        &project_root_markers,
+    );
     #[cfg(unix)]
     {
         roots.push(SkillRoot {
@@ -120,10 +129,12 @@ fn skill_roots_with_dirs(
     cwd: &Path,
     codex_home: Option<&Path>,
     home_dir: Option<&Path>,
+    project_root_markers: &[String],
 ) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
-    let repo_dirs = repo_dirs_between(cwd);
+    let project_root = find_project_root(cwd, project_root_markers);
+    let repo_dirs = repo_dirs_between_project_root_and_cwd(cwd, &project_root);
 
     for dir in &repo_dirs {
         let skills_dir = dir.join(".codex").join(SKILLS_DIR_NAME);
@@ -161,7 +172,7 @@ fn skill_roots_with_dirs(
 
     // `dir/.agents/skills` (repo-installed skills), for directories between repo root and `cwd`.
     // This mirrors upstream codex's `repo_agents_skill_roots`.
-    for dir in repo_dirs {
+    for &dir in repo_dirs.iter().rev() {
         let agents_skills = dir.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME);
         if agents_skills.is_dir() {
             roots.push(SkillRoot {
@@ -175,32 +186,141 @@ fn skill_roots_with_dirs(
     roots
 }
 
-fn repo_dirs_between(cwd: &Path) -> Vec<&Path> {
-    let repo_root = find_repo_root(cwd);
-    let repo_root = repo_root.as_deref().unwrap_or(cwd);
+const DEFAULT_PROJECT_ROOT_MARKERS: &[&str] = &[".git"];
 
+fn default_project_root_markers() -> Vec<String> {
+    DEFAULT_PROJECT_ROOT_MARKERS
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+enum ProjectRootMarkersValue {
+    Absent,
+    Valid(Vec<String>),
+    Invalid(String),
+}
+
+fn project_root_markers_from_configs(codex_home: Option<&Path>) -> Vec<String> {
+    let mut value: Option<Vec<String>> = None;
+    let mut invalid: Option<String> = None;
+
+    fn apply_layer(
+        layer_name: &str,
+        path: &Path,
+        value: &mut Option<Vec<String>>,
+        invalid: &mut Option<String>,
+    ) {
+        match read_project_root_markers_from_config_file(path) {
+            ProjectRootMarkersValue::Absent => {}
+            ProjectRootMarkersValue::Valid(markers) => {
+                *value = Some(markers);
+                *invalid = None;
+            }
+            ProjectRootMarkersValue::Invalid(reason) => {
+                *value = None;
+                *invalid = Some(format!("{layer_name} config ({}) {reason}", path.display()));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        apply_layer(
+            "system",
+            Path::new("/etc/codex/config.toml"),
+            &mut value,
+            &mut invalid,
+        );
+    }
+    if let Some(codex_home) = codex_home {
+        apply_layer(
+            "user",
+            &codex_home.join(CONFIG_TOML_FILENAME),
+            &mut value,
+            &mut invalid,
+        );
+    }
+
+    if let Some(reason) = invalid {
+        tracing::warn!("invalid {PROJECT_ROOT_MARKERS_KEY}: {reason}");
+        return default_project_root_markers();
+    }
+
+    value.unwrap_or_else(default_project_root_markers)
+}
+
+fn read_project_root_markers_from_config_file(path: &Path) -> ProjectRootMarkersValue {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return ProjectRootMarkersValue::Absent;
+        }
+        Err(err) => {
+            return ProjectRootMarkersValue::Invalid(format!("failed to read: {err}"));
+        }
+    };
+
+    if contents.trim().is_empty() {
+        return ProjectRootMarkersValue::Absent;
+    }
+
+    let doc = match contents.parse::<DocumentMut>() {
+        Ok(doc) => doc,
+        Err(err) => {
+            return ProjectRootMarkersValue::Invalid(format!("failed to parse TOML: {err}"));
+        }
+    };
+
+    let Some(item) = doc.get(PROJECT_ROOT_MARKERS_KEY) else {
+        return ProjectRootMarkersValue::Absent;
+    };
+
+    let Some(arr) = item.as_array() else {
+        return ProjectRootMarkersValue::Invalid("must be an array of strings".to_string());
+    };
+
+    let mut markers = Vec::new();
+    for entry in arr.iter() {
+        let Some(marker) = entry.as_str() else {
+            return ProjectRootMarkersValue::Invalid("must be an array of strings".to_string());
+        };
+        markers.push(marker.to_string());
+    }
+
+    ProjectRootMarkersValue::Valid(markers)
+}
+
+fn find_project_root(cwd: &Path, project_root_markers: &[String]) -> PathBuf {
+    if project_root_markers.is_empty() {
+        return cwd.to_path_buf();
+    }
+
+    for ancestor in cwd.ancestors() {
+        for marker in project_root_markers {
+            if ancestor.join(marker).exists() {
+                return ancestor.to_path_buf();
+            }
+        }
+    }
+
+    cwd.to_path_buf()
+}
+
+fn repo_dirs_between_project_root_and_cwd<'a>(cwd: &'a Path, project_root: &Path) -> Vec<&'a Path> {
     // Highest precedence first (closest to cwd).
     cwd.ancestors()
         .scan(false, |done, ancestor| {
             if *done {
                 None
             } else {
-                if ancestor == repo_root {
+                if ancestor == project_root {
                     *done = true;
                 }
                 Some(ancestor)
             }
         })
         .collect::<Vec<_>>()
-}
-
-fn find_repo_root(cwd: &Path) -> Option<PathBuf> {
-    for ancestor in cwd.ancestors() {
-        if ancestor.join(".git").exists() {
-            return Some(ancestor.to_path_buf());
-        }
-    }
-    None
 }
 
 fn discover_skills_under_root(root: &SkillRoot, out: &mut Vec<SkillMetadata>) {
@@ -548,7 +668,12 @@ description: Installed under $HOME/.agents/skills.
         )
         .expect("write skill");
 
-        let roots = skill_roots_with_dirs(&cwd, /*codex_home*/ None, Some(&home));
+        let roots = skill_roots_with_dirs(
+            &cwd,
+            /*codex_home*/ None,
+            Some(&home),
+            &default_project_root_markers(),
+        );
         let skills = load_skills_from_roots(roots);
 
         let home_skill = skills
@@ -587,7 +712,12 @@ description: Installed under dir/.agents/skills.
         )
         .expect("write skill");
 
-        let roots = skill_roots_with_dirs(&cwd, /*codex_home*/ None, /*home_dir*/ None);
+        let roots = skill_roots_with_dirs(
+            &cwd,
+            /*codex_home*/ None,
+            /*home_dir*/ None,
+            &default_project_root_markers(),
+        );
         let skills = load_skills_from_roots(roots);
 
         let repo_skill = skills
@@ -621,13 +751,100 @@ description: Should not be treated as a repo skill when cwd is outside a git rep
         )
         .expect("write skill");
 
-        let roots = skill_roots_with_dirs(&cwd, /*codex_home*/ None, /*home_dir*/ None);
+        let roots = skill_roots_with_dirs(
+            &cwd,
+            /*codex_home*/ None,
+            /*home_dir*/ None,
+            &default_project_root_markers(),
+        );
         let skills = load_skills_from_roots(roots);
 
         assert_eq!(
             skills.iter().any(|skill| skill.name == "parent-skill"),
             false,
             "repo skills discovery should not walk past cwd when no .git is present"
+        );
+    }
+
+    #[test]
+    fn configured_project_root_markers_allow_repo_agent_roots_without_git() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_root = tmp.path().join("project");
+        let cwd = project_root.join("child");
+        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+
+        std::fs::write(project_root.join("MARKER"), "ok\n").expect("write marker");
+
+        let skill_dir = project_root
+            .join(AGENTS_DIR_NAME)
+            .join(SKILLS_DIR_NAME)
+            .join("repo-skill");
+        std::fs::create_dir_all(&skill_dir).expect("mkdir repo skill");
+        std::fs::write(
+            skill_dir.join(SKILL_FILENAME),
+            r#"---
+name: repo-skill
+description: Installed under dir/.agents/skills.
+---
+
+# Body
+"#,
+        )
+        .expect("write skill");
+
+        let roots = skill_roots_with_dirs(
+            &cwd,
+            /*codex_home*/ None,
+            /*home_dir*/ None,
+            &["MARKER".to_string()],
+        );
+        let skills = load_skills_from_roots(roots);
+
+        assert_eq!(
+            skills.iter().any(|skill| skill.name == "repo-skill"),
+            true,
+            "repo skills discovery should honor configured project root markers"
+        );
+    }
+
+    #[test]
+    fn empty_project_root_markers_disable_repo_root_traversal() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
+        mark_as_git_repo(&repo_root);
+        let cwd = repo_root.join("child");
+        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+
+        let parent_skill_dir = repo_root
+            .join(AGENTS_DIR_NAME)
+            .join(SKILLS_DIR_NAME)
+            .join("parent-skill");
+        std::fs::create_dir_all(&parent_skill_dir).expect("mkdir parent skill");
+        std::fs::write(
+            parent_skill_dir.join(SKILL_FILENAME),
+            r#"---
+name: parent-skill
+description: Should not be treated as a repo skill when root traversal is disabled.
+---
+
+# Body
+"#,
+        )
+        .expect("write skill");
+
+        let roots = skill_roots_with_dirs(
+            &cwd,
+            /*codex_home*/ None,
+            /*home_dir*/ None,
+            &Vec::new(),
+        );
+        let skills = load_skills_from_roots(roots);
+
+        assert_eq!(
+            skills.iter().any(|skill| skill.name == "parent-skill"),
+            false,
+            "repo skills discovery should treat cwd as the project root when root markers are empty"
         );
     }
 }
