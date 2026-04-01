@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 const SKILL_FILENAME: &str = "SKILL.md";
+const AGENTS_DIR_NAME: &str = ".agents";
 const SKILLS_DIR_NAME: &str = "skills";
 const SYSTEM_SKILLS_DIR_NAME: &str = ".system";
 const MAX_SCAN_DEPTH: usize = 6;
@@ -52,8 +53,10 @@ pub struct SkillInterface {
 }
 
 pub fn load_skills(cwd: &Path) -> Vec<SkillMetadata> {
-    let roots = skill_roots(cwd);
+    load_skills_from_roots(skill_roots(cwd))
+}
 
+fn load_skills_from_roots(roots: Vec<SkillRoot>) -> Vec<SkillMetadata> {
     let mut out = Vec::new();
     for root in roots {
         discover_skills_under_root(&root, &mut out);
@@ -89,9 +92,40 @@ struct SkillRoot {
 }
 
 fn skill_roots(cwd: &Path) -> Vec<SkillRoot> {
+    let home_dir = dirs::home_dir();
+    let codex_home = codex_home_from_env_or_home(home_dir.as_deref());
+    let mut roots = skill_roots_with_dirs(cwd, codex_home.as_deref(), home_dir.as_deref());
+    #[cfg(unix)]
+    {
+        roots.push(SkillRoot {
+            path: PathBuf::from("/etc/codex").join(SKILLS_DIR_NAME),
+            scope: SkillScope::Admin,
+            follow_symlinks: true,
+        });
+    }
+
+    roots
+}
+
+fn codex_home_from_env_or_home(home_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Ok(val) = std::env::var("CODEX_HOME")
+        && !val.is_empty()
+    {
+        return Some(PathBuf::from(val));
+    }
+    home_dir.map(|home| home.join(".codex"))
+}
+
+fn skill_roots_with_dirs(
+    cwd: &Path,
+    codex_home: Option<&Path>,
+    home_dir: Option<&Path>,
+) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
-    for dir in repo_dirs_between(cwd) {
+    let repo_dirs = repo_dirs_between(cwd);
+
+    for dir in &repo_dirs {
         let skills_dir = dir.join(".codex").join(SKILLS_DIR_NAME);
         if skills_dir.is_dir() {
             roots.push(SkillRoot {
@@ -102,7 +136,7 @@ fn skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         }
     }
 
-    if let Some(codex_home) = find_codex_home() {
+    if let Some(codex_home) = codex_home {
         let user_skills = codex_home.join(SKILLS_DIR_NAME);
         roots.push(SkillRoot {
             path: user_skills.join(SYSTEM_SKILLS_DIR_NAME),
@@ -116,13 +150,26 @@ fn skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         });
     }
 
-    #[cfg(unix)]
-    {
+    // `$HOME/.agents/skills` (user-installed skills).
+    if let Some(home_dir) = home_dir {
         roots.push(SkillRoot {
-            path: PathBuf::from("/etc/codex").join(SKILLS_DIR_NAME),
-            scope: SkillScope::Admin,
+            path: home_dir.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
+            scope: SkillScope::User,
             follow_symlinks: true,
         });
+    }
+
+    // `dir/.agents/skills` (repo-installed skills), for directories between repo root and `cwd`.
+    // This mirrors upstream codex's `repo_agents_skill_roots`.
+    for dir in repo_dirs {
+        let agents_skills = dir.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME);
+        if agents_skills.is_dir() {
+            roots.push(SkillRoot {
+                path: agents_skills,
+                scope: SkillScope::Repo,
+                follow_symlinks: true,
+            });
+        }
     }
 
     roots
@@ -153,15 +200,6 @@ fn find_repo_root(cwd: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn find_codex_home() -> Option<PathBuf> {
-    if let Ok(val) = std::env::var("CODEX_HOME")
-        && !val.is_empty()
-    {
-        return Some(PathBuf::from(val));
-    }
-    dirs::home_dir().map(|home| home.join(".codex"))
 }
 
 fn discover_skills_under_root(root: &SkillRoot, out: &mut Vec<SkillMetadata>) {
@@ -448,6 +486,12 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    fn mark_as_git_repo(dir: &Path) {
+        // Repo root discovery only checks for `.git` (file or directory), so avoid shelling out to
+        // `git init`.
+        std::fs::write(dir.join(".git"), "gitdir: fake\n").expect("write .git marker");
+    }
+
     #[test]
     fn parses_frontmatter_name_description_and_short_description() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -473,5 +517,82 @@ metadata:
         assert_eq!(parsed.description, "My test skill.");
         assert_eq!(parsed.short_description.as_deref(), Some("Short!"));
         assert_eq!(parsed.scope, SkillScope::User);
+    }
+
+    #[test]
+    fn discovers_user_skills_from_home_agents_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
+        mark_as_git_repo(&repo_root);
+        let cwd = repo_root.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+
+        let home = tmp.path().join("home");
+        let skill_dir = home
+            .join(AGENTS_DIR_NAME)
+            .join(SKILLS_DIR_NAME)
+            .join("home-skill");
+        std::fs::create_dir_all(&skill_dir).expect("mkdir home skill");
+        let skill_path = skill_dir.join(SKILL_FILENAME);
+        std::fs::write(
+            &skill_path,
+            r#"---
+name: home-skill
+description: Installed under $HOME/.agents/skills.
+---
+
+# Body
+"#,
+        )
+        .expect("write skill");
+
+        let roots = skill_roots_with_dirs(&cwd, /*codex_home*/ None, Some(&home));
+        let skills = load_skills_from_roots(roots);
+
+        let home_skill = skills
+            .iter()
+            .find(|skill| skill.name == "home-skill")
+            .expect("home-skill should be discovered");
+        assert_eq!(home_skill.scope, SkillScope::User);
+    }
+
+    #[test]
+    fn discovers_repo_skills_from_repo_agents_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
+        mark_as_git_repo(&repo_root);
+
+        let cwd = repo_root.join("dir_a").join("dir_b");
+        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+
+        let skill_dir = repo_root
+            .join("dir_a")
+            .join(AGENTS_DIR_NAME)
+            .join(SKILLS_DIR_NAME)
+            .join("repo-skill");
+        std::fs::create_dir_all(&skill_dir).expect("mkdir repo skill");
+        let skill_path = skill_dir.join(SKILL_FILENAME);
+        std::fs::write(
+            &skill_path,
+            r#"---
+name: repo-skill
+description: Installed under dir/.agents/skills.
+---
+
+# Body
+"#,
+        )
+        .expect("write skill");
+
+        let roots = skill_roots_with_dirs(&cwd, /*codex_home*/ None, /*home_dir*/ None);
+        let skills = load_skills_from_roots(roots);
+
+        let repo_skill = skills
+            .iter()
+            .find(|skill| skill.name == "repo-skill")
+            .expect("repo-skill should be discovered");
+        assert_eq!(repo_skill.scope, SkillScope::Repo);
     }
 }
