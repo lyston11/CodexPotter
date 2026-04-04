@@ -66,31 +66,14 @@ impl PotterAppServerClient {
         cmd.kill_on_drop(true);
         cmd.current_dir(&workdir);
 
-        cmd.arg("--codex-bin");
-        cmd.arg(&codex_bin);
-
-        cmd.arg("--rounds");
-        cmd.arg(rounds.get().to_string());
-
-        for arg in upstream_cli_args.to_potter_app_server_args() {
-            cmd.arg(arg);
-        }
-
-        if potter_xmodel {
-            cmd.arg("--xmodel");
-        }
-
-        if launch.bypass_approvals_and_sandbox {
-            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
-        }
-
-        if let Some(mode) = launch.spawn_sandbox {
-            cmd.arg("--sandbox");
-            cmd.arg(crate::app_server::sandbox_mode_cli_arg(mode));
-        }
-
         let mut child = cmd
-            .arg("app-server")
+            .args(potter_app_server_args(
+                &codex_bin,
+                rounds,
+                launch,
+                potter_xmodel,
+                &upstream_cli_args,
+            ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -383,6 +366,39 @@ impl PotterAppServerClient {
     }
 }
 
+fn potter_app_server_args(
+    codex_bin: &str,
+    rounds: NonZeroUsize,
+    launch: crate::app_server::AppServerLaunchConfig,
+    potter_xmodel: bool,
+    upstream_cli_args: &crate::app_server::UpstreamCodexCliArgs,
+) -> Vec<String> {
+    let mut args = vec![
+        "--codex-bin".to_string(),
+        codex_bin.to_string(),
+        "--rounds".to_string(),
+        rounds.get().to_string(),
+    ];
+
+    args.extend(upstream_cli_args.to_potter_app_server_args());
+
+    if potter_xmodel {
+        args.push("--xmodel".to_string());
+    }
+
+    if launch.bypass_approvals_and_sandbox {
+        args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    }
+
+    if let Some(mode) = launch.spawn_sandbox {
+        args.push("--sandbox".to_string());
+        args.push(crate::app_server::sandbox_mode_cli_arg(mode).to_string());
+    }
+
+    args.push("app-server".to_string());
+    args
+}
+
 impl crate::workflow::project_render_loop::PotterEventSource for PotterAppServerClient {
     fn read_next_event<'a>(
         &'a mut self,
@@ -424,4 +440,91 @@ async fn send_message<T: serde::Serialize>(stdin: &mut ChildStdin, msg: &T) -> a
         .await
         .context("flush potter app-server stdin")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn potter_app_server_args_forward_runtime_xmodel_before_subcommand() {
+        let args = potter_app_server_args(
+            "custom-codex",
+            NonZeroUsize::new(3).expect("nonzero rounds"),
+            crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
+                thread_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
+                bypass_approvals_and_sandbox: false,
+            },
+            true,
+            &crate::app_server::UpstreamCodexCliArgs {
+                config_overrides: vec!["foo=1".to_string()],
+                enable_features: vec!["unified_exec".to_string()],
+                disable_features: vec!["web_search_request".to_string()],
+                model: Some("o3".to_string()),
+                profile: Some("my-profile".to_string()),
+                web_search: true,
+            },
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--codex-bin",
+                "custom-codex",
+                "--rounds",
+                "3",
+                "--config",
+                "foo=1",
+                "--enable",
+                "unified_exec",
+                "--disable",
+                "web_search_request",
+                "--model",
+                "o3",
+                "--profile",
+                "my-profile",
+                "--search",
+                "--xmodel",
+                "--sandbox",
+                "read-only",
+                "app-server",
+            ]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn potter_app_server_args_omit_runtime_xmodel_when_disabled() {
+        let args = potter_app_server_args(
+            "custom-codex",
+            NonZeroUsize::new(1).expect("nonzero rounds"),
+            crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: true,
+            },
+            false,
+            &crate::app_server::UpstreamCodexCliArgs::default(),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--codex-bin",
+                "custom-codex",
+                "--rounds",
+                "1",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "app-server",
+            ]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
 }
