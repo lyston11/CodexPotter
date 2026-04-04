@@ -74,6 +74,7 @@ pub struct PotterAppServerConfig {
     pub codex_compat_home: Option<PathBuf>,
     pub rounds: NonZeroUsize,
     pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+    pub potter_xmodel: bool,
 }
 
 #[derive(Debug)]
@@ -1231,6 +1232,14 @@ async fn run_fresh_project(
     plan: FreshProjectPlan,
     interrupt_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<ProjectRunExit> {
+    let PotterAppServerConfig {
+        codex_bin,
+        backend_launch,
+        codex_compat_home,
+        upstream_cli_args,
+        potter_xmodel,
+        ..
+    } = config;
     let mut plan = plan;
     let developer_prompt =
         crate::workflow::project::render_developer_prompt(&plan.progress_file_rel);
@@ -1241,12 +1250,13 @@ async fn run_fresh_project(
     let backend_event_mode = backend_event_mode_for_potter(plan.event_mode);
 
     let round_context = crate::workflow::round_runner::PotterRoundContext {
-        codex_bin: config.codex_bin,
+        codex_bin,
         developer_prompt,
-        backend_launch: config.backend_launch,
+        backend_launch,
         backend_event_mode,
-        upstream_cli_args: config.upstream_cli_args,
-        codex_compat_home: config.codex_compat_home,
+        upstream_cli_args,
+        potter_xmodel_runtime: potter_xmodel,
+        codex_compat_home,
         thread_cwd: Some(plan.workdir.clone()),
         turn_prompt,
         workdir: plan.workdir.clone(),
@@ -1257,11 +1267,12 @@ async fn run_fresh_project(
         project_started_at: plan.project_started_at,
     };
 
-    let potter_xmodel_enabled = crate::workflow::project::progress_file_potter_xmodel_enabled(
+    let potter_xmodel_enabled = crate::workflow::project::effective_potter_xmodel_enabled(
         &plan.workdir,
         &plan.progress_file_rel,
+        potter_xmodel,
     )
-    .context("read progress file potter.xmodel")?;
+    .context("read potter xmodel mode")?;
 
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
@@ -1497,6 +1508,14 @@ async fn run_resumed_project(
     plan: ResumedProjectPlan,
     interrupt_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<ProjectRunExit> {
+    let PotterAppServerConfig {
+        codex_bin,
+        backend_launch,
+        codex_compat_home,
+        upstream_cli_args,
+        potter_xmodel,
+        ..
+    } = config;
     let ResumedProjectPlan {
         resumed,
         git_commit_start,
@@ -1519,12 +1538,13 @@ async fn run_resumed_project(
     let backend_event_mode = backend_event_mode_for_potter(event_mode);
 
     let round_context = crate::workflow::round_runner::PotterRoundContext {
-        codex_bin: config.codex_bin,
+        codex_bin,
         developer_prompt,
-        backend_launch: config.backend_launch,
+        backend_launch,
         backend_event_mode,
-        upstream_cli_args: config.upstream_cli_args,
-        codex_compat_home: config.codex_compat_home,
+        upstream_cli_args,
+        potter_xmodel_runtime: potter_xmodel,
+        codex_compat_home,
         thread_cwd: Some(resumed.resolved.workdir.clone()),
         turn_prompt,
         workdir: resumed.resolved.workdir.clone(),
@@ -1536,17 +1556,19 @@ async fn run_resumed_project(
     };
 
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+    let potter_xmodel_runtime = potter_xmodel;
     let mut potter_xmodel_enabled_cache = None;
     let mut potter_xmodel_enabled = || -> anyhow::Result<bool> {
         if let Some(enabled) = potter_xmodel_enabled_cache {
             return Ok(enabled);
         }
 
-        let enabled = crate::workflow::project::progress_file_potter_xmodel_enabled(
+        let enabled = crate::workflow::project::effective_potter_xmodel_enabled(
             &resumed.resolved.workdir,
             &resumed.progress_file_rel,
+            potter_xmodel_runtime,
         )
-        .context("read progress file potter.xmodel")?;
+        .context("read potter xmodel mode")?;
         potter_xmodel_enabled_cache = Some(enabled);
         Ok(enabled)
     };
@@ -2143,6 +2165,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
         let mut state = ServerState {
             config,
@@ -2284,6 +2307,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(10).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
         let mut state = ServerState {
             config,
@@ -2424,6 +2448,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
         let mut state = ServerState {
             config,
@@ -2479,6 +2504,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let workdir = temp.path().to_path_buf();
@@ -2653,6 +2679,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(2).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let plan = FreshProjectPlan {
@@ -2847,6 +2874,7 @@ git_branch: "main"
                     codex_compat_home: None,
                     rounds: NonZeroUsize::new(4).expect("nonzero rounds"),
                     upstream_cli_args: Default::default(),
+                    potter_xmodel: false,
                 };
 
                 let mut state = ServerState {
@@ -2952,6 +2980,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let handle = tokio::spawn(async {
@@ -3025,6 +3054,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         struct DropNotify(Option<tokio::sync::oneshot::Sender<()>>);
@@ -3113,6 +3143,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let handle = tokio::spawn(async {
@@ -3190,6 +3221,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let handle = tokio::spawn(async {});
@@ -3233,6 +3265,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let plan = FreshProjectPlan {
@@ -3387,6 +3420,7 @@ git_branch: "main"
             codex_compat_home: None,
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
+            potter_xmodel: false,
         };
 
         let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md");

@@ -63,6 +63,12 @@ pub struct PotterRoundContext {
     pub backend_launch: crate::app_server::AppServerLaunchConfig,
     pub backend_event_mode: crate::app_server::AppServerEventMode,
     pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+    /// Enable Potter xmodel for this process (`--xmodel`).
+    ///
+    /// This flag is process-local: it must not be persisted into the progress file. The effective
+    /// xmodel mode for a project is `potter_xmodel_runtime || potter.xmodel` from the progress
+    /// file.
+    pub potter_xmodel_runtime: bool,
     pub codex_compat_home: Option<PathBuf>,
     pub thread_cwd: Option<PathBuf>,
     pub turn_prompt: String,
@@ -301,6 +307,7 @@ async fn run_potter_round_inner(
                 record_round_configured,
                 workdir: context.workdir.clone(),
                 progress_file_rel: context.progress_file_rel.clone(),
+                potter_xmodel_runtime: context.potter_xmodel_runtime,
                 user_prompt_file: context.user_prompt_file.clone(),
                 git_commit_start: context.git_commit_start.clone(),
                 potter_rollout_path: potter_rollout_path.clone(),
@@ -342,11 +349,12 @@ async fn run_potter_round_inner(
     };
 
     let potter_xmodel_enabled = if resume_thread_id.is_none() {
-        crate::workflow::project::progress_file_potter_xmodel_enabled(
+        crate::workflow::project::effective_potter_xmodel_enabled(
             &context.workdir,
             &context.progress_file_rel,
+            context.potter_xmodel_runtime,
         )
-        .context("read progress file potter.xmodel")?
+        .context("read potter xmodel mode")?
     } else {
         false
     };

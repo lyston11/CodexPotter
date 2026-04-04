@@ -132,6 +132,20 @@ pub fn progress_file_potter_xmodel_enabled(
     Ok(front_matter_bool(&contents, "potter.xmodel")?.unwrap_or(false))
 }
 
+/// Return whether Potter xmodel is enabled for this project in the current process.
+///
+/// This is the logical OR of:
+/// - the runtime `--xmodel` flag (process-local, never persisted), and
+/// - the persisted `potter.xmodel: true` value in the progress file front matter (project-local).
+pub fn effective_potter_xmodel_enabled(
+    workdir: &Path,
+    progress_file_rel: &Path,
+    runtime_potter_xmodel: bool,
+) -> anyhow::Result<bool> {
+    let persisted = progress_file_potter_xmodel_enabled(workdir, progress_file_rel)?;
+    Ok(runtime_potter_xmodel || persisted)
+}
+
 pub fn progress_file_has_finite_incantatem_true(
     workdir: &Path,
     progress_file_rel: &Path,
@@ -715,6 +729,49 @@ status: open
         let flagged =
             progress_file_has_finite_incantatem_true(temp.path(), &rel).expect("read stop flag");
         assert!(!flagged);
+    }
+
+    #[test]
+    fn effective_potter_xmodel_enabled_is_runtime_or_progress_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let progress = temp.path().join("MAIN.md");
+        std::fs::write(
+            &progress,
+            r#"---
+status: open
+finite_incantatem: false
+---
+
+# Overall Goal
+"#,
+        )
+        .expect("write progress file");
+
+        let rel = PathBuf::from("MAIN.md");
+        let persisted_only =
+            effective_potter_xmodel_enabled(temp.path(), &rel, false).expect("read potter xmodel");
+        assert!(!persisted_only);
+
+        let runtime_enabled =
+            effective_potter_xmodel_enabled(temp.path(), &rel, true).expect("read potter xmodel");
+        assert!(runtime_enabled);
+
+        std::fs::write(
+            &progress,
+            r#"---
+status: open
+finite_incantatem: false
+potter.xmodel: true
+---
+
+# Overall Goal
+"#,
+        )
+        .expect("write progress file with potter.xmodel");
+
+        let persisted_enabled =
+            effective_potter_xmodel_enabled(temp.path(), &rel, false).expect("read potter xmodel");
+        assert!(persisted_enabled);
     }
 
     #[test]

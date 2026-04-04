@@ -322,6 +322,7 @@ async fn main() -> anyhow::Result<()> {
                 codex_compat_home,
                 rounds: cli.rounds,
                 upstream_cli_args,
+                potter_xmodel: cli.xmodel,
             },
         )
         .await?;

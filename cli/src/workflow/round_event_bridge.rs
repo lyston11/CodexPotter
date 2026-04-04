@@ -27,6 +27,7 @@ pub struct PotterRoundEventBridgeConfig {
 
     pub workdir: PathBuf,
     pub progress_file_rel: PathBuf,
+    pub potter_xmodel_runtime: bool,
     pub user_prompt_file: PathBuf,
     pub git_commit_start: String,
     pub potter_rollout_path: PathBuf,
@@ -46,6 +47,7 @@ pub struct PotterRoundEventBridgeConfig {
 pub struct PotterRoundEventBridge {
     workdir: PathBuf,
     progress_file_rel: PathBuf,
+    potter_xmodel_runtime: bool,
     user_prompt_file: PathBuf,
     git_commit_start: String,
     potter_rollout_path: PathBuf,
@@ -63,6 +65,7 @@ impl PotterRoundEventBridge {
             has_recorded_round_configured: !config.record_round_configured,
             workdir: config.workdir,
             progress_file_rel: config.progress_file_rel,
+            potter_xmodel_runtime: config.potter_xmodel_runtime,
             user_prompt_file: config.user_prompt_file,
             git_commit_start: config.git_commit_start,
             potter_rollout_path: config.potter_rollout_path,
@@ -108,11 +111,12 @@ impl PotterRoundEventBridge {
 
                 if stop_due_to_finite_incantatem {
                     let potter_xmodel_enabled =
-                        crate::workflow::project::progress_file_potter_xmodel_enabled(
+                        crate::workflow::project::effective_potter_xmodel_enabled(
                             &self.workdir,
                             &self.progress_file_rel,
+                            self.potter_xmodel_runtime,
                         )
-                        .context("read progress file potter.xmodel")?;
+                        .context("read potter xmodel mode")?;
 
                     let should_emit_project_succeeded =
                         !potter_xmodel_enabled || self.session_model.as_deref() == Some("gpt-5.4");
@@ -264,6 +268,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: true,
             workdir: workdir.to_path_buf(),
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
+            potter_xmodel_runtime: false,
             user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -308,6 +313,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: true,
             workdir: workdir.to_path_buf(),
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
+            potter_xmodel_runtime: false,
             user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -355,6 +361,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
             user_prompt_file: progress_file_rel.clone(),
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -405,6 +412,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
             user_prompt_file: progress_file_rel.clone(),
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -448,6 +456,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
             user_prompt_file: progress_file_rel.clone(),
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -500,6 +509,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
             user_prompt_file: progress_file_rel.clone(),
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -546,6 +556,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
             user_prompt_file: progress_file_rel,
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
@@ -584,6 +595,7 @@ potter.xmodel: {potter_xmodel}
             record_round_configured: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
             user_prompt_file: progress_file_rel,
             git_commit_start: "start".to_string(),
             potter_rollout_path: potter_rollout_path.clone(),
