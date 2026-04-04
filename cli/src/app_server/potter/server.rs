@@ -2688,6 +2688,166 @@ git_branch: "main"
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn resumed_project_runtime_xmodel_applies_without_persisting_progress_flag() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+found_app_server=0
+saw_xhigh=0
+prev=""
+for arg in "$@"; do
+  if [[ "$arg" == "app-server" ]]; then
+    found_app_server=1
+  fi
+  if [[ "$prev" == "--config" && "$arg" == "model_reasoning_effort=\"xhigh\"" ]]; then
+    saw_xhigh=1
+  fi
+  prev="$arg"
+done
+
+if [[ "$found_app_server" != "1" ]]; then
+  echo "expected app-server in argv, got: $*" >&2
+  exit 1
+fi
+if [[ "$saw_xhigh" != "1" ]]; then
+  echo "expected runtime xmodel reasoning override in argv, got: $*" >&2
+  exit 1
+fi
+
+# initialize request
+IFS= read -r _initialize
+echo '{"id":1,"result":{"userAgent":"test-agent","platformFamily":"unix","platformOs":"test-os"}}'
+
+# initialized notification
+IFS= read -r _line
+
+# thread/start request
+IFS= read -r thread_start
+echo "$thread_start" | grep -q '"model":"gpt-5.2"' || {
+  echo "expected runtime xmodel to override resumed round model, got: $thread_start" >&2
+  exit 1
+}
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"gpt-5.2","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+# turn/start request
+IFS= read -r _line
+echo '{"method":"turn/started","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"inProgress","error":null}}}'
+echo '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"00000000-0000-0000-0000-000000000000","turn":{"id":"turn-1","items":[],"status":"completed","error":null}}}'
+
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        std::fs::write(&codex_bin, script).expect("write dummy codex");
+        let mut perms = std::fs::metadata(&codex_bin)
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
+        write_progress_file_with_finite_incantatem(&workdir, &progress_file_rel, false);
+
+        let progress_file = workdir.join(&progress_file_rel);
+        let project_dir = progress_file.parent().expect("project dir").to_path_buf();
+
+        let config = PotterAppServerConfig {
+            default_workdir: workdir.clone(),
+            codex_bin: codex_bin.display().to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
+            potter_xmodel: true,
+        };
+
+        let plan = ResumedProjectPlan {
+            resumed: ResumedProject {
+                project_id: String::from("project_1"),
+                resolved: crate::workflow::resume::ResolvedProjectPaths {
+                    progress_file: progress_file.clone(),
+                    project_dir: project_dir.clone(),
+                    workdir: workdir.clone(),
+                },
+                progress_file_rel: progress_file_rel.clone(),
+                index: crate::workflow::rollout_resume_index::PotterRolloutResumeIndex {
+                    project_started: crate::workflow::rollout_resume_index::ProjectStartedIndex {
+                        user_message: Some(String::from("hello")),
+                        user_prompt_file: progress_file_rel.clone(),
+                    },
+                    completed_rounds: vec![
+                        crate::workflow::rollout_resume_index::CompletedRoundIndex {
+                            round_current: 1,
+                            round_total: 1,
+                            configured: None,
+                            project_succeeded: None,
+                            outcome: PotterRoundOutcome::TaskFailed {
+                                message: String::from("previous"),
+                            },
+                        },
+                    ],
+                    unfinished_round: None,
+                },
+            },
+            git_commit_start: String::from("start"),
+            potter_rollout_path: crate::workflow::rollout::potter_rollout_path(&project_dir),
+            rounds_total: 1,
+            potter_xmodel_force_gpt_5_4: false,
+            resume_policy: ResumePolicy::StartNewRound,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            initial_continue_round: None,
+            initial_continue_prompt: None,
+        };
+
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (_interrupt_tx, interrupt_rx) = watch::channel(false);
+
+        let exit = run_resumed_project(config, writer_tx, plan, interrupt_rx)
+            .await
+            .expect("run resumed project");
+        assert!(matches!(exit, ProjectRunExit::Completed));
+
+        let progress = std::fs::read_to_string(&progress_file).expect("read progress file");
+        assert!(
+            !progress.contains("potter.xmodel: true"),
+            "runtime --xmodel must stay process-local, got progress file:\n{progress}"
+        );
+
+        let events = drain_potter_events(writer_rx);
+        let round_outcomes = events
+            .iter()
+            .filter_map(|event| match &event.msg {
+                EventMsg::PotterRoundFinished { outcome } => Some(outcome.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(round_outcomes, vec![PotterRoundOutcome::Completed]);
+
+        let completed = events
+            .iter()
+            .find_map(|event| match &event.msg {
+                EventMsg::PotterProjectCompleted { outcome } => Some(outcome),
+                _ => None,
+            })
+            .expect("PotterProjectCompleted marker");
+        assert_eq!(*completed, PotterProjectOutcome::BudgetExhausted);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn fresh_project_continues_after_fatal_round_until_budget_exhausted() {
         use std::os::unix::fs::PermissionsExt;
 

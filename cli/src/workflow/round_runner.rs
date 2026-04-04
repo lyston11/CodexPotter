@@ -90,7 +90,7 @@ pub struct PotterRoundOptions {
     pub project_started: Option<PotterProjectStartedInfo>,
     pub round_current: u32,
     pub round_total: u32,
-    /// When `potter.xmodel` is enabled, force gpt-5.4 for this round and all subsequent rounds.
+    /// When Potter xmodel is enabled, force gpt-5.4 for this round and all subsequent rounds.
     ///
     /// This flag is intentionally transient-only: it is not persisted in the progress file and
     /// should reset on resume (unless re-triggered).

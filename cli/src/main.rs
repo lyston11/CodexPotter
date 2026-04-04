@@ -826,10 +826,12 @@ mod tests {
             "unified_exec",
             "--disable",
             "web_search_request",
+            "--xmodel",
         ])
         .expect("parse args");
 
         assert!(cli.dangerously_bypass_approvals_and_sandbox);
+        assert!(cli.xmodel);
         assert_eq!(cli.sandbox, CliSandbox::ReadOnly);
         assert_eq!(cli.rounds.get(), 3);
         assert_eq!(cli.codex_bin, "custom-codex");
