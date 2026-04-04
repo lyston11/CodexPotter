@@ -3040,6 +3040,54 @@ mod tests {
     use tokio::time::Duration;
     use tokio::time::timeout;
 
+    #[cfg(unix)]
+    fn write_dummy_codex_script(path: &std::path::Path, script: impl AsRef<str>) {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = script.as_ref();
+        let parent = path.parent().expect("dummy codex path should have parent");
+        let mut tmp = tempfile::NamedTempFile::new_in(parent).expect("create dummy codex temp");
+
+        // Write and chmod the temp file before persisting it into place. This avoids
+        // intermittently spawning a script that is still being written or whose executable bit is
+        // not visible yet under parallel test load.
+        tmp.write_all(script.as_bytes()).expect("write dummy codex");
+        if !script.ends_with('\n') {
+            tmp.write_all(b"\n")
+                .expect("write dummy codex trailing newline");
+        }
+
+        let mut perms = tmp
+            .as_file()
+            .metadata()
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        tmp.as_file()
+            .set_permissions(perms)
+            .expect("chmod dummy codex");
+        tmp.as_file().sync_all().expect("sync dummy codex");
+
+        tmp.persist(path)
+            .map_err(|err| err.error)
+            .expect("persist dummy codex");
+    }
+
+    #[cfg(unix)]
+    async fn lock_dummy_codex_test() -> tokio::sync::MutexGuard<'static, ()> {
+        static DUMMY_CODEX_TEST_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+
+        // These integration tests spawn shell-backed dummy `codex` processes and assert on timed
+        // async event sequences. Running them concurrently inside the same test binary causes
+        // resource contention and sporadic missed-event failures under `cargo test -p`.
+        DUMMY_CODEX_TEST_MUTEX
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
     #[test]
     fn thread_start_settings_into_params_preserves_model_override() {
         let params = ThreadStartSettings {
@@ -3629,8 +3677,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_emits_round_finished_for_typed_turn_completed() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -3697,12 +3744,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -3777,8 +3819,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_accepts_initialize_response_without_codex_home() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -3816,12 +3857,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
         let (op_tx, mut op_rx) = unbounded_channel::<Op>();
@@ -3888,8 +3924,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_ignores_unexpected_error_notification_schema() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -3925,12 +3960,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
         let (_fatal_exit_tx, mut fatal_exit_rx) = unbounded_channel::<String>();
@@ -4081,8 +4111,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_surfaces_server_requests_and_guardian_review_notifications() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -4140,12 +4169,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -4247,8 +4271,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_emits_round_finished_for_typed_turn_failed_status() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -4282,12 +4305,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -4355,8 +4373,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_ignores_unknown_turn_completed_codex_error_info() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -4390,12 +4407,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -4464,8 +4476,7 @@ done
     #[tokio::test]
     async fn backend_emits_patch_apply_end_for_typed_file_change_item() {
         use std::collections::HashMap;
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
 
@@ -4507,12 +4518,7 @@ done
 "#
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -4591,8 +4597,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_allows_another_turn_after_turn_complete() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-second-turn-start");
@@ -4639,12 +4644,7 @@ done
             marker = marker.display()
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -4729,8 +4729,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_turn_interrupt_requests_turn_interrupt() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-turn-interrupt");
@@ -4789,12 +4788,7 @@ done
             marker = marker.display(),
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -4879,8 +4873,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_stream_recovery_rolls_back_last_continue_turn() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-rollback-then-continue");
@@ -4965,12 +4958,7 @@ done
             marker = marker.display()
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
 
@@ -5032,8 +5020,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_user_input_cancels_pending_stream_recovery_continue() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-manual-input-without-auto-continue");
@@ -5116,12 +5103,7 @@ done
             marker = marker.display(),
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
 
@@ -5210,8 +5192,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_exits_when_op_channel_is_closed() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-stdin-eof");
@@ -5259,12 +5240,7 @@ touch "$MARKER"
             marker = marker.display()
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
 
@@ -5304,8 +5280,7 @@ touch "$MARKER"
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_exits_when_op_channel_is_closed_workspace_write() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-stdin-eof");
@@ -5357,12 +5332,7 @@ touch "$MARKER"
             marker = marker.display()
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
 
@@ -5404,8 +5374,7 @@ touch "$MARKER"
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_does_not_pass_sandbox_flag_for_default_mode() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-stdin-eof");
@@ -5446,12 +5415,7 @@ touch "$MARKER"
             marker = marker.display()
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
 
@@ -5489,8 +5453,7 @@ touch "$MARKER"
     #[cfg(unix)]
     #[tokio::test]
     async fn backend_sets_codex_home_env_when_provided() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_bin = temp.path().join("dummy-codex");
         let marker = temp.path().join("saw-stdin-eof");
@@ -5540,12 +5503,7 @@ touch "$MARKER"
             codex_home = codex_home.display(),
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
 
