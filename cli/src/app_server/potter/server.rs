@@ -1217,6 +1217,47 @@ async fn run_continue_round(
     .await
 }
 
+/// Reset `finite_incantatem` when xmodel requires a follow-up GPT-5.4 round before success.
+///
+/// Returns `true` when the current completed round should continue into another round instead of
+/// finalizing the project as succeeded.
+fn prepare_xmodel_follow_up_round(
+    workdir: &Path,
+    progress_file_rel: &Path,
+    potter_xmodel_enabled: bool,
+    session_model: Option<&str>,
+) -> anyhow::Result<bool> {
+    if !crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
+        potter_xmodel_enabled,
+        session_model,
+    ) {
+        return Ok(false);
+    }
+
+    crate::workflow::project::set_progress_file_finite_incantatem(
+        workdir,
+        progress_file_rel,
+        false,
+    )
+    .context("reset progress file finite_incantatem")?;
+
+    Ok(true)
+}
+
+/// Grow the current round budget only when the just-finished round already consumed the final slot
+/// of that budget.
+fn extend_round_total_if_needed(
+    completed_round: u32,
+    round_total: &mut u32,
+    overflow_context: &'static str,
+) -> anyhow::Result<()> {
+    if completed_round >= *round_total {
+        *round_total = round_total.checked_add(1).context(overflow_context)?;
+    }
+
+    Ok(())
+}
+
 async fn run_fresh_project(
     config: PotterAppServerConfig,
     writer_tx: UnboundedSender<JSONRPCMessage>,
@@ -1298,23 +1339,18 @@ async fn run_fresh_project(
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
-                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
+                    if prepare_xmodel_follow_up_round(
+                        &plan.workdir,
+                        &plan.progress_file_rel,
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
-                    ) {
-                        crate::workflow::project::set_progress_file_finite_incantatem(
-                            &plan.workdir,
-                            &plan.progress_file_rel,
-                            false,
-                        )
-                        .context("reset progress file finite_incantatem")?;
+                    )? {
                         plan.potter_xmodel_force_gpt_5_4 = true;
-                        if initial_continue_round.round_current >= plan.rounds_total {
-                            plan.rounds_total = plan
-                                .rounds_total
-                                .checked_add(1)
-                                .context("xmodel round budget overflow")?;
-                        }
+                        extend_round_total_if_needed(
+                            initial_continue_round.round_current,
+                            &mut plan.rounds_total,
+                            "xmodel round budget overflow",
+                        )?;
                     } else {
                         outcome = PotterProjectOutcome::Succeeded;
                         ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
@@ -1415,23 +1451,18 @@ async fn run_fresh_project(
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
-                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
+                    if prepare_xmodel_follow_up_round(
+                        &plan.workdir,
+                        &plan.progress_file_rel,
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
-                    ) {
-                        crate::workflow::project::set_progress_file_finite_incantatem(
-                            &plan.workdir,
-                            &plan.progress_file_rel,
-                            false,
-                        )
-                        .context("reset progress file finite_incantatem")?;
+                    )? {
                         plan.potter_xmodel_force_gpt_5_4 = true;
-                        if current_round >= plan.rounds_total {
-                            plan.rounds_total = plan
-                                .rounds_total
-                                .checked_add(1)
-                                .context("xmodel round budget overflow")?;
-                        }
+                        extend_round_total_if_needed(
+                            current_round,
+                            &mut plan.rounds_total,
+                            "xmodel round budget overflow",
+                        )?;
                         round_index = round_index.saturating_add(1);
                         continue;
                     }
@@ -1665,23 +1696,19 @@ async fn run_resumed_project(
                 let mut ignored_finite_incantatem = false;
                 if round_result.stop_due_to_finite_incantatem {
                     let potter_xmodel_enabled = potter_xmodel_enabled()?;
-                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
+                    if prepare_xmodel_follow_up_round(
+                        &resumed.resolved.workdir,
+                        &resumed.progress_file_rel,
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
-                    ) {
-                        crate::workflow::project::set_progress_file_finite_incantatem(
-                            &resumed.resolved.workdir,
-                            &resumed.progress_file_rel,
-                            false,
-                        )
-                        .context("reset progress file finite_incantatem")?;
+                    )? {
                         potter_xmodel_force_gpt_5_4 = true;
                         continuation_plan.potter_xmodel_force_gpt_5_4 = true;
-                        if initial_continue_round.round_current >= display_round_total {
-                            display_round_total = display_round_total
-                                .checked_add(1)
-                                .context("xmodel display round_total overflow")?;
-                        }
+                        extend_round_total_if_needed(
+                            initial_continue_round.round_current,
+                            &mut display_round_total,
+                            "xmodel display round_total overflow",
+                        )?;
                         ignored_finite_incantatem = true;
                     } else {
                         outcome = PotterProjectOutcome::Succeeded;
@@ -1695,9 +1722,11 @@ async fn run_resumed_project(
                     "continued resumed round exceeded configured rounds_total: rounds_run={rounds_run} rounds_total={rounds_total}"
                 );
                 if ignored_finite_incantatem && rounds_run >= rounds_total {
-                    rounds_total = rounds_total
-                        .checked_add(1)
-                        .context("xmodel round budget overflow")?;
+                    extend_round_total_if_needed(
+                        rounds_run,
+                        &mut rounds_total,
+                        "xmodel round budget overflow",
+                    )?;
                     continuation_plan.rounds_total = rounds_total;
                 }
                 next_round_current = initial_continue_round.round_current.saturating_add(1);
@@ -1783,27 +1812,25 @@ async fn run_resumed_project(
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
                     let potter_xmodel_enabled = potter_xmodel_enabled()?;
-                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
+                    if prepare_xmodel_follow_up_round(
+                        &resumed.resolved.workdir,
+                        &resumed.progress_file_rel,
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
-                    ) {
-                        crate::workflow::project::set_progress_file_finite_incantatem(
-                            &resumed.resolved.workdir,
-                            &resumed.progress_file_rel,
-                            false,
-                        )
-                        .context("reset progress file finite_incantatem")?;
+                    )? {
                         potter_xmodel_force_gpt_5_4 = true;
                         continuation_plan.potter_xmodel_force_gpt_5_4 = true;
-                        if current_round >= display_round_total {
-                            display_round_total = display_round_total
-                                .checked_add(1)
-                                .context("xmodel display round_total overflow")?;
-                        }
+                        extend_round_total_if_needed(
+                            current_round,
+                            &mut display_round_total,
+                            "xmodel display round_total overflow",
+                        )?;
                         if rounds_run >= rounds_total {
-                            rounds_total = rounds_total
-                                .checked_add(1)
-                                .context("xmodel round budget overflow")?;
+                            extend_round_total_if_needed(
+                                rounds_run,
+                                &mut rounds_total,
+                                "xmodel round budget overflow",
+                            )?;
                             continuation_plan.rounds_total = rounds_total;
                         }
                         continue;
@@ -2064,6 +2091,30 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::UnboundedReceiver;
 
+    fn write_progress_file_with_finite_incantatem(
+        workdir: &Path,
+        progress_file_rel: &Path,
+        finite_incantatem: bool,
+    ) {
+        let progress_file = workdir.join(progress_file_rel);
+        std::fs::create_dir_all(progress_file.parent().expect("progress file parent"))
+            .expect("create progress file parent");
+        std::fs::write(
+            &progress_file,
+            format!(
+                r#"---
+status: open
+finite_incantatem: {finite_incantatem}
+short_title: test
+git_commit: "start"
+git_branch: "main"
+---
+"#
+            ),
+        )
+        .expect("write progress file");
+    }
+
     #[test]
     fn decode_jsonrpc_message_line_errors_on_invalid_json() {
         let err = decode_jsonrpc_message_line("{not json").expect_err("should fail");
@@ -2080,6 +2131,68 @@ mod tests {
                 .expect("decode")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn prepare_xmodel_follow_up_round_resets_finite_incantatem_before_gpt_5_4() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
+        write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
+
+        let should_continue = prepare_xmodel_follow_up_round(
+            workdir,
+            &progress_file_rel,
+            true,
+            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL),
+        )
+        .expect("prepare xmodel follow-up");
+
+        assert!(should_continue);
+        assert!(
+            !crate::workflow::project::progress_file_has_finite_incantatem_true(
+                workdir,
+                &progress_file_rel,
+            )
+            .expect("read finite_incantatem"),
+            "expected helper to clear finite_incantatem for the required GPT-5.4 follow-up round"
+        );
+    }
+
+    #[test]
+    fn prepare_xmodel_follow_up_round_keeps_finite_incantatem_on_gpt_5_4() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
+        write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
+
+        let should_continue = prepare_xmodel_follow_up_round(
+            workdir,
+            &progress_file_rel,
+            true,
+            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL),
+        )
+        .expect("prepare xmodel follow-up");
+
+        assert!(!should_continue);
+        assert!(
+            crate::workflow::project::progress_file_has_finite_incantatem_true(
+                workdir,
+                &progress_file_rel,
+            )
+            .expect("read finite_incantatem"),
+            "expected GPT-5.4 completion to keep the success marker intact"
+        );
+    }
+
+    #[test]
+    fn extend_round_total_if_needed_only_grows_on_last_slot() {
+        let mut round_total = 3;
+        extend_round_total_if_needed(2, &mut round_total, "overflow").expect("extend round total");
+        assert_eq!(round_total, 3);
+
+        extend_round_total_if_needed(3, &mut round_total, "overflow").expect("extend round total");
+        assert_eq!(round_total, 4);
     }
 
     #[test]
