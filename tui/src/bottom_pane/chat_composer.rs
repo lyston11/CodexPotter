@@ -1500,6 +1500,10 @@ impl ChatComposer {
         match self.paste_burst.flush_if_due(now) {
             FlushResult::Paste(pasted) => {
                 self.handle_paste(pasted);
+                // Keep Enter suppression alive briefly after a burst flush so trailing `Enter`
+                // key events (newlines) that arrive after the flush cannot be misinterpreted as a
+                // user submission.
+                self.paste_burst.extend_window(now);
                 true
             }
             FlushResult::Typed(ch) => {
@@ -3232,6 +3236,44 @@ End of payload.";
 
         let _ = flush_after_paste_burst(&mut composer);
         assert_eq!(composer.textarea.text(), "hi\nthere");
+    }
+
+    /// Regression test: if a non-bracketed paste arrives in chunks and the burst flush happens
+    /// slightly before the final newline key event is delivered, that newline should not be
+    /// misinterpreted as a submit.
+    #[test]
+    fn enter_after_burst_flush_is_not_treated_as_submit() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        // Force an active burst so we can deterministically flush.
+        composer
+            .paste_burst
+            .begin_with_retro_grabbed(String::new(), Instant::now());
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(composer.textarea.text().is_empty());
+
+        let flushed = flush_after_paste_burst(&mut composer);
+        assert!(flushed);
+        assert_eq!(composer.textarea.text(), "hi");
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.textarea.text(), "hi\n");
     }
 
     /// Behavior: if a burst is buffering text and the user presses a non-char key, flush the
