@@ -3030,6 +3030,10 @@ mod stream_recovery_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::app_server::test_support::lock_dummy_codex_test;
+    #[cfg(unix)]
+    use crate::app_server::test_support::write_dummy_codex_script;
     use codex_protocol::models::MessagePhase;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
@@ -3039,54 +3043,6 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::Duration;
     use tokio::time::timeout;
-
-    #[cfg(unix)]
-    fn write_dummy_codex_script(path: &std::path::Path, script: impl AsRef<str>) {
-        use std::io::Write as _;
-        use std::os::unix::fs::PermissionsExt;
-
-        let script = script.as_ref();
-        let parent = path.parent().expect("dummy codex path should have parent");
-        let mut tmp = tempfile::NamedTempFile::new_in(parent).expect("create dummy codex temp");
-
-        // Write and chmod the temp file before persisting it into place. This avoids
-        // intermittently spawning a script that is still being written or whose executable bit is
-        // not visible yet under parallel test load.
-        tmp.write_all(script.as_bytes()).expect("write dummy codex");
-        if !script.ends_with('\n') {
-            tmp.write_all(b"\n")
-                .expect("write dummy codex trailing newline");
-        }
-
-        let mut perms = tmp
-            .as_file()
-            .metadata()
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        tmp.as_file()
-            .set_permissions(perms)
-            .expect("chmod dummy codex");
-        tmp.as_file().sync_all().expect("sync dummy codex");
-
-        tmp.persist(path)
-            .map_err(|err| err.error)
-            .expect("persist dummy codex");
-    }
-
-    #[cfg(unix)]
-    async fn lock_dummy_codex_test() -> tokio::sync::MutexGuard<'static, ()> {
-        static DUMMY_CODEX_TEST_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> =
-            std::sync::OnceLock::new();
-
-        // These integration tests spawn shell-backed dummy `codex` processes and assert on timed
-        // async event sequences. Running them concurrently inside the same test binary causes
-        // resource contention and sporadic missed-event failures under `cargo test -p`.
-        DUMMY_CODEX_TEST_MUTEX
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await
-    }
 
     #[test]
     fn thread_start_settings_into_params_preserves_model_override() {

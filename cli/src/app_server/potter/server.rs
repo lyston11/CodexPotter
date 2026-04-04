@@ -2088,6 +2088,10 @@ fn exit_reason_from_outcome(outcome: &PotterRoundOutcome) -> codex_tui::ExitReas
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use crate::app_server::test_support::lock_dummy_codex_test;
+    #[cfg(unix)]
+    use crate::app_server::test_support::write_dummy_codex_script;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -2689,8 +2693,7 @@ git_branch: "main"
     #[cfg(unix)]
     #[tokio::test]
     async fn resumed_project_runtime_xmodel_applies_without_persisting_progress_flag() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path().to_path_buf();
         let codex_bin = temp.path().join("dummy-codex");
@@ -2746,12 +2749,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
         write_progress_file_with_finite_incantatem(&workdir, &progress_file_rel, false);
@@ -2849,8 +2847,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn fresh_project_continues_after_fatal_round_until_budget_exhausted() {
-        use std::os::unix::fs::PermissionsExt;
-
+        let _guard = lock_dummy_codex_test().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path().to_path_buf();
         let codex_bin = temp.path().join("dummy-codex");
@@ -2904,12 +2901,7 @@ done
             counter_file = invocation_counter.display(),
         );
 
-        std::fs::write(&codex_bin, script).expect("write dummy codex");
-        let mut perms = std::fs::metadata(&codex_bin)
-            .expect("stat dummy codex")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+        write_dummy_codex_script(&codex_bin, script);
 
         let project_dir_rel = PathBuf::from(".codexpotter/projects/2026/03/30/1");
         let project_dir = workdir.join(&project_dir_rel);
@@ -3024,12 +3016,12 @@ git_branch: "main"
     #[cfg(unix)]
     #[tokio::test]
     async fn resumed_project_summary_rounds_count_only_new_rounds() {
-        use std::os::unix::fs::PermissionsExt;
         use tokio::time::Duration;
         use tokio::time::timeout;
 
         tokio::task::LocalSet::new()
             .run_until(async {
+                let _guard = lock_dummy_codex_test().await;
                 let temp = tempfile::tempdir().expect("tempdir");
                 let codex_bin = temp.path().join("dummy-codex");
 
@@ -3070,12 +3062,7 @@ while IFS= read -r _line; do
 done
 "#;
 
-                std::fs::write(&codex_bin, script).expect("write dummy codex");
-                let mut perms = std::fs::metadata(&codex_bin)
-                    .expect("stat dummy codex")
-                    .permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&codex_bin, perms).expect("chmod dummy codex");
+                write_dummy_codex_script(&codex_bin, script);
 
                 let workdir = temp.path().to_path_buf();
                 let project_dir = workdir.join(".codexpotter/projects/2026/03/27/1");

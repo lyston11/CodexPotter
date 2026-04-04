@@ -7,6 +7,8 @@
 pub mod codex_backend;
 pub mod potter;
 pub mod stream_recovery;
+#[cfg(test)]
+pub mod test_support;
 pub mod upstream_cli_args;
 pub mod upstream_protocol;
 
