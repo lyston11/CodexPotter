@@ -1380,17 +1380,15 @@ impl ChatComposer {
     /// Common logic for handling message submission/queuing.
     /// Returns the appropriate InputResult based on `should_queue`.
     fn handle_submission(&mut self, should_queue: bool) -> (InputResult, bool) {
+        let now = Instant::now();
+
         // If we're in a paste-like burst capture, treat Enter/Ctrl+Shift+Q as part of the burst
         // and accumulate it rather than submitting or inserting immediately.
-        if !self.disable_paste_burst && self.paste_burst.is_active() {
-            let now = Instant::now();
-            if self.paste_burst.append_newline_if_active(now) {
-                return (InputResult::None, true);
-            }
+        if !self.disable_paste_burst && self.paste_burst.append_newline_if_active(now) {
+            return (InputResult::None, true);
         }
 
         // During a paste-like burst, treat Enter/Ctrl+Shift+Q as a newline instead of submit.
-        let now = Instant::now();
         if !self.disable_paste_burst
             && self
                 .paste_burst
@@ -3744,8 +3742,8 @@ End of payload.";
     }
 
     fn flush_after_paste_burst(composer: &mut ChatComposer) -> bool {
-        std::thread::sleep(PasteBurst::recommended_active_flush_delay());
-        composer.flush_paste_burst_if_due()
+        let now = Instant::now() + PasteBurst::recommended_active_flush_delay();
+        composer.handle_paste_burst_flush(now)
     }
 
     // Test helper: simulate human typing with a brief delay and flush the paste-burst buffer
