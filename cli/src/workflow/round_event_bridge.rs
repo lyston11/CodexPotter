@@ -501,6 +501,59 @@ potter.xmodel: {potter_xmodel}
     }
 
     #[test]
+    fn observe_backend_event_does_not_inject_project_succeeded_for_runtime_xmodel_before_gpt_5_4() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+        write_progress_file(workdir, &progress_file_rel, true);
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: false,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: true,
+            user_prompt_file: progress_file_rel.clone(),
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 1,
+            round_total: 10,
+            project_rounds_run: 1,
+        });
+
+        bridge
+            .observe_backend_event(&session_configured_event(
+                workdir,
+                PathBuf::from("upstream.jsonl"),
+                None,
+                "gpt-5.2",
+            ))
+            .expect("observe session configured");
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        };
+
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .expect("observe finished");
+        assert!(injected.is_none());
+
+        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+        assert_eq!(lines.len(), 1);
+        assert!(matches!(
+            &lines[0],
+            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed
+            }
+        ));
+    }
+
+    #[test]
     fn observe_backend_event_injects_budget_exhausted_before_round_finished_when_last_round() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workdir = dir.path();
