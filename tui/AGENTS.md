@@ -27,6 +27,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Composer placeholder text is customized.
 - No Esc-driven rewind/backtrack UX; `Esc` interrupts running project and otherwise dismisses popups.
 - No steer mode (always queue).
+- Keeps the non-bracketed paste-burst Enter suppression window alive briefly after a burst flush, so trailing newline key events are not treated as submit/queue.
 - No image pasting support.
 - Bottom pane prompt footer shows working dir + optional git branch, plus the ctrl+g editor hint.
 - Better word jump by using ICU4X word segmentations.
