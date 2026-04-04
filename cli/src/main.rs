@@ -114,6 +114,13 @@ struct Cli {
     #[clap(flatten)]
     upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
 
+    /// Enable cross-model review mode for this process.
+    ///
+    /// This is equivalent to specifying `/potter:xmodel` in the project prompt, but it is
+    /// intentionally **not** persisted into the project's progress file.
+    #[arg(long, default_value_t = false, global = true)]
+    xmodel: bool,
+
     #[command(subcommand)]
     command: Option<CliCommand>,
 }
@@ -263,10 +270,13 @@ async fn main() -> anyhow::Result<()> {
             crate::exec::run_exec_json(
                 &workdir,
                 prompt.clone(),
-                cli.rounds,
-                codex_bin,
-                backend_launch,
-                upstream_cli_args,
+                crate::exec::ExecRunConfig {
+                    rounds: cli.rounds,
+                    codex_bin,
+                    backend_launch,
+                    potter_xmodel: cli.xmodel,
+                    upstream_cli_args,
+                },
             )
             .await
         } else {
@@ -274,10 +284,13 @@ async fn main() -> anyhow::Result<()> {
             crate::exec::run_exec_human(
                 &workdir,
                 prompt.clone(),
-                cli.rounds,
-                codex_bin,
-                backend_launch,
-                upstream_cli_args,
+                crate::exec::ExecRunConfig {
+                    rounds: cli.rounds,
+                    codex_bin,
+                    backend_launch,
+                    potter_xmodel: cli.xmodel,
+                    upstream_cli_args,
+                },
                 load_exec_human_verbosity(*verbosity),
             )
             .await
@@ -382,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
         codex_bin.clone(),
         cli.rounds,
         backend_launch,
+        cli.xmodel,
         cli.upstream_cli_args.clone(),
     )
     .await

@@ -33,15 +33,28 @@ use anyhow::Context;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PotterProjectOutcome;
 
+#[derive(Debug)]
+pub struct ExecRunConfig {
+    pub rounds: NonZeroUsize,
+    pub codex_bin: String,
+    pub backend_launch: crate::app_server::AppServerLaunchConfig,
+    pub potter_xmodel: bool,
+    pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+}
+
 pub async fn run_exec_human(
     workdir: &Path,
     prompt: Option<String>,
-    rounds: NonZeroUsize,
-    codex_bin: String,
-    backend_launch: crate::app_server::AppServerLaunchConfig,
-    upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
+    config: ExecRunConfig,
     verbosity: codex_tui::Verbosity,
 ) -> i32 {
+    let ExecRunConfig {
+        rounds,
+        codex_bin,
+        backend_launch,
+        potter_xmodel,
+        upstream_cli_args,
+    } = config;
     let prompt = match prompt {
         Some(prompt) => prompt,
         None => match read_prompt_from_stdin() {
@@ -71,6 +84,7 @@ pub async fn run_exec_human(
         codex_bin,
         rounds,
         backend_launch,
+        potter_xmodel,
         upstream_cli_args,
     )
     .await
@@ -199,14 +213,14 @@ pub async fn run_exec_human(
     exit_code
 }
 
-pub async fn run_exec_json(
-    workdir: &Path,
-    prompt: Option<String>,
-    rounds: NonZeroUsize,
-    codex_bin: String,
-    backend_launch: crate::app_server::AppServerLaunchConfig,
-    upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
-) -> i32 {
+pub async fn run_exec_json(workdir: &Path, prompt: Option<String>, config: ExecRunConfig) -> i32 {
+    let ExecRunConfig {
+        rounds,
+        codex_bin,
+        backend_launch,
+        potter_xmodel,
+        upstream_cli_args,
+    } = config;
     let prompt = match prompt {
         Some(prompt) => prompt,
         None => match read_prompt_from_stdin() {
@@ -236,6 +250,7 @@ pub async fn run_exec_json(
         codex_bin,
         rounds,
         backend_launch,
+        potter_xmodel,
         upstream_cli_args,
     )
     .await

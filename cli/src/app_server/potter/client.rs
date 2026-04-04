@@ -57,6 +57,7 @@ impl PotterAppServerClient {
         codex_bin: String,
         rounds: NonZeroUsize,
         launch: crate::app_server::AppServerLaunchConfig,
+        potter_xmodel: bool,
         upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     ) -> anyhow::Result<Self> {
         let exe = std::env::current_exe().context("resolve codex-potter executable path")?;
@@ -73,6 +74,10 @@ impl PotterAppServerClient {
 
         for arg in upstream_cli_args.to_potter_app_server_args() {
             cmd.arg(arg);
+        }
+
+        if potter_xmodel {
+            cmd.arg("--xmodel");
         }
 
         if launch.bypass_approvals_and_sandbox {
