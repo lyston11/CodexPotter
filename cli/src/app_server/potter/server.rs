@@ -998,15 +998,6 @@ fn remaining_rounds_including_current(round_current: u32, round_total: u32) -> a
     Ok(round_total.saturating_sub(round_current).saturating_add(1))
 }
 
-const POTTER_XMODEL_GPT_5_4_MODEL: &str = "gpt-5.4";
-
-fn should_ignore_finite_incantatem_for_potter_xmodel(
-    potter_xmodel_enabled: bool,
-    session_model: Option<&str>,
-) -> bool {
-    potter_xmodel_enabled && session_model != Some(POTTER_XMODEL_GPT_5_4_MODEL)
-}
-
 fn read_upstream_rollout_event_msgs(rollout_path: &Path) -> anyhow::Result<Vec<EventMsg>> {
     let file = std::fs::File::open(rollout_path)
         .with_context(|| format!("open rollout {}", rollout_path.display()))?;
@@ -1307,7 +1298,7 @@ async fn run_fresh_project(
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
-                    if should_ignore_finite_incantatem_for_potter_xmodel(
+                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     ) {
@@ -1424,7 +1415,7 @@ async fn run_fresh_project(
         match round_result.exit_reason {
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
-                    if should_ignore_finite_incantatem_for_potter_xmodel(
+                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     ) {
@@ -1674,7 +1665,7 @@ async fn run_resumed_project(
                 let mut ignored_finite_incantatem = false;
                 if round_result.stop_due_to_finite_incantatem {
                     let potter_xmodel_enabled = potter_xmodel_enabled()?;
-                    if should_ignore_finite_incantatem_for_potter_xmodel(
+                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     ) {
@@ -1792,7 +1783,7 @@ async fn run_resumed_project(
             codex_tui::ExitReason::Completed => {
                 if round_result.stop_due_to_finite_incantatem {
                     let potter_xmodel_enabled = potter_xmodel_enabled()?;
-                    if should_ignore_finite_incantatem_for_potter_xmodel(
+                    if crate::workflow::potter_xmodel::should_ignore_finite_incantatem(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     ) {

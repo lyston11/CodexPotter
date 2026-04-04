@@ -23,10 +23,6 @@ use codex_tui::ExitReason;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::watch;
 
-const POTTER_XMODEL_REASONING_EFFORT: &str = "xhigh";
-const POTTER_XMODEL_GPT_5_4_MODEL: &str = "gpt-5.4";
-const POTTER_XMODEL_GPT_5_2_MODEL: &str = "gpt-5.2";
-
 /// Boxed future returned by [`PotterRoundUi`] implementations.
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + 'a>>;
 
@@ -442,22 +438,6 @@ async fn run_potter_round_inner(
     })
 }
 
-fn apply_potter_xmodel_overrides(
-    upstream_cli_args: &mut crate::app_server::UpstreamCodexCliArgs,
-    round_current: u32,
-    force_gpt_5_4: bool,
-) {
-    let model = if force_gpt_5_4 || round_current >= 4 {
-        POTTER_XMODEL_GPT_5_4_MODEL
-    } else {
-        POTTER_XMODEL_GPT_5_2_MODEL
-    };
-    upstream_cli_args.model = Some(model.to_string());
-    upstream_cli_args.config_overrides.push(format!(
-        "model_reasoning_effort=\"{POTTER_XMODEL_REASONING_EFFORT}\""
-    ));
-}
-
 fn prepare_upstream_cli_args_for_round(
     mut upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     round_current: u32,
@@ -473,7 +453,7 @@ fn prepare_upstream_cli_args_for_round(
     }
 
     if potter_xmodel_enabled {
-        apply_potter_xmodel_overrides(
+        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(
             &mut upstream_cli_args,
             round_current,
             potter_xmodel_force_gpt_5_4,
@@ -508,8 +488,11 @@ mod tests {
             ..Default::default()
         };
 
-        apply_potter_xmodel_overrides(&mut args, 3, false);
-        assert_eq!(args.model.as_deref(), Some(POTTER_XMODEL_GPT_5_2_MODEL));
+        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(&mut args, 3, false);
+        assert_eq!(
+            args.model.as_deref(),
+            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL)
+        );
         assert_eq!(
             args.config_overrides.last().map(String::as_str),
             Some("model_reasoning_effort=\"xhigh\"")
@@ -524,8 +507,11 @@ mod tests {
             ..Default::default()
         };
 
-        apply_potter_xmodel_overrides(&mut args, 4, false);
-        assert_eq!(args.model.as_deref(), Some(POTTER_XMODEL_GPT_5_4_MODEL));
+        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(&mut args, 4, false);
+        assert_eq!(
+            args.model.as_deref(),
+            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL)
+        );
         assert_eq!(
             args.config_overrides,
             vec!["model_reasoning_effort=\"xhigh\"".to_string()]
@@ -540,8 +526,11 @@ mod tests {
             ..Default::default()
         };
 
-        apply_potter_xmodel_overrides(&mut args, 2, true);
-        assert_eq!(args.model.as_deref(), Some(POTTER_XMODEL_GPT_5_4_MODEL));
+        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(&mut args, 2, true);
+        assert_eq!(
+            args.model.as_deref(),
+            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL)
+        );
         assert_eq!(
             args.config_overrides,
             vec!["model_reasoning_effort=\"xhigh\"".to_string()]

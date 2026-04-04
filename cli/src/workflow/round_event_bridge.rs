@@ -119,7 +119,10 @@ impl PotterRoundEventBridge {
                         .context("read potter xmodel mode")?;
 
                     let should_emit_project_succeeded =
-                        !potter_xmodel_enabled || self.session_model.as_deref() == Some("gpt-5.4");
+                        crate::workflow::potter_xmodel::should_emit_project_succeeded(
+                            potter_xmodel_enabled,
+                            self.session_model.as_deref(),
+                        );
                     if should_emit_project_succeeded {
                         let git_commit_end =
                             crate::workflow::project::resolve_git_commit(&self.workdir);

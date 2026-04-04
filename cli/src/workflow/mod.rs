@@ -19,6 +19,7 @@
 //! - Backend interactions are handled by `crate::app_server`; workflow consumes the resulting
 //!   `EventMsg` stream and persists/replays it.
 
+pub mod potter_xmodel;
 pub mod project;
 pub mod project_render_loop;
 pub mod project_runner;
