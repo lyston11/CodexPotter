@@ -99,19 +99,9 @@ CodexPotter is not suitable for such tasks:
 - Question-answering
 - Brainstorming sessions
 
-### Polish Enhancement Rounds
-
-GPT5.2 or GPT5.4 like introducing more fallback checks, which may not be what you want and may be amplified in CodexPotter's review process.
-To avoid that, try add instructions to AGENTS.md like:
-
-```markdown
-- When polishing codes, follow the first principle, try to simplify the solution, instead of bloating the code with extra checks, fallbacks, or safety nets that may hide potential issues.
-  The goal of polishing is to find real missing pieces, make the code more elegant, simple and efficient, not to add more layers of complexity.
-```
-
 &ensp;
 
-## Howto: Ask followup questions in codex
+### Howto: Ask followup questions in codex
 
 Just pass the project file to codex, like:
 
@@ -119,6 +109,34 @@ Just pass the project file to codex, like:
 based on .codexpotter/projects/2026/03/18/1/MAIN.md,
 please explain more about the root cause of the issue
 ```
+
+### Howto: Plan and Execute
+
+Simpliy queue two tasks in CodexPotter, one is plan, one is implement, CodexPotter will execute one by one, for example:
+
+Task prompt 1 (CodexPotter):
+
+```plain
+Analyze the codebase, research and design a solution for introducing subscription system.
+Output plan to docs/subscription_design.md.
+
+Your solution should meet the following requirements: ...
+
+Do not implement the plan, just design a good and simple solution.
+```
+
+↑ Your existing facility to write good plans will be utilized, including skills, plan doc principles
+in AGENTS.md, etc. **Writing plan to a file is CRITICAL** so that task 2 can pick it up.
+
+Task prompt 2 (CodexPotter):
+
+```plain
+Implement according to docs/subscription_design.md
+
+Make sure all user journeys are properly covered by e2e tests and pass.
+```
+
+If you even don't know what you are designing for, just discuss with **codex** to carry out a basic plan first, then use CodexPotter to continously polish and implement it.
 
 &ensp;
 

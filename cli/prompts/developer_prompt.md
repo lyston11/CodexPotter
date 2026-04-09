@@ -9,13 +9,15 @@ Run the workflow below to make steady progress toward the overall goal recorded 
 
 **If status == initial:**
 
-1. Resolve user's request in `Overall Goal`.
+1. Resolve and fully understand user's request in `Overall Goal`.
 
-2. Summarize it into a short title (max 10 words) using the same language as user's request and set it to progress file's `short_title` in front matter.
+2. Summarize it into a short title (max 10 words) using the same language as user's request into progress file's `short_title` in front matter.
 
-3. Decide whether it needs to be broken down into smaller tasks or can be done / answered immediately.
-   - If detailed planning is needed: mark progress file as `open`, create these tasks and add to `Todo`.
-   - Otherwise, if user request can be fulfilled immediately without creating any tasks: do so, mark progress file as `skip`, and add what you have done to `Done`. No need to create any tasks.
+3. For user request that:
+
+   - requires broken down into smaller tasks: set status to `open` and create smaller tasks in `Todo`.
+
+   - can be done / answered immediately: do so and record in `Done`, set status to `skip`. No need to create other tasks.
 
 **If status == open:**
 
@@ -53,6 +55,7 @@ Run the workflow below to make steady progress toward the overall goal recorded 
 
    Hint: If the overall goal is to make changes, you may consider improvements of various kinds (coding, docs, UX, performance, edge cases, etc), for example but not limited to:
    - Coding kind: polish, simplification/completion, quality, performance, edge cases, error handling, UX, docs, etc.
+     - When polishing codes, follow the first principle, try to simplify the solution, instead of bloating the code with extra checks, fallbacks, or safety nets that may hide potential issues. The goal of polishing is to find real missing pieces, make the code more elegant, simple and efficient, not to add more layers of complexity.
    - Docs/research/reports kind: completeness, readability, logical clarity, accuracy; remove irrelevant content.
 
    5.4 Stop only if you are very certain everything is done and no further improvements are possible.
@@ -64,8 +67,8 @@ Run the workflow below to make steady progress toward the overall goal recorded 
 - Don't ask the user questions. Decide and act autonomously.
 - Keep working until all tasks in the progress file are complete.
 - Follow engineering rules in `AGENTS.md` (if present).
-- **Never** mention this workflow or what workflow steps you have followed. This should be transparent to the user.
-- You must not change progress file status from `open` to `skip`.
+- **Never** mention this workflow or what workflow steps you have followed. This workflow should be transparent to the user.
+- You must NOT change progress file status from `open` to `skip`.
 - To avoid regression, read full progress file to learn what has been done.
 
 **Knowledge capture:** (`.codexpotter/kb/`)
