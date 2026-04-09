@@ -77,6 +77,8 @@ codex-potter --yolo
 
 ⚠️ **Note:** Unlike Codex, every follow up prompt turns into a **new** task, **not sharing previous contexts**. Assign tasks to CodexPotter, instead of chat with it.
 
+⚠️ **Note:** CodexPotter is **not a replacement** for codex, because CodexPotter is a loop executor — it executes tasks instead of chatting with you. See below for details.
+
 &ensp;
 
 ## Tips
@@ -93,7 +95,7 @@ codex-potter --yolo
 
 **❌ interactive tasks with human feedback loops:**
 
-CodexPotter is not suitable for such tasks:
+CodexPotter is not suitable for such tasks, use codex instead:
 
 - Front-end development with human UI feedback
 - Question-answering
@@ -110,7 +112,7 @@ based on .codexpotter/projects/2026/03/18/1/MAIN.md,
 please explain more about the root cause of the issue
 ```
 
-### Howto: Plan and Execute
+### Howto: Plan and execute
 
 Simpliy queue two tasks in CodexPotter, one is plan, one is implement, CodexPotter will execute one by one, for example:
 
@@ -126,7 +128,7 @@ Do not implement the plan, just design a good and simple solution.
 ```
 
 ↑ Your existing facility to write good plans will be utilized, including skills, plan doc principles
-in AGENTS.md, etc. **Writing plan to a file is CRITICAL** so that task 2 can pick it up.
+in AGENTS.md, etc. **Writing plan to a file is CRITICAL** so that the plan can be iterated multiple rounds and task 2 can pick it up.
 
 Task prompt 2 (CodexPotter):
 
@@ -136,7 +138,7 @@ Implement according to docs/subscription_design.md
 Make sure all user journeys are properly covered by e2e tests and pass.
 ```
 
-If you even don't know what you are designing for, just discuss with **codex** to carry out a basic plan first, then use CodexPotter to continously polish and implement it.
+If you even don't know what you are designing for, just discuss with **codex** to carry out a basic plan first, then use **CodexPotter** to continously polish and implement it.
 
 &ensp;
 
