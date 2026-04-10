@@ -4,6 +4,7 @@ For agents: This file is carefully maintained and polished for better readabilit
 
 -->
 
+
 <p align="center">
   <img src="./etc/banner.svg" alt="CodexPotter banner" />
 </p>
@@ -15,6 +16,13 @@ For agents: This file is carefully maintained and polished for better readabilit
 &ensp;
 
 ## 💡 Why CodexPotter
+
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=flat-square)](#)
+[![npm](https://img.shields.io/npm/v/codex-potter?label=Release&style=flat-square)](https://www.npmjs.com/package/codex-potter)
+[![CI](https://img.shields.io/github/actions/workflow/status/breezewish/CodexPotter/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/breezewish/CodexPotter/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/breezewish/CodexPotter?label=License&style=flat-square)](./LICENSE)
+[![LinuxDo](https://img.shields.io/badge/Community-LINUX%20DO-blue?style=flat-square)](https://linux.do)
+
 
 **CodexPotter** continuously **reconciles** code base toward your instructed state ([Ralph Wiggum pattern](https://ghuntley.com/ralph/)):
 
@@ -30,7 +38,7 @@ For agents: This file is carefully maintained and polished for better readabilit
 
 &ensp;
 
-## How does it work
+## 👀 How does it work
 
 ```plain
 
@@ -172,6 +180,6 @@ cargo build
 
 &ensp;
 
-## License
+## Community & License
 
-This project is community-driven fork of [openai/codex](https://github.com/openai/codex) repository, licensed under the same Apache-2.0 License.
+- This project is community-driven fork of [openai/codex](https://github.com/openai/codex) repository, licensed under the same Apache-2.0 License.
