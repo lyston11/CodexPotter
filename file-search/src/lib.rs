@@ -217,24 +217,7 @@ pub async fn run_main<T: Reporter>(
         Some(pattern) => pattern,
         None => {
             reporter.warn_no_search_pattern(&search_directory);
-            #[cfg(unix)]
-            Command::new("ls")
-                .arg("-al")
-                .current_dir(search_directory)
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
-                .status()
-                .await?;
-            #[cfg(windows)]
-            {
-                Command::new("cmd")
-                    .arg("/c")
-                    .arg(search_directory)
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .await?;
-            }
+            list_search_directory_contents(&search_directory).await?;
             return Ok(());
         }
     };
@@ -263,6 +246,50 @@ pub async fn run_main<T: Reporter>(
         reporter.warn_matches_truncated(total_match_count, match_count);
     }
 
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectoryListingCommand {
+    program: &'static str,
+    args: &'static [&'static str],
+}
+
+fn directory_listing_command() -> DirectoryListingCommand {
+    #[cfg(unix)]
+    {
+        DirectoryListingCommand {
+            program: "ls",
+            args: &["-al"],
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        DirectoryListingCommand {
+            program: "cmd",
+            args: &["/c", "dir", "/a"],
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        DirectoryListingCommand {
+            program: "ls",
+            args: &["-al"],
+        }
+    }
+}
+
+async fn list_search_directory_contents(search_directory: &Path) -> anyhow::Result<()> {
+    let listing = directory_listing_command();
+    Command::new(listing.program)
+        .args(listing.args)
+        .current_dir(search_directory)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .await?;
     Ok(())
 }
 
@@ -647,6 +674,30 @@ mod tests {
     #[test]
     fn file_name_from_path_falls_back_to_full_path() {
         assert_eq!(file_name_from_path(""), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_listing_command_matches_unix_shell_expectations() {
+        assert_eq!(
+            directory_listing_command(),
+            DirectoryListingCommand {
+                program: "ls",
+                args: &["-al"],
+            }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_listing_command_matches_windows_shell_expectations() {
+        assert_eq!(
+            directory_listing_command(),
+            DirectoryListingCommand {
+                program: "cmd",
+                args: &["/c", "dir", "/a"],
+            }
+        );
     }
 
     #[derive(Default)]
