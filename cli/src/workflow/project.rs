@@ -447,7 +447,12 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
     use std::process::Command;
+
+    fn display_text(path: &Path) -> String {
+        path.display().to_string()
+    }
 
     #[test]
     fn init_project_creates_main_md_and_increments_suffix() {
@@ -489,7 +494,7 @@ mod tests {
         assert!(second_main.exists());
 
         let developer = render_developer_prompt(&second.progress_file_rel);
-        assert!(developer.contains(".codexpotter/projects/2026/01/27/2/MAIN.md"));
+        assert!(developer.contains(&display_text(&second.progress_file_rel)));
     }
 
     #[test]

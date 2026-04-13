@@ -3038,6 +3038,7 @@ mod tests {
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
+    #[cfg(unix)]
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::unbounded_channel;

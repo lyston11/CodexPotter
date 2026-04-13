@@ -1048,6 +1048,10 @@ mod tests {
         path
     }
 
+    fn display_text(path: &Path) -> String {
+        path.display().to_string()
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum MockUiOp {
         Clear,
@@ -1779,8 +1783,15 @@ mod tests {
             message.contains("no progress file found"),
             "unexpected error: {message}"
         );
-        assert!(message.contains(".codexpotter/projects/missing/MAIN.md"));
-        assert!(message.contains("missing/MAIN.md"));
+        assert!(
+            message.contains(&display_text(
+                &PathBuf::from(".codexpotter")
+                    .join("projects")
+                    .join("missing")
+                    .join("MAIN.md")
+            ))
+        );
+        assert!(message.contains(&display_text(&PathBuf::from("missing").join("MAIN.md"))));
     }
 
     #[test]

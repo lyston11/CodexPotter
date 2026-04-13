@@ -1244,25 +1244,49 @@ mod tests {
         );
     }
 
+    fn synthetic_absolute_path(components: &[&str]) -> PathBuf {
+        #[cfg(windows)]
+        {
+            components
+                .iter()
+                .fold(PathBuf::from(r"C:\"), |path, component| {
+                    path.join(component)
+                })
+        }
+
+        #[cfg(not(windows))]
+        {
+            components
+                .iter()
+                .fold(PathBuf::from("/"), |path, component| path.join(component))
+        }
+    }
+
+    fn synthetic_absolute_path_buf(components: &[&str]) -> AbsolutePathBuf {
+        AbsolutePathBuf::from_absolute_path(synthetic_absolute_path(components))
+            .expect("absolute path")
+    }
+
     #[test]
     fn minimal_multi_file_patch_renders_each_file_without_changed_header() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let repo = synthetic_absolute_path(&["repo"]);
         let mut changes = HashMap::new();
         changes.insert(
-            PathBuf::from("/repo/a.txt"),
+            repo.join("a.txt"),
             FileChange::Update {
                 unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
                 move_path: None,
             },
         );
         changes.insert(
-            PathBuf::from("/repo/b.txt"),
+            repo.join("b.txt"),
             FileChange::Add {
                 content: "hello\n".to_string(),
             },
         );
 
-        renderer.cwd = PathBuf::from("/repo");
+        renderer.cwd = repo;
         let blocks = renderer
             .handle_event(&EventMsg::PatchApplyEnd(PatchApplyEndEvent {
                 call_id: "patch".to_string(),
@@ -1295,16 +1319,17 @@ mod tests {
     #[test]
     fn simple_patch_keeps_full_diff_block_visible() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(120), false);
+        let repo = synthetic_absolute_path(&["repo"]);
         let mut changes = HashMap::new();
         changes.insert(
-            PathBuf::from("/repo/a.txt"),
+            repo.join("a.txt"),
             FileChange::Update {
                 unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
                 move_path: None,
             },
         );
 
-        renderer.cwd = PathBuf::from("/repo");
+        renderer.cwd = repo;
         let blocks = renderer
             .handle_event(&EventMsg::PatchApplyEnd(PatchApplyEndEvent {
                 call_id: "patch".to_string(),
@@ -1570,7 +1595,8 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
     #[test]
     fn simple_mode_keeps_search_and_image_events_visible() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(120), false);
-        renderer.cwd = PathBuf::from("/repo");
+        let repo = synthetic_absolute_path(&["repo"]);
+        renderer.cwd = repo.clone();
 
         let search_blocks = renderer
             .handle_event(&EventMsg::WebSearchEnd(WebSearchEndEvent {
@@ -1583,7 +1609,7 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
         let image_blocks = renderer
             .handle_event(&EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
                 call_id: "image-1".to_string(),
-                path: PathBuf::from("/repo/screenshot.png"),
+                path: repo.join("screenshot.png"),
             }))
             .expect("image event");
         assert_eq!(
@@ -1641,8 +1667,7 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
             model_context_window: None,
         }));
 
-        let write_root =
-            AbsolutePathBuf::from_absolute_path("/Users/me/project").expect("absolute path");
+        let write_root = synthetic_absolute_path_buf(&["Users", "me", "project"]);
         let request_blocks = renderer
             .handle_event(&EventMsg::RequestPermissions(RequestPermissionsEvent {
                 call_id: "call-1".to_string(),
@@ -1711,7 +1736,8 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
     #[test]
     fn minimal_mode_hides_search_and_image_events() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
-        renderer.cwd = PathBuf::from("/repo");
+        let repo = synthetic_absolute_path(&["repo"]);
+        renderer.cwd = repo.clone();
 
         let search_blocks = renderer
             .handle_event(&EventMsg::WebSearchEnd(WebSearchEndEvent {
@@ -1724,7 +1750,7 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
         let image_blocks = renderer
             .handle_event(&EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
                 call_id: "image-1".to_string(),
-                path: PathBuf::from("/repo/screenshot.png"),
+                path: repo.join("screenshot.png"),
             }))
             .expect("image event");
         assert!(image_blocks.is_empty());

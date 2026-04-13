@@ -1,8 +1,0 @@
----
-source: tui/src/app_server_render.rs
-expression: lines_to_plain_text(&cell.display_lines(width))
----
-• Requested permissions
-  └ Reason: Select a workspace root
-    Network: enabled
-    FileSystem write: /Users/me/project

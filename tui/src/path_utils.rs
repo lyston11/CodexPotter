@@ -107,11 +107,9 @@ pub fn write_atomically(write_path: &Path, contents: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[cfg(unix)]
     mod symlinks {
-        use super::*;
+        use crate::path_utils::resolve_symlink_write_paths;
         use pretty_assertions::assert_eq;
         use std::os::unix::fs::symlink;
 

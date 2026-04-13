@@ -2515,6 +2515,22 @@ mod tests {
         out
     }
 
+    fn synthetic_absolute_path_buf(components: &[&str]) -> AbsolutePathBuf {
+        #[cfg(windows)]
+        let path = components
+            .iter()
+            .fold(PathBuf::from(r"C:\"), |path, component| {
+                path.join(component)
+            });
+
+        #[cfg(not(windows))]
+        let path = components
+            .iter()
+            .fold(PathBuf::from("/"), |path, component| path.join(component));
+
+        AbsolutePathBuf::from_absolute_path(path).expect("absolute path")
+    }
+
     fn assert_line_with_text_dimmed(
         lines: &[ratatui::text::Line<'_>],
         needle: &str,
@@ -4487,8 +4503,7 @@ mod tests {
 
         let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
-        let write_root =
-            AbsolutePathBuf::from_absolute_path("/Users/me/project").expect("write root");
+        let write_root = synthetic_absolute_path_buf(&["Users", "me", "project"]);
         proc.handle_codex_event(Event {
             id: "request-permissions".into(),
             msg: EventMsg::RequestPermissions(RequestPermissionsEvent {
@@ -4501,16 +4516,19 @@ mod tests {
                     }),
                     file_system: Some(FileSystemPermissions {
                         read: None,
-                        write: Some(vec![write_root]),
+                        write: Some(vec![write_root.clone()]),
                     }),
                 },
             }),
         });
 
         let cell = recv_inserted_history_cell(&mut rx);
-        assert_snapshot!(
-            "round_renderer_request_permissions",
-            lines_to_plain_text(&cell.display_lines(width))
+        assert_eq!(
+            lines_to_plain_text(&cell.display_lines(width)),
+            format!(
+                "• Requested permissions\n  └ Reason: Select a workspace root\n    Network: enabled\n    FileSystem write: {}\n",
+                write_root.as_path().display()
+            )
         );
     }
 

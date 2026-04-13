@@ -13,6 +13,8 @@ const SKILLS_DIR_NAME: &str = "skills";
 const SYSTEM_SKILLS_DIR_NAME: &str = ".system";
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SKILLS_DIRS_PER_ROOT: usize = 2000;
+#[cfg(windows)]
+const DEFAULT_PROGRAM_DATA_DIR_WINDOWS: &str = r"C:\ProgramData";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SkillScope {
@@ -104,10 +106,9 @@ fn skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         home_dir.as_deref(),
         &project_root_markers,
     );
-    #[cfg(unix)]
-    {
+    if let Some(admin_skills_dir) = system_admin_skills_dir() {
         roots.push(SkillRoot {
-            path: PathBuf::from("/etc/codex").join(SKILLS_DIR_NAME),
+            path: admin_skills_dir,
             scope: SkillScope::Admin,
             follow_symlinks: true,
         });
@@ -202,6 +203,13 @@ enum ProjectRootMarkersValue {
 }
 
 fn project_root_markers_from_configs(codex_home: Option<&Path>) -> Vec<String> {
+    project_root_markers_from_config_paths(system_config_toml_path().as_deref(), codex_home)
+}
+
+fn project_root_markers_from_config_paths(
+    system_config_toml_path: Option<&Path>,
+    codex_home: Option<&Path>,
+) -> Vec<String> {
     let mut value: Option<Vec<String>> = None;
     let mut invalid: Option<String> = None;
 
@@ -224,14 +232,8 @@ fn project_root_markers_from_configs(codex_home: Option<&Path>) -> Vec<String> {
         }
     }
 
-    #[cfg(unix)]
-    {
-        apply_layer(
-            "system",
-            Path::new("/etc/codex/config.toml"),
-            &mut value,
-            &mut invalid,
-        );
+    if let Some(system_config_toml_path) = system_config_toml_path {
+        apply_layer("system", system_config_toml_path, &mut value, &mut invalid);
     }
     if let Some(codex_home) = codex_home {
         apply_layer(
@@ -248,6 +250,100 @@ fn project_root_markers_from_configs(codex_home: Option<&Path>) -> Vec<String> {
     }
 
     value.unwrap_or_else(default_project_root_markers)
+}
+
+fn system_config_toml_path() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        Some(PathBuf::from("/etc/codex").join(CONFIG_TOML_FILENAME))
+    }
+
+    #[cfg(windows)]
+    {
+        Some(windows_codex_system_dir().join(CONFIG_TOML_FILENAME))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+fn system_admin_skills_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        Some(PathBuf::from("/etc/codex").join(SKILLS_DIR_NAME))
+    }
+
+    #[cfg(windows)]
+    {
+        Some(windows_codex_system_dir().join(SKILLS_DIR_NAME))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn windows_codex_system_dir() -> PathBuf {
+    let program_data = windows_program_data_dir_from_known_folder().unwrap_or_else(|err| {
+        tracing::warn!(
+            error = %err,
+            "Failed to resolve ProgramData known folder; using default path"
+        );
+        PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS)
+    });
+    program_data.join("OpenAI").join("Codex")
+}
+
+#[cfg(windows)]
+fn windows_program_data_dir_from_known_folder() -> std::io::Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::FOLDERID_ProgramData;
+    use windows_sys::Win32::UI::Shell::KF_FLAG_DEFAULT;
+    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
+
+    let mut path_ptr = std::ptr::null_mut::<u16>();
+    let known_folder_flags = u32::try_from(KF_FLAG_DEFAULT).map_err(|_| {
+        std::io::Error::other(format!(
+            "KF_FLAG_DEFAULT did not fit in u32: {KF_FLAG_DEFAULT}"
+        ))
+    })?;
+
+    // SAFETY: SHGetKnownFolderPath initializes `path_ptr` with a CoTaskMem-allocated,
+    // null-terminated UTF-16 string on success.
+    let hr = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_ProgramData, known_folder_flags, 0, &mut path_ptr)
+    };
+    if hr != 0 {
+        return Err(std::io::Error::other(format!(
+            "SHGetKnownFolderPath(FOLDERID_ProgramData) failed with HRESULT {hr:#010x}"
+        )));
+    }
+    if path_ptr.is_null() {
+        return Err(std::io::Error::other(
+            "SHGetKnownFolderPath(FOLDERID_ProgramData) returned a null pointer",
+        ));
+    }
+
+    // SAFETY: `path_ptr` is a valid null-terminated UTF-16 string allocated by
+    // SHGetKnownFolderPath and must be freed with CoTaskMemFree.
+    let path = unsafe {
+        let mut len = 0usize;
+        while *path_ptr.add(len) != 0 {
+            len += 1;
+        }
+        let wide = std::slice::from_raw_parts(path_ptr, len);
+        let path = PathBuf::from(OsString::from_wide(wide));
+        CoTaskMemFree(path_ptr.cast());
+        path
+    };
+
+    Ok(path)
 }
 
 fn read_project_root_markers_from_config_file(path: &Path) -> ProjectRootMarkersValue {
@@ -845,6 +941,125 @@ description: Should not be treated as a repo skill when root traversal is disabl
             skills.iter().any(|skill| skill.name == "parent-skill"),
             false,
             "repo skills discovery should treat cwd as the project root when root markers are empty"
+        );
+    }
+
+    #[test]
+    fn system_project_root_markers_are_used_when_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system_config = tmp.path().join("system-config.toml");
+        std::fs::write(&system_config, "project_root_markers = [\"SYSTEM\"]\n")
+            .expect("write system config");
+
+        let markers = project_root_markers_from_config_paths(Some(&system_config), None);
+
+        assert_eq!(markers, vec!["SYSTEM".to_string()]);
+    }
+
+    #[test]
+    fn user_project_root_markers_override_system_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system_config = tmp.path().join("system-config.toml");
+        std::fs::write(&system_config, "project_root_markers = [\"SYSTEM\"]\n")
+            .expect("write system config");
+
+        let codex_home = tmp.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+        std::fs::write(
+            codex_home.join(CONFIG_TOML_FILENAME),
+            "project_root_markers = [\"USER\"]\n",
+        )
+        .expect("write user config");
+
+        let markers =
+            project_root_markers_from_config_paths(Some(&system_config), Some(&codex_home));
+
+        assert_eq!(markers, vec!["USER".to_string()]);
+    }
+
+    #[test]
+    fn discovers_admin_skills_from_injected_admin_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
+        mark_as_git_repo(&repo_root);
+
+        let cwd = repo_root.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+
+        let admin_root = tmp.path().join("admin-skills");
+        let skill_dir = admin_root.join("admin-skill");
+        std::fs::create_dir_all(&skill_dir).expect("mkdir admin skill");
+        std::fs::write(
+            skill_dir.join(SKILL_FILENAME),
+            r#"---
+name: admin-skill
+description: Installed under the admin config root.
+---
+
+# Body
+"#,
+        )
+        .expect("write admin skill");
+
+        let mut roots = skill_roots_with_dirs(
+            &cwd,
+            /*codex_home*/ None,
+            /*home_dir*/ None,
+            &default_project_root_markers(),
+        );
+        roots.push(SkillRoot {
+            path: admin_root,
+            scope: SkillScope::Admin,
+            follow_symlinks: true,
+        });
+
+        let skills = load_skills_from_roots(roots);
+        let admin_skill = skills
+            .iter()
+            .find(|skill| skill.name == "admin-skill")
+            .expect("admin skill should be discovered");
+
+        assert_eq!(admin_skill.scope, SkillScope::Admin);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_config_toml_path_uses_expected_suffix() {
+        let expected = windows_program_data_dir_from_known_folder()
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS))
+            .join("OpenAI")
+            .join("Codex")
+            .join(CONFIG_TOML_FILENAME);
+
+        assert_eq!(
+            system_config_toml_path().expect("system config path"),
+            expected,
+        );
+        assert!(
+            system_config_toml_path()
+                .expect("system config path")
+                .ends_with(Path::new("OpenAI").join("Codex").join(CONFIG_TOML_FILENAME))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_admin_skills_dir_uses_expected_suffix() {
+        let expected = windows_program_data_dir_from_known_folder()
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS))
+            .join("OpenAI")
+            .join("Codex")
+            .join(SKILLS_DIR_NAME);
+
+        assert_eq!(
+            system_admin_skills_dir().expect("admin skills dir"),
+            expected
+        );
+        assert!(
+            system_admin_skills_dir()
+                .expect("admin skills dir")
+                .ends_with(Path::new("OpenAI").join("Codex").join(SKILLS_DIR_NAME))
         );
     }
 }
