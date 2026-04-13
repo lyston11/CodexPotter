@@ -14,13 +14,52 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 
-const CODEX_COMPAT_ENTRY_NAMES: &[&str] = &[
-    "AGENTS.md",
-    "config.toml",
-    "auth.json",
-    "agents",
-    "skills",
-    "rules",
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CodexCompatEntryKind {
+    File,
+    Directory,
+}
+
+impl CodexCompatEntryKind {
+    fn matches(self, metadata: &std::fs::Metadata) -> bool {
+        match self {
+            Self::File => metadata.is_file(),
+            Self::Directory => metadata.is_dir(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CodexCompatEntry {
+    name: &'static str,
+    kind: CodexCompatEntryKind,
+}
+
+const CODEX_COMPAT_ENTRIES: &[CodexCompatEntry] = &[
+    CodexCompatEntry {
+        name: "AGENTS.md",
+        kind: CodexCompatEntryKind::File,
+    },
+    CodexCompatEntry {
+        name: "config.toml",
+        kind: CodexCompatEntryKind::File,
+    },
+    CodexCompatEntry {
+        name: "auth.json",
+        kind: CodexCompatEntryKind::File,
+    },
+    CodexCompatEntry {
+        name: "agents",
+        kind: CodexCompatEntryKind::Directory,
+    },
+    CodexCompatEntry {
+        name: "skills",
+        kind: CodexCompatEntryKind::Directory,
+    },
+    CodexCompatEntry {
+        name: "rules",
+        kind: CodexCompatEntryKind::Directory,
+    },
 ];
 
 pub fn ensure_default_codex_compat_home() -> anyhow::Result<Option<PathBuf>> {
@@ -63,22 +102,49 @@ fn ensure_codex_compat_home(home: &Path, real_codex_home: &Path) -> anyhow::Resu
     std::fs::create_dir_all(&codex_home)
         .with_context(|| format!("create directory {}", codex_home.display()))?;
 
-    for entry_name in CODEX_COMPAT_ENTRY_NAMES {
+    for entry in CODEX_COMPAT_ENTRIES {
         ensure_symlink(
-            &codex_home.join(entry_name),
-            &real_codex_home.join(entry_name),
+            &codex_home.join(entry.name),
+            &real_codex_home.join(entry.name),
+            entry.kind,
         )?;
     }
 
     Ok(codex_home)
 }
 
-fn ensure_symlink(link_path: &Path, target_path: &Path) -> anyhow::Result<()> {
+fn ensure_symlink(
+    link_path: &Path,
+    target_path: &Path,
+    expected_kind: CodexCompatEntryKind,
+) -> anyhow::Result<()> {
     if link_path == target_path {
         return Ok(());
     }
-    if std::fs::symlink_metadata(link_path).is_ok() {
-        return Ok(());
+
+    validate_target_kind(target_path, expected_kind)?;
+
+    match std::fs::symlink_metadata(link_path) {
+        Ok(metadata) => {
+            let target_exists = target_path.exists();
+            if metadata.file_type().is_symlink() {
+                let current_target = std::fs::read_link(link_path)
+                    .with_context(|| format!("read symlink {}", link_path.display()))?;
+                if current_target == target_path
+                    && target_exists
+                    && std::fs::metadata(link_path).is_ok_and(|meta| expected_kind.matches(&meta))
+                {
+                    return Ok(());
+                }
+            }
+
+            remove_existing_entry(link_path, &metadata, expected_kind)?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(anyhow::Error::new(err)
+                .context(format!("inspect existing entry {}", link_path.display())));
+        }
     }
 
     #[cfg(unix)]
@@ -90,8 +156,16 @@ fn ensure_symlink(link_path: &Path, target_path: &Path) -> anyhow::Result<()> {
 
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target_path, link_path)
-            .with_context(|| format!("create symlink {}", link_path.display()))?;
+        match expected_kind {
+            CodexCompatEntryKind::File => {
+                std::os::windows::fs::symlink_file(target_path, link_path)
+                    .with_context(|| format!("create file symlink {}", link_path.display()))?
+            }
+            CodexCompatEntryKind::Directory => {
+                std::os::windows::fs::symlink_dir(target_path, link_path)
+                    .with_context(|| format!("create directory symlink {}", link_path.display()))?
+            }
+        }
         Ok(())
     }
 
@@ -99,33 +173,114 @@ fn ensure_symlink(link_path: &Path, target_path: &Path) -> anyhow::Result<()> {
     anyhow::bail!("symlinks are not supported on this platform");
 }
 
+fn validate_target_kind(
+    target_path: &Path,
+    expected_kind: CodexCompatEntryKind,
+) -> anyhow::Result<()> {
+    let metadata = match std::fs::metadata(target_path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(anyhow::Error::new(err)
+                .context(format!("read target metadata {}", target_path.display())));
+        }
+    };
+
+    anyhow::ensure!(
+        expected_kind.matches(&metadata),
+        "expected {} to be a {}, but found a {}",
+        target_path.display(),
+        expected_kind_label(expected_kind),
+        actual_kind_label(&metadata)
+    );
+    Ok(())
+}
+
+fn remove_existing_entry(
+    link_path: &Path,
+    metadata: &std::fs::Metadata,
+    expected_kind: CodexCompatEntryKind,
+) -> anyhow::Result<()> {
+    let is_directory_entry = if metadata.file_type().is_symlink() {
+        matches!(expected_kind, CodexCompatEntryKind::Directory)
+    } else {
+        metadata.file_type().is_dir()
+    };
+
+    if is_directory_entry {
+        std::fs::remove_dir_all(link_path)
+            .with_context(|| format!("remove directory {}", link_path.display()))?;
+    } else {
+        std::fs::remove_file(link_path)
+            .with_context(|| format!("remove entry {}", link_path.display()))?;
+    }
+    Ok(())
+}
+
+fn expected_kind_label(kind: CodexCompatEntryKind) -> &'static str {
+    match kind {
+        CodexCompatEntryKind::File => "file",
+        CodexCompatEntryKind::Directory => "directory",
+    }
+}
+
+fn actual_kind_label(metadata: &std::fs::Metadata) -> &'static str {
+    if metadata.is_dir() {
+        "directory"
+    } else if metadata.is_file() {
+        "file"
+    } else {
+        "special entry"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
 
     #[test]
-    #[cfg(unix)]
     fn ensures_codex_compat_home_and_links() {
         let home_dir = tempfile::tempdir().expect("home dir");
         let real_codex_home = tempfile::tempdir().expect("real codex home");
+        for entry in CODEX_COMPAT_ENTRIES {
+            let path = real_codex_home.path().join(entry.name);
+            match entry.kind {
+                CodexCompatEntryKind::File => {
+                    std::fs::write(&path, entry.name).expect("write file entry");
+                }
+                CodexCompatEntryKind::Directory => {
+                    std::fs::create_dir_all(&path).expect("create dir entry");
+                }
+            }
+        }
         let codex_home =
             ensure_codex_compat_home(home_dir.path(), real_codex_home.path()).expect("ensure home");
 
         assert!(codex_home.is_dir());
 
-        for entry_name in CODEX_COMPAT_ENTRY_NAMES {
-            let link_path = codex_home.join(entry_name);
+        for entry in CODEX_COMPAT_ENTRIES {
+            let link_path = codex_home.join(entry.name);
             let link_meta = std::fs::symlink_metadata(&link_path)
-                .unwrap_or_else(|err| panic!("missing symlink {entry_name}: {err}"));
+                .unwrap_or_else(|err| panic!("missing symlink {}: {err}", entry.name));
             assert!(
                 link_meta.file_type().is_symlink(),
-                "{entry_name} should be a symlink"
+                "{} should be a symlink",
+                entry.name
             );
             assert_eq!(
                 std::fs::read_link(&link_path)
-                    .unwrap_or_else(|err| panic!("failed to read {entry_name} symlink: {err}")),
-                real_codex_home.path().join(entry_name),
+                    .unwrap_or_else(|err| panic!("failed to read {} symlink: {err}", entry.name)),
+                real_codex_home.path().join(entry.name),
+            );
+            let resolved_meta = std::fs::metadata(&link_path)
+                .unwrap_or_else(|err| panic!("failed to stat resolved {}: {err}", entry.name));
+            assert!(
+                entry.kind.matches(&resolved_meta),
+                "{} should resolve to a {}",
+                entry.name,
+                expected_kind_label(entry.kind)
             );
         }
 
@@ -133,6 +288,80 @@ mod tests {
         let codex_home_again = ensure_codex_compat_home(home_dir.path(), real_codex_home.path())
             .expect("ensure home again");
         assert_eq!(codex_home_again, codex_home);
+    }
+
+    #[test]
+    fn ensures_codex_compat_home_repairs_stale_entries() {
+        let home_dir = tempfile::tempdir().expect("home dir");
+        let real_codex_home = tempfile::tempdir().expect("real codex home");
+        let stale_target = tempfile::tempdir().expect("stale target");
+
+        for entry in CODEX_COMPAT_ENTRIES {
+            let path = real_codex_home.path().join(entry.name);
+            match entry.kind {
+                CodexCompatEntryKind::File => {
+                    std::fs::write(&path, entry.name).expect("write file entry");
+                    std::fs::write(stale_target.path().join(entry.name), "stale")
+                        .expect("write stale file entry");
+                }
+                CodexCompatEntryKind::Directory => {
+                    std::fs::create_dir_all(&path).expect("create dir entry");
+                    std::fs::create_dir_all(stale_target.path().join(entry.name))
+                        .expect("create stale dir entry");
+                }
+            }
+        }
+
+        let codex_home = home_dir.path().join(".codexpotter").join("codex-compat");
+        std::fs::create_dir_all(&codex_home).expect("create compat dir");
+
+        for entry in CODEX_COMPAT_ENTRIES {
+            let link_path = codex_home.join(entry.name);
+            create_test_symlink(
+                &stale_target.path().join(entry.name),
+                &link_path,
+                entry.kind,
+            )
+            .unwrap_or_else(|err| panic!("create stale {} symlink: {err}", entry.name));
+        }
+
+        ensure_codex_compat_home(home_dir.path(), real_codex_home.path()).expect("repair home");
+
+        for entry in CODEX_COMPAT_ENTRIES {
+            let link_path = codex_home.join(entry.name);
+            assert_eq!(
+                std::fs::read_link(&link_path).unwrap_or_else(|err| panic!(
+                    "failed to read repaired {} symlink: {err}",
+                    entry.name
+                )),
+                real_codex_home.path().join(entry.name),
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn create_test_symlink(
+        target_path: &Path,
+        link_path: &Path,
+        _kind: CodexCompatEntryKind,
+    ) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target_path, link_path)
+    }
+
+    #[cfg(windows)]
+    fn create_test_symlink(
+        target_path: &Path,
+        link_path: &Path,
+        kind: CodexCompatEntryKind,
+    ) -> std::io::Result<()> {
+        match kind {
+            CodexCompatEntryKind::File => {
+                std::os::windows::fs::symlink_file(target_path, link_path)
+            }
+            CodexCompatEntryKind::Directory => {
+                std::os::windows::fs::symlink_dir(target_path, link_path)
+            }
+        }
     }
 
     #[test]
