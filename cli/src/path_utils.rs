@@ -21,6 +21,16 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
     expand_tilde_from_home(path, dirs::home_dir().as_deref())
 }
 
+/// Return whether a user-facing path text uses the supported home-relative `~` syntax.
+///
+/// Supported forms are:
+/// - `~`
+/// - `~/...`
+/// - `~\...` on Windows
+pub fn is_home_relative_path_text(path_text: &str) -> bool {
+    path_text == "~" || home_relative_rest(path_text).is_some()
+}
+
 /// Expand a `~` / `~/...` path against an explicit home directory.
 ///
 /// This keeps all user-facing tilde handling in one place while allowing callers that already
@@ -34,13 +44,7 @@ pub fn expand_tilde_from_home(path: &Path, home: Option<&Path>) -> PathBuf {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from(path_str));
     }
-    let rest = path_str.strip_prefix("~/").or_else(|| {
-        if cfg!(windows) {
-            path_str.strip_prefix("~\\")
-        } else {
-            None
-        }
-    });
+    let rest = home_relative_rest(path_str);
     let Some(rest) = rest else {
         return path.to_path_buf();
     };
@@ -70,11 +74,22 @@ pub fn display_with_tilde(path: &Path) -> String {
     format!("~/{}", stripped.display())
 }
 
+fn home_relative_rest(path_text: &str) -> Option<&str> {
+    path_text.strip_prefix("~/").or_else(|| {
+        if cfg!(windows) {
+            path_text.strip_prefix("~\\")
+        } else {
+            None
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::display_with_tilde;
     use super::expand_tilde;
     use super::expand_tilde_from_home;
+    use super::is_home_relative_path_text;
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use std::path::PathBuf;
@@ -107,6 +122,13 @@ mod tests {
     }
 
     #[test]
+    fn is_home_relative_path_text_recognizes_unix_forms() {
+        assert!(is_home_relative_path_text("~"));
+        assert!(is_home_relative_path_text("~/nested/file"));
+        assert!(!is_home_relative_path_text("~someone/file"));
+    }
+
+    #[test]
     #[cfg(windows)]
     fn expand_tilde_expands_windows_style_home_when_available() {
         let Some(home) = dirs::home_dir() else {
@@ -117,6 +139,12 @@ mod tests {
             expand_tilde(Path::new("~\\nested\\file")),
             home.join("nested").join("file")
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn is_home_relative_path_text_recognizes_windows_form() {
+        assert!(is_home_relative_path_text("~\\nested\\file"));
     }
 
     #[test]

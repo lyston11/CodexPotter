@@ -126,8 +126,7 @@ fn looks_like_path(value: &str) -> bool {
         || value.contains('\\')
         || value.starts_with("./")
         || value.starts_with("../")
-        || value.starts_with("~/")
-        || value == "~"
+        || path_utils::is_home_relative_path_text(value)
 }
 
 fn ansi_red(text: String) -> String {
@@ -141,6 +140,7 @@ fn ansi_underline(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     fn normalize_newlines_for_vt100(input: &str) -> String {
         // Most terminals (and tty line disciplines) translate '\n' to '\r\n'. The vt100 parser
@@ -240,5 +240,28 @@ mod tests {
                 reason: "does not exist".to_string()
             }
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn resolve_codex_bin_expands_windows_style_home_relative_paths() {
+        let home = dirs::home_dir().expect("home dir");
+        let temp = tempfile::Builder::new()
+            .prefix("codex-potter-startup-")
+            .tempdir_in(&home)
+            .expect("tempdir in home");
+        let executable = temp.path().join("codex.exe");
+        std::fs::write(&executable, "echo test").expect("write executable placeholder");
+
+        let temp_name = temp
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("tempdir name");
+        let input = format!("~\\{temp_name}\\codex.exe");
+
+        let resolved = resolve_codex_bin(&input).expect("resolve codex bin");
+
+        assert_eq!(resolved.command_for_spawn, executable.display().to_string());
     }
 }
