@@ -116,12 +116,7 @@ fn skill_roots(cwd: &Path) -> Vec<SkillRoot> {
 }
 
 fn codex_home_from_env_or_home(home_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Ok(val) = std::env::var("CODEX_HOME")
-        && !val.is_empty()
-    {
-        return Some(PathBuf::from(val));
-    }
-    home_dir.map(|home| home.join(".codex"))
+    crate::codex_home::codex_home_from_env_or_home(home_dir)
 }
 
 fn skill_roots_with_dirs(

@@ -18,11 +18,21 @@ use std::path::PathBuf;
 /// - the input does not start with `~`
 /// - the home directory cannot be determined
 pub fn expand_tilde(path: &Path) -> PathBuf {
+    expand_tilde_from_home(path, dirs::home_dir().as_deref())
+}
+
+/// Expand a `~` / `~/...` path against an explicit home directory.
+///
+/// This keeps all user-facing tilde handling in one place while allowing callers that already
+/// resolved a home directory to avoid re-querying global state.
+pub fn expand_tilde_from_home(path: &Path, home: Option<&Path>) -> PathBuf {
     let Some(path_str) = path.to_str() else {
         return path.to_path_buf();
     };
     if path_str == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path_str));
+        return home
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(path_str));
     }
     let rest = path_str.strip_prefix("~/").or_else(|| {
         if cfg!(windows) {
@@ -34,7 +44,7 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
     let Some(rest) = rest else {
         return path.to_path_buf();
     };
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = home else {
         return path.to_path_buf();
     };
     home.join(rest)
@@ -64,6 +74,7 @@ pub fn display_with_tilde(path: &Path) -> String {
 mod tests {
     use super::display_with_tilde;
     use super::expand_tilde;
+    use super::expand_tilde_from_home;
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use std::path::PathBuf;
@@ -83,6 +94,16 @@ mod tests {
 
         assert_eq!(expand_tilde(Path::new("~")), home);
         assert_eq!(expand_tilde(Path::new("~/nested")), home.join("nested"));
+    }
+
+    #[test]
+    fn expand_tilde_from_home_uses_explicit_home_directory() {
+        let home = Path::new("/tmp/example-home");
+
+        assert_eq!(
+            expand_tilde_from_home(Path::new("~/nested"), Some(home)),
+            home.join("nested")
+        );
     }
 
     #[test]

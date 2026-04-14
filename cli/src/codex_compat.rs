@@ -83,7 +83,7 @@ fn resolve_real_codex_home_from_env(
         return Ok(home.join(".codex"));
     };
 
-    let path = PathBuf::from(val);
+    let path = crate::path_utils::expand_tilde_from_home(Path::new(val), Some(home));
     let metadata = std::fs::metadata(&path).map_err(|err| match err.kind() {
         std::io::ErrorKind::NotFound => {
             anyhow::anyhow!("CODEX_HOME points to {val:?}, but that path does not exist")
@@ -379,6 +379,33 @@ mod tests {
         let resolved = resolve_real_codex_home_from_env(home_dir.path(), Some(&codex_home_env))
             .expect("resolve");
         let expected = codex_home.path().canonicalize().expect("canonicalize");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_real_codex_home_expands_home_relative_env_path() {
+        let home_dir = tempfile::tempdir().expect("home dir");
+        let codex_home = home_dir.path().join("custom-codex");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+
+        let resolved = resolve_real_codex_home_from_env(home_dir.path(), Some("~/custom-codex"))
+            .expect("resolve");
+        let expected = codex_home.canonicalize().expect("canonicalize");
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_real_codex_home_expands_windows_style_home_relative_env_path() {
+        let home_dir = tempfile::tempdir().expect("home dir");
+        let codex_home = home_dir.path().join("custom-codex");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+
+        let resolved = resolve_real_codex_home_from_env(home_dir.path(), Some("~\\custom-codex"))
+            .expect("resolve");
+        let expected = codex_home.canonicalize().expect("canonicalize");
+
         assert_eq!(resolved, expected);
     }
 }

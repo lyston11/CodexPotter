@@ -201,40 +201,7 @@ fn system_config_toml_path() -> Option<PathBuf> {
 }
 
 pub fn find_codex_home() -> io::Result<PathBuf> {
-    if let Ok(val) = std::env::var("CODEX_HOME")
-        && !val.is_empty()
-    {
-        let path = PathBuf::from(&val);
-        let metadata = std::fs::metadata(&path).map_err(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("CODEX_HOME points to {val:?}, but that path does not exist"),
-            ),
-            _ => std::io::Error::new(
-                err.kind(),
-                format!("failed to read CODEX_HOME {val:?}: {err}"),
-            ),
-        })?;
-
-        if !metadata.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("CODEX_HOME points to {val:?}, but that path is not a directory"),
-            ));
-        }
-
-        return path.canonicalize().map_err(|err| {
-            std::io::Error::new(
-                err.kind(),
-                format!("failed to canonicalize CODEX_HOME {val:?}: {err}"),
-            )
-        });
-    }
-
-    let mut p = dirs::home_dir()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Could not find home directory"))?;
-    p.push(".codex");
-    Ok(p)
+    crate::codex_home::find_codex_home()
 }
 
 fn find_project_root(cwd: &Path, project_root_markers: &[String]) -> io::Result<PathBuf> {

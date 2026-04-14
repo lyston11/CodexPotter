@@ -68,6 +68,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 Behavior related
 
 - A customized banner on startup; the first-screen model label appends `[fast]` when layered Codex config resolves `service_tier = "fast"` and `features.fast_mode` remains enabled
+- Home-relative `CODEX_HOME` values are expanded before resolving TUI config, themes, and skill roots (including Windows-native `~\...`)
 - Additionally shows gitignore startup hint
 - Startup onboarding prompts:
   - Suggest adding `.codexpotter/` to the global gitignore.

@@ -11,6 +11,7 @@ mod app_event_sender;
 mod app_server_render;
 mod bottom_pane;
 mod codex_config;
+mod codex_home;
 mod codex_system_paths;
 mod color;
 mod custom_terminal;
