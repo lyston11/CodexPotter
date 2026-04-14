@@ -1,5 +1,7 @@
 use std::env;
 use std::fs;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use color_eyre::eyre::Report;
@@ -22,10 +24,32 @@ pub enum EditorError {
 /// Tries to resolve the full path to a Windows program, respecting PATH + PATHEXT.
 /// Falls back to the original program name if resolution fails.
 #[cfg(windows)]
-fn resolve_windows_program(program: &str) -> std::path::PathBuf {
+fn resolve_windows_program(program: &str) -> PathBuf {
+    let expanded = expand_windows_home_relative_program(program);
+    if expanded != PathBuf::from(program) {
+        return expanded;
+    }
+
     // On Windows, `Command::new("code")` will not resolve `code.cmd` shims on PATH.
     // Use `which` so we respect PATH + PATHEXT (e.g., `code` -> `code.cmd`).
-    which::which(program).unwrap_or_else(|_| std::path::PathBuf::from(program))
+    which::which(program).unwrap_or(expanded)
+}
+
+#[cfg(windows)]
+fn expand_windows_home_relative_program(program: &str) -> PathBuf {
+    let Some(home) = dirs::home_dir() else {
+        return PathBuf::from(program);
+    };
+    if program == "~" {
+        return home;
+    }
+    let Some(rest) = program
+        .strip_prefix("~/")
+        .or_else(|| program.strip_prefix("~\\"))
+    else {
+        return PathBuf::from(program);
+    };
+    home.join(rest)
 }
 
 /// Resolve the editor command from environment variables.
@@ -167,5 +191,32 @@ mod tests {
         let cmd = vec![script_path.to_string_lossy().to_string()];
         let result = run_editor("seed", &cmd).await.unwrap();
         assert_eq!(result, "edited".to_string());
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn run_editor_expands_windows_style_home_relative_program_paths() {
+        let home = dirs::home_dir().expect("home dir");
+        let temp = Builder::new()
+            .prefix("codex-potter-editor-")
+            .tempdir_in(&home)
+            .expect("tempdir in home");
+        let script_path = temp.path().join("edit.cmd");
+        fs::write(
+            &script_path,
+            "@echo off\r\necho edited> \"%~1\"\r\nexit /b 0\r\n",
+        )
+        .expect("write editor script");
+
+        let temp_name = temp
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("tempdir name");
+        let cmd = vec![format!("~\\{temp_name}\\edit.cmd")];
+
+        let result = run_editor("seed", &cmd).await.expect("run editor");
+
+        assert_eq!(result.trim(), "edited");
     }
 }
