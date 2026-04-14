@@ -9,6 +9,8 @@ use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use toml_edit::value;
 
+const CONFIG_TOML_FILENAME: &str = "config.toml";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexServiceTier {
     Fast,
@@ -106,7 +108,7 @@ pub fn resolve_codex_tui_theme(cwd: &Path) -> io::Result<Option<String>> {
 }
 
 pub fn persist_codex_tui_theme(codex_home: &Path, name: &str) -> io::Result<()> {
-    let config_path = codex_home.join("config.toml");
+    let config_path = codex_home.join(CONFIG_TOML_FILENAME);
     let write_paths = crate::path_utils::resolve_symlink_write_paths(&config_path)?;
     let serialized = match write_paths.read_path {
         Some(path) => match std::fs::read_to_string(&path) {
@@ -138,15 +140,31 @@ pub fn persist_codex_tui_theme(codex_home: &Path, name: &str) -> io::Result<()> 
 const DEFAULT_FALLBACK_MODEL: &str = "gpt-5.2-codex";
 
 fn load_codex_config(cwd: &Path, runtime_config_overrides: &[String]) -> io::Result<CodexConfig> {
+    let system_config_toml_path = system_config_toml_path();
+    load_codex_config_with_system_config_path(
+        cwd,
+        runtime_config_overrides,
+        system_config_toml_path.as_deref(),
+    )
+}
+
+fn load_codex_config_with_system_config_path(
+    cwd: &Path,
+    runtime_config_overrides: &[String],
+    system_config_toml_path: Option<&Path>,
+) -> io::Result<CodexConfig> {
     let codex_home = find_codex_home()?;
     let mut base_config = CodexConfig::default();
 
     // Match codex config layering order (subset):
-    // - system: /etc/codex/config.toml
+    // - system: platform-specific machine-wide config (`/etc/codex` on Unix,
+    //           `%ProgramData%\OpenAI\Codex` on Windows)
     // - user:   $CODEX_HOME/config.toml (default ~/.codex/config.toml)
     // - project layers: ./.../.codex/config.toml from project root to cwd
-    apply_config_layer_from_file(&mut base_config, &default_system_config_path())?;
-    apply_config_layer_from_file(&mut base_config, &codex_home.join("config.toml"))?;
+    if let Some(system_config_toml_path) = system_config_toml_path {
+        apply_config_layer_from_file(&mut base_config, system_config_toml_path)?;
+    }
+    apply_config_layer_from_file(&mut base_config, &codex_home.join(CONFIG_TOML_FILENAME))?;
 
     let mut discovery_config = base_config.clone();
     // Runtime overrides can change `project_root_markers`, so they must participate in project
@@ -166,7 +184,7 @@ fn load_codex_config(cwd: &Path, runtime_config_overrides: &[String]) -> io::Res
         if !dot_codex.is_dir() {
             continue;
         }
-        apply_config_layer_from_file(&mut config, &dot_codex.join("config.toml"))?;
+        apply_config_layer_from_file(&mut config, &dot_codex.join(CONFIG_TOML_FILENAME))?;
     }
 
     apply_runtime_config_overrides(&mut config, runtime_config_overrides)?;
@@ -178,15 +196,8 @@ fn default_project_root_markers() -> Vec<String> {
     vec![".git".to_string()]
 }
 
-fn default_system_config_path() -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from("/etc/codex/config.toml")
-    }
-    #[cfg(not(unix))]
-    {
-        PathBuf::new()
-    }
+fn system_config_toml_path() -> Option<PathBuf> {
+    crate::codex_system_paths::system_codex_dir().map(|dir| dir.join(CONFIG_TOML_FILENAME))
 }
 
 pub fn find_codex_home() -> io::Result<PathBuf> {
@@ -1014,7 +1025,7 @@ profile = "missing"
         let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
         write_config(
-            &codex_home.path().join("config.toml"),
+            &codex_home.path().join(CONFIG_TOML_FILENAME),
             r#"
 model = "gpt-5.2"
 project_root_markers = ["MARKER"]
@@ -1025,7 +1036,7 @@ project_root_markers = ["MARKER"]
         std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
         std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
         write_config(
-            &repo.path().join(".codex").join("config.toml"),
+            &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
             r#"
 model = "gpt-5.2-codex"
 "#,
@@ -1040,12 +1051,94 @@ model = "gpt-5.2-codex"
 
     #[test]
     #[serial]
+    fn injected_system_config_theme_is_applied() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        let system_root = tempfile::tempdir().expect("system root");
+        let system_config = system_root.path().join(CONFIG_TOML_FILENAME);
+        write_config(
+            &system_config,
+            r#"
+[tui]
+theme = "github"
+"#,
+        );
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let resolved = load_codex_config_with_system_config_path(
+            cwd.path(),
+            &[],
+            Some(system_config.as_path()),
+        )
+        .expect("resolve");
+
+        assert_eq!(
+            resolved,
+            CodexConfig {
+                tui_theme: Some("github".to_string()),
+                ..CodexConfig::default()
+            }
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn injected_system_project_root_markers_affect_layer_discovery() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+        write_config(
+            &codex_home.path().join(CONFIG_TOML_FILENAME),
+            r#"
+model = "gpt-5.2"
+"#,
+        );
+
+        let system_root = tempfile::tempdir().expect("system root");
+        let system_config = system_root.path().join(CONFIG_TOML_FILENAME);
+        write_config(
+            &system_config,
+            r#"
+project_root_markers = ["MARKER"]
+"#,
+        );
+
+        let repo = tempfile::tempdir().expect("repo");
+        std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
+        std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
+        write_config(
+            &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
+            r#"
+model = "gpt-5.4"
+"#,
+        );
+
+        let cwd = repo.path().join("subdir");
+        std::fs::create_dir_all(&cwd).expect("mkdir subdir");
+
+        let resolved =
+            load_codex_config_with_system_config_path(&cwd, &[], Some(system_config.as_path()))
+                .expect("resolve");
+
+        assert_eq!(
+            resolved,
+            CodexConfig {
+                model: Some("gpt-5.4".to_string()),
+                project_root_markers: Some(vec!["MARKER".to_string()]),
+                ..CodexConfig::default()
+            }
+        );
+    }
+
+    #[test]
+    #[serial]
     fn resolves_tui_theme_from_layered_config() {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
         write_config(
-            &codex_home.path().join("config.toml"),
+            &codex_home.path().join(CONFIG_TOML_FILENAME),
             r#"
 [tui]
 theme = "catppuccin-mocha"
@@ -1065,8 +1158,8 @@ theme = "catppuccin-mocha"
         let codex_home_real = tempfile::tempdir().expect("tempdir");
         let codex_home_compat = tempfile::tempdir().expect("tempdir");
 
-        let target = codex_home_real.path().join("config.toml");
-        let link = codex_home_compat.path().join("config.toml");
+        let target = codex_home_real.path().join(CONFIG_TOML_FILENAME);
+        let link = codex_home_compat.path().join(CONFIG_TOML_FILENAME);
         symlink(&target, &link).expect("symlink");
 
         persist_codex_tui_theme(codex_home_compat.path(), "github").expect("persist theme");
