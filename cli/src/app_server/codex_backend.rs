@@ -675,9 +675,24 @@ async fn send_client_request(
     let method = request.method();
     send_message(stdin, &request).await?;
     let response = read_until_response(stdin, lines, request_id, recovery, event_tx).await?;
+    let response_summary = summarize_response_result(&response.result);
     request
         .decode_response(response)
-        .with_context(|| format!("decode {method} response"))
+        .with_context(|| format!("decode {method} response (payload: {response_summary})"))
+}
+
+fn summarize_response_result(result: &serde_json::Value) -> String {
+    const MAX_CHARS: usize = 400;
+
+    let rendered = serde_json::to_string(result)
+        .unwrap_or_else(|err| format!("<failed to serialize response payload: {err}>"));
+    let mut chars = rendered.chars();
+    let preview = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...[truncated]")
+    } else {
+        preview
+    }
 }
 
 struct ThreadStartSettings {
@@ -3030,9 +3045,9 @@ mod stream_recovery_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::app_server::test_support::lock_dummy_codex_test;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::app_server::test_support::write_dummy_codex_script;
     use codex_protocol::models::MessagePhase;
     use codex_protocol::protocol::TurnAbortReason;
@@ -3094,6 +3109,19 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn summarize_response_result_truncates_long_payloads() {
+        let payload = serde_json::json!({
+            "message": "x".repeat(600),
+        });
+
+        let summary = summarize_response_result(&payload);
+
+        assert!(summary.starts_with("{\"message\":\""));
+        assert!(summary.ends_with("...[truncated]"));
+        assert!(summary.len() < 450, "summary should stay bounded");
     }
 
     #[test]
@@ -3876,6 +3904,156 @@ done
             .expect("backend timed out")
             .expect("backend panicked")
             .expect("backend failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_reports_initialize_decode_failure_with_payload_context() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+IFS= read -r _line
+echo '{"id":1,"result":null}'
+"#;
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (fatal_exit_tx, mut fatal_exit_rx) = unbounded_channel::<String>();
+        let (_op_tx, op_rx) = unbounded_channel::<Op>();
+
+        run_app_server_backend(
+            AppServerBackendConfig {
+                codex_bin: codex_bin.display().to_string(),
+                developer_instructions: None,
+                launch: AppServerLaunchConfig {
+                    spawn_sandbox: None,
+                    thread_sandbox: None,
+                    bypass_approvals_and_sandbox: false,
+                },
+                upstream_cli_args: Default::default(),
+                codex_home: None,
+                thread_cwd: None,
+                resume_thread_id: None,
+                event_mode: AppServerEventMode::Interactive,
+            },
+            op_rx,
+            event_tx,
+            fatal_exit_tx,
+        )
+        .await
+        .expect("backend should swallow initialize decode failures");
+
+        let error_event = timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event timed out")
+            .expect("event channel closed");
+        let EventMsg::Error(ErrorEvent { message, .. }) = error_event.msg else {
+            panic!("expected Error event, got {:?}", error_event.msg);
+        };
+        assert!(
+            message.contains("decode initialize response"),
+            "unexpected error message: {message:?}"
+        );
+        assert!(
+            message.contains("payload: null"),
+            "missing response payload context: {message:?}"
+        );
+
+        let finished_event = timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event timed out")
+            .expect("event channel closed");
+        let EventMsg::PotterRoundFinished {
+            outcome:
+                PotterRoundOutcome::TaskFailed {
+                    message: finished_message,
+                },
+        } = finished_event.msg
+        else {
+            panic!(
+                "expected PotterRoundFinished(TaskFailed), got {:?}",
+                finished_event.msg
+            );
+        };
+        assert_eq!(finished_message, message);
+        assert!(
+            fatal_exit_rx.try_recv().is_err(),
+            "expected no fatal exit message"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn backend_initializes_from_windows_cmd_shim() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex.cmd");
+
+        let script = r#"@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+
+if /I not "%~1"=="app-server" (
+  echo expected app-server, got: %* 1>&2
+  exit /b 1
+)
+
+set /p ignored=
+echo {"id":1,"result":{"userAgent":"test-agent","platformFamily":"windows","platformOs":"windows"}}
+set /p ignored=
+set /p ignored=
+echo {"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","preview":"","modelProvider":"test-provider","createdAt":0,"updatedAt":0,"path":"rollout.jsonl","cwd":"project","cliVersion":"0.0.0","source":"appServer","gitInfo":null,"turns":[]},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}
+"#;
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        drop(op_tx);
+
+        timeout(
+            Duration::from_secs(5),
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            ),
+        )
+        .await
+        .expect("backend timed out")
+        .expect("backend failed");
+
+        let session_event = timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event timed out")
+            .expect("event channel closed");
+        assert!(matches!(
+            session_event.msg,
+            EventMsg::SessionConfigured(SessionConfiguredEvent { model, .. })
+                if model == "test-model"
+        ));
     }
 
     #[cfg(unix)]

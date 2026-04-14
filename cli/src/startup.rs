@@ -141,6 +141,12 @@ fn ansi_underline(text: &str) -> String {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    #[cfg(windows)]
+    use std::ffi::OsString;
+    #[cfg(windows)]
+    use std::sync::Mutex;
+    #[cfg(windows)]
+    use std::sync::OnceLock;
 
     fn normalize_newlines_for_vt100(input: &str) -> String {
         // Most terminals (and tty line disciplines) translate '\n' to '\r\n'. The vt100 parser
@@ -167,6 +173,45 @@ mod tests {
         let normalized = normalize_newlines_for_vt100(rendered);
         parser.process(normalized.as_bytes());
         parser.screen().contents()
+    }
+
+    #[cfg(windows)]
+    fn path_env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock PATH env test mutex")
+    }
+
+    #[cfg(windows)]
+    struct PathEnvGuard {
+        original: Option<OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    #[cfg(windows)]
+    impl PathEnvGuard {
+        fn set(value: OsString) -> Self {
+            let lock = path_env_test_lock();
+            let original = std::env::var_os("PATH");
+            unsafe {
+                std::env::set_var("PATH", value);
+            }
+            Self {
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for PathEnvGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => unsafe { std::env::set_var("PATH", value) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
     }
 
     #[test]
@@ -263,5 +308,18 @@ mod tests {
         let resolved = resolve_codex_bin(&input).expect("resolve codex bin");
 
         assert_eq!(resolved.command_for_spawn, executable.display().to_string());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn resolve_codex_bin_finds_windows_cmd_shim_on_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let shim = temp.path().join("codex.cmd");
+        std::fs::write(&shim, "@echo off\r\n").expect("write cmd shim");
+        let _path_guard = PathEnvGuard::set(temp.path().as_os_str().to_os_string());
+
+        let resolved = resolve_codex_bin("codex").expect("resolve codex shim");
+
+        assert_eq!(resolved.command_for_spawn, shim.display().to_string());
     }
 }

@@ -1,10 +1,8 @@
-#[cfg(unix)]
 use std::path::Path;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
     use std::io::Write as _;
-    use std::os::unix::fs::PermissionsExt;
 
     let script = script.as_ref();
     let parent = path.parent().expect("dummy codex path should have parent");
@@ -19,15 +17,21 @@ pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
             .expect("write dummy codex trailing newline");
     }
 
-    let mut perms = tmp
-        .as_file()
-        .metadata()
-        .expect("stat dummy codex")
-        .permissions();
-    perms.set_mode(0o755);
-    tmp.as_file()
-        .set_permissions(perms)
-        .expect("chmod dummy codex");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = tmp
+            .as_file()
+            .metadata()
+            .expect("stat dummy codex")
+            .permissions();
+        perms.set_mode(0o755);
+        tmp.as_file()
+            .set_permissions(perms)
+            .expect("chmod dummy codex");
+    }
+
     tmp.as_file().sync_all().expect("sync dummy codex");
 
     tmp.persist(path)
@@ -35,7 +39,7 @@ pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
         .expect("persist dummy codex");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub async fn lock_dummy_codex_test() -> tokio::sync::MutexGuard<'static, ()> {
     static DUMMY_CODEX_TEST_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> =
         std::sync::OnceLock::new();
