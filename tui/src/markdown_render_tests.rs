@@ -721,6 +721,25 @@ fn file_link_expands_windows_style_home_relative_target() {
 }
 
 #[test]
+fn file_link_strips_windows_verbatim_drive_prefix_before_shortening() {
+    let text = render_markdown_text_for_cwd(
+        r"[config](\\?\C:\Users\me\AppData\Roaming\Codex\config.toml:12)",
+        Path::new(r"C:\Users\me"),
+    );
+    let expected = Text::from(Line::from_iter(["AppData/Roaming/Codex/config.toml:12".cyan()]));
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn file_link_strips_windows_verbatim_unc_prefix() {
+    let text = render_markdown_text(
+        r"[share](\\?\UNC\server\share\docs\guide.md#L8)",
+    );
+    let expected = Text::from(Line::from_iter(["//server/share/docs/guide.md:8".cyan()]));
+    assert_eq!(text, expected);
+}
+
+#[test]
 fn file_link_uses_target_path_for_hash_anchor() {
     let text = render_markdown_text_for_cwd(
         "[markdown_render.rs#L74C3](file:///Users/example/code/codex/codex-rs/tui/src/markdown_render.rs#L74C3)",

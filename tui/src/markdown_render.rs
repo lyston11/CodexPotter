@@ -727,6 +727,7 @@ where
 fn is_local_path_like_link(dest_url: &str) -> bool {
     dest_url.starts_with("file://")
         || dest_url.starts_with('/')
+        || dest_url.starts_with(r"\?\")
         || dest_url.starts_with("~/")
         || (cfg!(windows) && dest_url.starts_with("~\\"))
         || dest_url.starts_with("./")
@@ -906,13 +907,7 @@ fn file_url_to_local_path_text(url: &Url) -> Option<String> {
 /// UNC-style `\\\\server\\share` inputs into `//server/share` so later prefix checks operate on a
 /// stable representation.
 fn normalize_local_link_path_text(path_text: &str) -> String {
-    // Render all local link paths with forward slashes so display and prefix stripping are stable
-    // across mixed Windows and Unix-style inputs.
-    if let Some(rest) = path_text.strip_prefix("\\\\") {
-        format!("//{}", rest.replace('\\', "/").trim_start_matches('/'))
-    } else {
-        path_text.replace('\\', "/")
-    }
+    crate::local_path::normalize_local_path_text(path_text)
 }
 
 fn is_absolute_local_link_path(path_text: &str) -> bool {

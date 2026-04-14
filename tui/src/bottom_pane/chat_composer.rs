@@ -531,7 +531,7 @@ impl ChatComposer {
                     if let Some(path) = skills_by_name.get(name) {
                         out.push(LinkedMention {
                             mention: name.to_string(),
-                            path: path.to_string_lossy().to_string(),
+                            path: crate::local_path::normalize_local_path(path),
                         });
                     }
                     index = name_end;
@@ -2834,6 +2834,33 @@ mod tests {
         assert_eq!(
             composer.encode_prompt_history_text("Use $my-skill."),
             "Use [$my-skill](/tmp/my-skill/SKILL.md)."
+        );
+    }
+
+    #[test]
+    fn encode_prompt_history_text_normalizes_windows_verbatim_skill_paths() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        composer.skills = vec![crate::skills_discovery::SkillMetadata {
+            name: "my-skill".to_string(),
+            description: "My test skill.".to_string(),
+            short_description: None,
+            interface: None,
+            path: std::path::PathBuf::from(r"\\?\C:\Users\me\.agents\skills\my-skill\SKILL.md"),
+            scope: crate::skills_discovery::SkillScope::User,
+        }];
+
+        assert_eq!(
+            composer.encode_prompt_history_text("Use $my-skill."),
+            "Use [$my-skill](C:/Users/me/.agents/skills/my-skill/SKILL.md)."
         );
     }
 

@@ -26,6 +26,7 @@ mod history_cell_potter;
 mod insert_history;
 mod interrupted_project_prompt;
 mod key_hint;
+mod local_path;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
