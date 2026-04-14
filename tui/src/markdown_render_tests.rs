@@ -707,6 +707,20 @@ fn file_link_appends_hash_anchor_when_label_lacks_it() {
 }
 
 #[test]
+#[cfg(windows)]
+fn file_link_expands_windows_style_home_relative_target() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let text = render_markdown_text_for_cwd(
+        "[config](~\\AppData\\Roaming\\Codex\\config.toml:12)",
+        &home,
+    );
+    let expected = Text::from(Line::from_iter(["AppData/Roaming/Codex/config.toml:12".cyan()]));
+    assert_eq!(text, expected);
+}
+
+#[test]
 fn file_link_uses_target_path_for_hash_anchor() {
     let text = render_markdown_text_for_cwd(
         "[markdown_render.rs#L74C3](file:///Users/example/code/codex/codex-rs/tui/src/markdown_render.rs#L74C3)",

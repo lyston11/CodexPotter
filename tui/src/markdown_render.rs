@@ -728,6 +728,7 @@ fn is_local_path_like_link(dest_url: &str) -> bool {
     dest_url.starts_with("file://")
         || dest_url.starts_with('/')
         || dest_url.starts_with("~/")
+        || (cfg!(windows) && dest_url.starts_with("~\\"))
         || dest_url.starts_with("./")
         || dest_url.starts_with("../")
         || dest_url.starts_with("\\\\")
@@ -854,7 +855,14 @@ fn parse_markdown_hash_location_point(point: &str) -> Option<(&str, Option<&str>
 fn expand_local_link_path(path_text: &str) -> String {
     // Expand `~/...` eagerly so home-relative links can participate in the same normalization and
     // cwd-relative shortening path as absolute links.
-    if let Some(rest) = path_text.strip_prefix("~/")
+    let rest = path_text.strip_prefix("~/").or_else(|| {
+        if cfg!(windows) {
+            path_text.strip_prefix("~\\")
+        } else {
+            None
+        }
+    });
+    if let Some(rest) = rest
         && let Some(home) = home_dir()
     {
         return normalize_local_link_path_text(&home.join(rest).to_string_lossy());
