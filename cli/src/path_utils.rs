@@ -24,7 +24,14 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
     if path_str == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path_str));
     }
-    let Some(rest) = path_str.strip_prefix("~/") else {
+    let rest = path_str.strip_prefix("~/").or_else(|| {
+        if cfg!(windows) {
+            path_str.strip_prefix("~\\")
+        } else {
+            None
+        }
+    });
+    let Some(rest) = rest else {
         return path.to_path_buf();
     };
     let Some(home) = dirs::home_dir() else {
@@ -76,6 +83,19 @@ mod tests {
 
         assert_eq!(expand_tilde(Path::new("~")), home);
         assert_eq!(expand_tilde(Path::new("~/nested")), home.join("nested"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn expand_tilde_expands_windows_style_home_when_available() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+
+        assert_eq!(
+            expand_tilde(Path::new("~\\nested\\file")),
+            home.join("nested").join("file")
+        );
     }
 
     #[test]
