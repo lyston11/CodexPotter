@@ -3,6 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { reemitSignalOrExit } from "../lib/signal-exit.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -155,7 +156,7 @@ const childResult = await new Promise((resolve) => {
 });
 
 if (childResult.type === "signal") {
-  process.kill(process.pid, childResult.signal);
+  reemitSignalOrExit(process, childResult.signal);
 } else {
   process.exit(childResult.exitCode);
 }
