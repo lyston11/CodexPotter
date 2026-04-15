@@ -55,4 +55,9 @@ pub enum AppEvent {
     VerbositySelected {
         verbosity: Verbosity,
     },
+
+    /// Apply a user-confirmed YOLO default selection.
+    YoloSelected {
+        enabled: bool,
+    },
 }

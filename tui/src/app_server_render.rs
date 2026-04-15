@@ -1887,6 +1887,22 @@ impl RenderAppState {
                     self.bottom_pane.composer_mut().insert_str("@");
                     frame_requester.schedule_frame();
                 }
+                SlashCommand::Yolo => {
+                    let current_enabled = match crate::potter_config::load_potter_yolo_enabled() {
+                        Ok(enabled) => enabled,
+                        Err(err) => {
+                            self.processor.emit_history_cell(Box::new(
+                                history_cell::new_error_event(format!(
+                                    "Failed to load YOLO default: {err}"
+                                )),
+                            ));
+                            false
+                        }
+                    };
+                    let params = crate::yolo_picker::build_yolo_picker_params(current_enabled);
+                    self.bottom_pane.composer_mut().show_selection_view(params);
+                    frame_requester.schedule_frame();
+                }
                 SlashCommand::PotterXModel => {
                     self.bottom_pane
                         .composer_mut()
@@ -2059,6 +2075,33 @@ impl RenderAppState {
                         self.processor
                             .emit_history_cell(Box::new(history_cell::new_error_event(format!(
                                 "Failed to save verbosity: {err}"
+                            ))));
+                    }
+                }
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::YoloSelected { enabled } => {
+                match crate::potter_config::persist_potter_yolo_enabled(enabled) {
+                    Ok(()) => {
+                        if enabled {
+                            self.processor.emit_history_cell(Box::new(
+                                history_cell::new_warning_event(String::from(
+                                    "YOLO is configured to apply to all sessions.",
+                                )),
+                            ));
+                        } else {
+                            self.processor.emit_history_cell(Box::new(
+                                history_cell::new_info_event(
+                                    String::from("YOLO is disabled by default."),
+                                    None,
+                                ),
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        self.processor
+                            .emit_history_cell(Box::new(history_cell::new_error_event(format!(
+                                "Failed to save YOLO default: {err}"
                             ))));
                     }
                 }

@@ -19,6 +19,24 @@ pub fn persist_potter_tui_verbosity(verbosity: Verbosity) -> io::Result<()> {
     persist_tui_verbosity_to_path(&path, verbosity)
 }
 
+/// Load whether YOLO is enabled by default for CodexPotter sessions.
+///
+/// This is backed by `~/.codexpotter/config.toml` under `[potter].yolo`.
+///
+/// Returns `false` when the key is missing.
+pub fn load_potter_yolo_enabled() -> io::Result<bool> {
+    let path = potter_config_path()?;
+    load_yolo_from_path(&path)
+}
+
+/// Persist whether YOLO is enabled by default for CodexPotter sessions.
+///
+/// Writes `~/.codexpotter/config.toml` under `[potter].yolo`.
+pub fn persist_potter_yolo_enabled(enabled: bool) -> io::Result<()> {
+    let path = potter_config_path()?;
+    persist_yolo_to_path(&path, enabled)
+}
+
 fn potter_config_path() -> io::Result<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Err(io::Error::new(
@@ -42,6 +60,19 @@ fn load_tui_verbosity_from_path(path: &Path) -> io::Result<Option<Verbosity>> {
     Ok(read_tui_verbosity(&doc))
 }
 
+fn load_yolo_from_path(path: &Path) -> io::Result<bool> {
+    let Some(content) = read_document_string(path)? else {
+        return Ok(false);
+    };
+
+    let doc = match content.parse::<DocumentMut>() {
+        Ok(doc) => doc,
+        Err(_) => return Ok(parse_yolo_fallback(&content).unwrap_or(false)),
+    };
+
+    Ok(read_yolo(&doc).unwrap_or(false))
+}
+
 fn persist_tui_verbosity_to_path(path: &Path, verbosity: Verbosity) -> io::Result<()> {
     let content = match read_document_string(path) {
         Ok(Some(existing)) => existing,
@@ -63,6 +94,27 @@ fn persist_tui_verbosity_to_path(path: &Path, verbosity: Verbosity) -> io::Resul
     crate::path_utils::write_atomically(path, &updated)
 }
 
+fn persist_yolo_to_path(path: &Path, enabled: bool) -> io::Result<()> {
+    let content = match read_document_string(path) {
+        Ok(Some(existing)) => existing,
+        Ok(None) => String::new(),
+        Err(err) => {
+            // Avoid clobbering a file we can't read.
+            return Err(err);
+        }
+    };
+
+    let updated = match content.parse::<DocumentMut>() {
+        Ok(mut doc) => {
+            set_yolo(&mut doc, enabled);
+            doc.to_string()
+        }
+        Err(_) => append_yolo_fallback(&content, enabled),
+    };
+
+    crate::path_utils::write_atomically(path, &updated)
+}
+
 fn read_tui_verbosity(doc: &DocumentMut) -> Option<Verbosity> {
     doc.get("tui")
         .and_then(TomlItem::as_table)
@@ -72,9 +124,22 @@ fn read_tui_verbosity(doc: &DocumentMut) -> Option<Verbosity> {
         .and_then(Verbosity::parse_config_value)
 }
 
+fn read_yolo(doc: &DocumentMut) -> Option<bool> {
+    doc.get("potter")
+        .and_then(TomlItem::as_table)
+        .and_then(|potter| potter.get("yolo"))
+        .and_then(TomlItem::as_value)
+        .and_then(toml_edit::Value::as_bool)
+}
+
 fn set_tui_verbosity(doc: &mut DocumentMut, verbosity: Verbosity) {
     let tui = ensure_table_for_write(doc, "tui");
     tui["verbosity"] = value(verbosity.config_value().to_string());
+}
+
+fn set_yolo(doc: &mut DocumentMut, enabled: bool) {
+    let potter = ensure_table_for_write(doc, "potter");
+    potter["yolo"] = value(enabled);
 }
 
 fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
@@ -110,6 +175,42 @@ fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
             .trim_matches('"');
         if let Some(verbosity) = Verbosity::parse_config_value(token) {
             result = Some(verbosity);
+        }
+    }
+
+    result
+}
+
+fn parse_yolo_fallback(contents: &str) -> Option<bool> {
+    let mut in_potter = false;
+    let mut result = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            in_potter = matches!(parse_table_header_name(trimmed), Some("potter"));
+            continue;
+        }
+
+        if !in_potter {
+            continue;
+        }
+
+        let Some(line) = strip_toml_comment(trimmed) else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "yolo" {
+            continue;
+        }
+
+        let token = value.split_whitespace().next().unwrap_or_default();
+        if token == "true" {
+            result = Some(true);
+        } else if token == "false" {
+            result = Some(false);
         }
     }
 
@@ -162,6 +263,17 @@ fn append_tui_fallback(existing: &str, verbosity: Verbosity) -> String {
     out.push('\n');
     out.push_str("[tui]\n");
     out.push_str(&format!("verbosity = \"{}\"\n", verbosity.config_value()));
+    out
+}
+
+fn append_yolo_fallback(existing: &str, enabled: bool) -> String {
+    let mut out = existing.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str("[potter]\n");
+    out.push_str(&format!("yolo = {enabled}\n"));
     out
 }
 
@@ -231,6 +343,50 @@ verbosity = "simple"
             parse_tui_verbosity_fallback(&contents),
             Some(Verbosity::Simple)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_yolo_fallback_reads_last_value() {
+        let contents = r#"
+garbage
+
+[potter]
+yolo = true
+
+something = else
+
+[potter]
+yolo = false
+"#;
+
+        assert_eq!(parse_yolo_fallback(contents), Some(false));
+    }
+
+    #[test]
+    fn persist_and_load_yolo_roundtrip() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+
+        persist_yolo_to_path(&path, true)?;
+        assert_eq!(load_yolo_from_path(&path)?, true);
+
+        persist_yolo_to_path(&path, false)?;
+        assert_eq!(load_yolo_from_path(&path)?, false);
+        Ok(())
+    }
+
+    #[test]
+    fn persist_yolo_appends_when_toml_invalid() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+
+        std::fs::write(&path, "[potter\nx = 1\n")?;
+        persist_yolo_to_path(&path, true)?;
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("[potter]"));
+        assert_eq!(parse_yolo_fallback(&contents), Some(true));
         Ok(())
     }
 }

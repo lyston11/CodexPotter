@@ -6,6 +6,8 @@
 pub enum SlashCommand {
     /// Insert a file mention trigger (`@`) into the composer.
     Mention,
+    /// Configure whether to enable YOLO by default.
+    Yolo,
     /// Insert the `/potter:xmodel` marker into the composer.
     PotterXModel,
     /// Open the syntax theme picker (`/theme`).
@@ -21,6 +23,7 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention a file",
+            SlashCommand::Yolo => "configure whether to enable YOLO by default",
             SlashCommand::PotterXModel => {
                 "(Experimental) Enable cross model review (round 1~3: GPT 5.2 xhigh, round 4+: GPT 5.4 xhigh)"
             }
@@ -34,6 +37,7 @@ impl SlashCommand {
     pub fn command(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention",
+            SlashCommand::Yolo => "yolo",
             SlashCommand::PotterXModel => "potter:xmodel",
             SlashCommand::Theme => "theme",
             SlashCommand::Verbosity => "verbosity",
@@ -46,6 +50,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Theme => false,
             SlashCommand::Mention
+            | SlashCommand::Yolo
             | SlashCommand::PotterXModel
             | SlashCommand::Verbosity
             | SlashCommand::Exit => true,
@@ -65,6 +70,7 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         (SlashCommand::Mention.command(), SlashCommand::Mention),
         (SlashCommand::Theme.command(), SlashCommand::Theme),
         (SlashCommand::Verbosity.command(), SlashCommand::Verbosity),
+        (SlashCommand::Yolo.command(), SlashCommand::Yolo),
         (
             SlashCommand::PotterXModel.command(),
             SlashCommand::PotterXModel,

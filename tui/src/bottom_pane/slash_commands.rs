@@ -36,4 +36,9 @@ mod tests {
     fn mention_command_resolves_for_dispatch() {
         assert_eq!(find_builtin_command("mention"), Some(SlashCommand::Mention));
     }
+
+    #[test]
+    fn yolo_command_resolves_for_dispatch() {
+        assert_eq!(find_builtin_command("yolo"), Some(SlashCommand::Yolo));
+    }
 }

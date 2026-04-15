@@ -67,6 +67,7 @@ mod verbosity_picker;
 mod verbosity_prompt;
 mod version;
 mod wrapping;
+mod yolo_picker;
 
 #[cfg(test)]
 mod test_backend;
@@ -87,5 +88,6 @@ pub use version::CODEX_POTTER_VERSION;
 
 pub use markdown_render::render_markdown_text;
 pub use potter_config::load_potter_tui_verbosity;
+pub use potter_config::load_potter_yolo_enabled;
 pub use startup_setup::StartupSetupStep;
 pub use verbosity::Verbosity;
