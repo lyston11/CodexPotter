@@ -134,15 +134,20 @@ where
         let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
 
         let yolo_active = crate::yolo::effective_yolo_enabled(yolo_cli_override);
-        let mut render = Box::pin(ui.render_round(codex_tui::RenderRoundParams {
-            prompt: turn_prompt.clone(),
-            pad_before_first_cell,
-            status_header_prefix: Some(status_header_prefix.clone()),
-            prompt_footer: prompt_footer.clone().with_yolo_active(yolo_active),
-            codex_op_tx: op_tx.clone(),
-            codex_event_rx: event_rx,
-            fatal_exit_rx,
-        }));
+        let mut render = Box::pin(
+            ui.render_round(codex_tui::RenderRoundParams {
+                prompt: turn_prompt.clone(),
+                pad_before_first_cell,
+                status_header_prefix: Some(status_header_prefix.clone()),
+                prompt_footer: prompt_footer
+                    .clone()
+                    .with_yolo_cli_override(yolo_cli_override)
+                    .with_yolo_active(yolo_active),
+                codex_op_tx: op_tx.clone(),
+                codex_event_rx: event_rx,
+                fatal_exit_rx,
+            }),
+        );
 
         let mut waiting_for_render_exit = false;
         let mut interrupt_requested = false;

@@ -71,6 +71,8 @@ pub struct PromptFooterContext {
     pub git_branch: Option<String>,
     /// Whether YOLO is active for the current session.
     pub yolo_active: bool,
+    /// Whether the CLI `--yolo` flag forces YOLO on for this process.
+    pub yolo_cli_override: bool,
 }
 
 impl PromptFooterContext {
@@ -82,11 +84,24 @@ impl PromptFooterContext {
             working_dir,
             git_branch: git_branch.and_then(|branch| (!branch.trim().is_empty()).then_some(branch)),
             yolo_active: false,
+            yolo_cli_override: false,
         }
     }
 
     pub fn with_yolo_active(mut self, yolo_active: bool) -> Self {
         self.yolo_active = yolo_active;
+        self
+    }
+
+    /// Record whether the CLI `--yolo` flag is forcing YOLO on for this process.
+    pub fn with_yolo_cli_override(mut self, yolo_cli_override: bool) -> Self {
+        self.yolo_cli_override = yolo_cli_override;
+        self
+    }
+
+    /// Recompute the footer indicator after the persisted default YOLO setting changes.
+    pub fn with_persisted_yolo_enabled(mut self, enabled: bool) -> Self {
+        self.yolo_active = self.yolo_cli_override || enabled;
         self
     }
 }
@@ -176,6 +191,11 @@ impl BottomPane {
 
     pub fn prompt_working_dir(&self) -> &Path {
         &self.prompt_footer.working_dir
+    }
+
+    /// Return the current footer context rendered beneath the composer.
+    pub fn prompt_footer_context(&self) -> &PromptFooterContext {
+        &self.prompt_footer
     }
 
     pub fn set_task_running(&mut self, running: bool) {

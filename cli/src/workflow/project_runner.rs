@@ -214,6 +214,7 @@ where
             workdir.clone(),
             crate::workflow::project::resolve_git_branch(&workdir),
         )
+        .with_yolo_cli_override(yolo_cli_override)
         .with_yolo_active(crate::yolo::effective_yolo_enabled(yolo_cli_override))
     };
 

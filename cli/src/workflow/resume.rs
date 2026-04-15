@@ -332,6 +332,7 @@ where
     let project_id = resume.project_id.clone();
     let prompt_footer =
         codex_tui::PromptFooterContext::new(resume.working_dir.clone(), resume.git_branch.clone())
+            .with_yolo_cli_override(yolo_cli_override)
             .with_yolo_active(crate::yolo::effective_yolo_enabled(yolo_cli_override));
 
     let (op_tx, mut op_rx) = unbounded_channel::<Op>();

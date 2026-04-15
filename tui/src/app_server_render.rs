@@ -2004,6 +2004,19 @@ impl RenderAppState {
         Ok(())
     }
 
+    fn apply_persisted_yolo_to_prompt_footer(&mut self, enabled: bool) {
+        if self.codex_op_tx.is_some() {
+            return;
+        }
+
+        let prompt_footer = self
+            .bottom_pane
+            .prompt_footer_context()
+            .clone()
+            .with_persisted_yolo_enabled(enabled);
+        self.bottom_pane.set_prompt_footer_context(prompt_footer);
+    }
+
     fn handle_app_event(&mut self, tui: &mut Tui, app_event: AppEvent) -> anyhow::Result<()> {
         match app_event {
             AppEvent::EmitHistoryCell(cell) => {
@@ -2083,6 +2096,7 @@ impl RenderAppState {
             AppEvent::YoloSelected { enabled } => {
                 match crate::potter_config::persist_potter_yolo_enabled(enabled) {
                     Ok(()) => {
+                        self.apply_persisted_yolo_to_prompt_footer(enabled);
                         if enabled {
                             self.processor.emit_history_cell(Box::new(
                                 history_cell::new_warning_event(String::from(
@@ -4500,6 +4514,75 @@ mod tests {
             !saw_interrupt,
             "did not expect Op::Interrupt in prompt screen"
         );
+    }
+
+    #[test]
+    fn prompt_screen_yolo_selection_updates_footer_indicator() {
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
+            PathBuf::from("project"),
+            Some("main".to_string()),
+        ));
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+
+        assert!(!app.bottom_pane.prompt_footer_context().yolo_active);
+
+        app.apply_persisted_yolo_to_prompt_footer(true);
+        assert!(app.bottom_pane.prompt_footer_context().yolo_active);
+
+        app.apply_persisted_yolo_to_prompt_footer(false);
+        assert!(!app.bottom_pane.prompt_footer_context().yolo_active);
+    }
+
+    #[test]
+    fn prompt_screen_yolo_selection_preserves_cli_override_indicator() {
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_prompt_footer_context(
+            PromptFooterContext::new(PathBuf::from("project"), Some("main".to_string()))
+                .with_yolo_cli_override(true)
+                .with_yolo_active(true),
+        );
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+
+        app.apply_persisted_yolo_to_prompt_footer(false);
+
+        assert!(app.bottom_pane.prompt_footer_context().yolo_active);
     }
 
     #[test]
