@@ -2017,6 +2017,22 @@ impl RenderAppState {
         self.bottom_pane.set_prompt_footer_context(prompt_footer);
     }
 
+    /// Build the one-shot transcript notice shown immediately after `/yolo` persists a new
+    /// default. This intentionally does not surface on later startups; the prompt footer's
+    /// `▲YOLO` indicator is the ongoing state signal for subsequent sessions.
+    fn yolo_default_notice(enabled: bool) -> Box<dyn HistoryCell> {
+        if enabled {
+            Box::new(history_cell::new_warning_event(String::from(
+                "YOLO is now persisted in config and will apply to all subsequent sessions.",
+            )))
+        } else {
+            Box::new(history_cell::new_info_event(
+                String::from("YOLO is disabled by default."),
+                None,
+            ))
+        }
+    }
+
     fn handle_app_event(&mut self, tui: &mut Tui, app_event: AppEvent) -> anyhow::Result<()> {
         match app_event {
             AppEvent::EmitHistoryCell(cell) => {
@@ -2097,20 +2113,8 @@ impl RenderAppState {
                 match crate::potter_config::persist_potter_yolo_enabled(enabled) {
                     Ok(()) => {
                         self.apply_persisted_yolo_to_prompt_footer(enabled);
-                        if enabled {
-                            self.processor.emit_history_cell(Box::new(
-                                history_cell::new_warning_event(String::from(
-                                    "YOLO is configured to apply to all sessions.",
-                                )),
-                            ));
-                        } else {
-                            self.processor.emit_history_cell(Box::new(
-                                history_cell::new_info_event(
-                                    String::from("YOLO is disabled by default."),
-                                    None,
-                                ),
-                            ));
-                        }
+                        self.processor
+                            .emit_history_cell(Self::yolo_default_notice(enabled));
                     }
                     Err(err) => {
                         self.processor
@@ -4583,6 +4587,26 @@ mod tests {
         app.apply_persisted_yolo_to_prompt_footer(false);
 
         assert!(app.bottom_pane.prompt_footer_context().yolo_active);
+    }
+
+    #[test]
+    fn yolo_enabled_notice_mentions_persisted_future_sessions() {
+        let cell = RenderAppState::yolo_default_notice(true);
+
+        assert_eq!(
+            lines_to_plain_text(&cell.display_lines(u16::MAX)),
+            "⚠ YOLO is now persisted in config and will apply to all subsequent sessions.\n"
+        );
+    }
+
+    #[test]
+    fn yolo_disabled_notice_mentions_default_disabled() {
+        let cell = RenderAppState::yolo_default_notice(false);
+
+        assert_eq!(
+            lines_to_plain_text(&cell.display_lines(u16::MAX)),
+            "• YOLO is disabled by default.\n"
+        );
     }
 
     #[test]

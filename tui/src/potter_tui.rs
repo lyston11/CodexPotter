@@ -67,13 +67,10 @@ impl CodexPotterTui {
                 }
             };
 
-        match crate::potter_config::load_potter_yolo_enabled() {
-            Ok(true) => {
-                startup_warnings.push(String::from("YOLO is configured to apply to all sessions."))
-            }
-            Ok(false) => {}
-            Err(err) => startup_warnings.push(format!("Failed to load YOLO default: {err}")),
+        if let Err(err) = crate::potter_config::load_potter_yolo_enabled() {
+            startup_warnings.push(format!("Failed to load YOLO default: {err}"));
         }
+
         Ok(Self {
             tui: Tui::new(terminal),
             has_rendered_round: false,
