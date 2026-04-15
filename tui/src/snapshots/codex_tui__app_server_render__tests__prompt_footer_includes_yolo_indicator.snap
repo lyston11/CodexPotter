@@ -1,0 +1,6 @@
+---
+source: tui/src/app_server_render.rs
+assertion_line: 8242
+expression: "render_prompt_footer_line_with_yolo(None, true)"
+---
+  ▲YOLO · project [main] · ctrl+g editor

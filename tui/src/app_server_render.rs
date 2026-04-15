@@ -8203,7 +8203,10 @@ mod tests {
         );
     }
 
-    fn render_prompt_footer_line(override_mode: Option<PromptFooterOverride>) -> String {
+    fn render_prompt_footer_line_with_yolo(
+        override_mode: Option<PromptFooterOverride>,
+        yolo_active: bool,
+    ) -> String {
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         crate::bottom_pane::render_prompt_footer_for_test(
@@ -8212,7 +8215,7 @@ mod tests {
             override_mode,
             std::path::Path::new("project"),
             Some("main"),
-            false,
+            yolo_active,
         );
 
         let mut out = String::new();
@@ -8222,11 +8225,23 @@ mod tests {
         out.trim_end().to_string()
     }
 
+    fn render_prompt_footer_line(override_mode: Option<PromptFooterOverride>) -> String {
+        render_prompt_footer_line_with_yolo(override_mode, false)
+    }
+
     #[test]
     fn prompt_footer_includes_external_editor_hint() {
         assert_snapshot!(
             "prompt_footer_includes_external_editor",
             render_prompt_footer_line(None)
+        );
+    }
+
+    #[test]
+    fn prompt_footer_includes_yolo_indicator() {
+        assert_snapshot!(
+            "prompt_footer_includes_yolo_indicator",
+            render_prompt_footer_line_with_yolo(None, true)
         );
     }
 

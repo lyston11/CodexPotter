@@ -27,7 +27,11 @@ Created by `cli/src/workflow/project.rs`:
 ### Per-user (under the home directory)
 
 - `~/.codexpotter/config.toml`
-  - currently used for `notice.hide_gitignore_prompt` (`cli/src/config.rs`)
+  - `[notice].hide_gitignore_prompt` (bool): hides the gitignore startup prompt (`cli/src/config.rs`)
+  - `[tui].verbosity` (string): default transcript verbosity (`tui/src/potter_config.rs`)
+  - `[potter].yolo` (bool): enables YOLO by default (unsafe; disables approvals and sandboxing)
+    - configurable via `/yolo` in the TUI
+    - CLI `--yolo` always overrides this config (enables YOLO for the current run)
 - `~/.codexpotter/history.jsonl`
   - prompt history for the bottom composer (see `tui-chat-composer.md`)
 - `~/.codexpotter/codex-compat/`
@@ -96,7 +100,16 @@ approvals.
   - passes upstream Codex's bypass flag when spawning the app-server
   - requests `danger-full-access` at the thread level
 
-Implementation: `cli/src/app_server/codex_backend.rs` (`AppServerLaunchConfig::from_cli`).
+Persistent default:
+
+- `~/.codexpotter/config.toml` `[potter].yolo = true`
+  - enables YOLO for rounds when `--yolo` is not passed
+  - change via `/yolo` in the TUI
+
+Implementation:
+
+- Base flag mapping: `cli/src/app_server/codex_backend.rs` (`AppServerLaunchConfig::from_cli`).
+- Config-driven override: `cli/src/app_server/potter/server.rs` (`apply_yolo_default_to_launch`).
 
 ### Approval policy
 

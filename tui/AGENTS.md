@@ -21,7 +21,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 ### Text Box
 
 - Supports `$` skills picker, the same as upstream.
-- Slash command picker exists but only supports `/theme`, `/verbosity`, `/exit`, `/mention`, `/potter:xmodel` (inserts a literal marker only).
+- Slash command picker exists but only supports `/theme`, `/verbosity`, `/yolo`, `/exit`, `/mention`, `/potter:xmodel` (inserts a literal marker only).
 - No `?` shortcuts overlay (treat `?` as a literal character).
 - `Tab` inserts a literal tab character (`\t`) into the composer.
 - Composer placeholder text is customized.
@@ -29,7 +29,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - No steer mode (always queue).
 - Hardens non-bracketed paste bursts against delayed trailing `Enter` key events: after a burst flush, keep Enter suppression alive briefly so they insert a newline instead of submit/queue.
 - No image pasting support.
-- Bottom pane prompt footer shows working dir + optional git branch, plus the ctrl+g editor hint.
+- Bottom pane prompt footer shows working dir + optional git branch, plus the ctrl+g editor hint. When YOLO is active, it prefixes the footer with a red bold `▲YOLO`.
 - Better word jump by using ICU4X word segmentations.
 - Prompt history is persisted under `~/.codexpotter/history.jsonl`.
 
