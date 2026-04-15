@@ -1392,6 +1392,7 @@ struct RenderAppState {
     commit_anim_running: Arc<AtomicBool>,
     has_emitted_history_lines: bool,
     exit_after_next_draw: bool,
+    exit_requested_by_user: bool,
     exit_reason: ExitReason,
 }
 
@@ -1429,6 +1430,7 @@ impl RenderAppState {
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             has_emitted_history_lines: false,
             exit_after_next_draw: false,
+            exit_requested_by_user: false,
             exit_reason: ExitReason::UserRequested,
         }
     }
@@ -1795,6 +1797,7 @@ impl RenderAppState {
                     // finished, so callers can stop multi-round loops reliably.
                     if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
                         self.exit_reason = ExitReason::UserRequested;
+                        self.exit_requested_by_user = true;
                     }
                     self.exit_after_next_draw = true;
                 }
@@ -1828,6 +1831,7 @@ impl RenderAppState {
                 // finished, so callers can stop multi-round loops reliably.
                 if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
                     self.exit_reason = ExitReason::UserRequested;
+                    self.exit_requested_by_user = true;
                 }
                 self.exit_after_next_draw = true;
             }
@@ -1900,6 +1904,7 @@ impl RenderAppState {
                         // finished, so callers can stop multi-round loops reliably.
                         if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
                             self.exit_reason = ExitReason::UserRequested;
+                            self.exit_requested_by_user = true;
                         }
                         self.exit_after_next_draw = true;
                         frame_requester.schedule_frame();
@@ -2299,7 +2304,7 @@ impl RenderAppState {
 
         match &event.msg {
             EventMsg::PotterRoundFinished { outcome } if should_exit_on_round_end => {
-                self.exit_reason = match outcome {
+                let exit_reason = match outcome {
                     codex_protocol::protocol::PotterRoundOutcome::Completed => {
                         ExitReason::Completed
                     }
@@ -2316,6 +2321,15 @@ impl RenderAppState {
                         ExitReason::Fatal(message.clone())
                     }
                 };
+                if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
+                    self.exit_reason = if self.exit_requested_by_user
+                        && !matches!(exit_reason, ExitReason::Fatal(_))
+                    {
+                        ExitReason::UserRequested
+                    } else {
+                        exit_reason
+                    };
+                }
                 self.exit_after_next_draw = true;
                 frame_requester.schedule_frame();
             }
@@ -3410,9 +3424,9 @@ mod tests {
         .expect("handle round finished event");
 
         assert!(
-            matches!(app.exit_reason, ExitReason::TaskFailed(_)),
+            matches!(&app.exit_reason, ExitReason::TaskFailed(_)),
             "expected TaskFailed exit reason; got: {:?}",
-            app.exit_reason
+            &app.exit_reason
         );
         assert!(app.exit_after_next_draw, "expected app to request exit");
     }
@@ -3807,6 +3821,71 @@ mod tests {
             }
         }
         assert!(saw_interrupt, "expected Ctrl+D to request Op::Interrupt");
+    }
+
+    #[test]
+    fn round_renderer_ctrl_d_exit_reason_survives_round_finished_interrupted() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            matches!(&app.exit_reason, ExitReason::UserRequested),
+            "expected Ctrl+D to set UserRequested exit reason"
+        );
+        assert!(
+            app.exit_requested_by_user,
+            "expected Ctrl+D to set exit_requested_by_user"
+        );
+
+        // The backend will typically surface an Interrupted round outcome after handling the
+        // interrupt op. Preserve UserRequested so the CLI can print queued prompts on exit.
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "round-finished".into(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: codex_protocol::protocol::PotterRoundOutcome::Interrupted,
+                },
+            },
+        )
+        .expect("handle round finished event");
+
+        assert!(
+            matches!(&app.exit_reason, ExitReason::UserRequested),
+            "expected Ctrl+D to keep UserRequested exit reason; got: {:?}",
+            &app.exit_reason
+        );
     }
 
     #[test]
