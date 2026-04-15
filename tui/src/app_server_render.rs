@@ -1805,6 +1805,36 @@ impl RenderAppState {
             return;
         }
 
+        if key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+            && matches!(key_event.code, crossterm::event::KeyCode::Char('d'))
+            && self.bottom_pane.composer().is_empty()
+            && !self.bottom_pane.composer().popup_active()
+        {
+            if !is_press {
+                return;
+            }
+            if self.codex_op_tx.is_none() {
+                self.prompt_action = Some(PromptScreenAction::CancelledByUser);
+            } else {
+                // Preserve any live output in the transcript before clearing the inline
+                // viewport on exit.
+                self.processor.flush_live_transcript_buffers();
+
+                self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+
+                // Treat Ctrl+D as an explicit user cancellation, even if the turn just
+                // finished, so callers can stop multi-round loops reliably.
+                if !matches!(self.exit_reason, ExitReason::Fatal(_)) {
+                    self.exit_reason = ExitReason::UserRequested;
+                }
+                self.exit_after_next_draw = true;
+            }
+            frame_requester.schedule_frame();
+            return;
+        }
+
         if matches!(key_event.code, crossterm::event::KeyCode::Esc)
             && key_event.modifiers == crossterm::event::KeyModifiers::NONE
             && self.codex_op_tx.is_some()
@@ -3732,6 +3762,184 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_ctrl_d_requests_interrupt_and_exit() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(app.exit_after_next_draw, "expected Ctrl+D to request exit");
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(saw_interrupt, "expected Ctrl+D to request Op::Interrupt");
+    }
+
+    #[test]
+    fn round_renderer_ctrl_d_does_not_exit_when_composer_not_empty() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane
+            .composer_mut()
+            .set_text_content("abc".to_string());
+        assert_eq!(app.bottom_pane.composer().current_text(), "abc");
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.exit_after_next_draw,
+            "did not expect Ctrl+D to request exit"
+        );
+        assert_eq!(app.bottom_pane.composer().current_text(), "bc");
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Ctrl+D to request Op::Interrupt"
+        );
+    }
+
+    #[test]
+    fn round_renderer_ctrl_d_does_not_exit_when_selection_popup_is_visible() {
+        use crate::bottom_pane::SelectionItem;
+        use crate::bottom_pane::SelectionViewParams;
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane
+            .composer_mut()
+            .show_selection_view(SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Option".to_string(),
+                    ..SelectionItem::default()
+                }],
+                ..SelectionViewParams::default()
+            });
+
+        assert!(app.bottom_pane.composer().selection_popup_visible());
+        assert!(app.bottom_pane.composer().is_empty());
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.exit_after_next_draw,
+            "did not expect Ctrl+D to request exit while popup is visible"
+        );
+        assert!(app.bottom_pane.composer().selection_popup_visible());
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Ctrl+D to request Op::Interrupt while popup is visible"
+        );
+    }
+
+    #[test]
     fn round_renderer_ctrl_c_flushes_pending_minimal_patch_summary_before_exit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -3992,6 +4200,55 @@ mod tests {
         app.bottom_pane.set_task_running(false);
         app.handle_key_event(
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Op::Interrupt in prompt screen"
+        );
+    }
+
+    #[test]
+    fn prompt_ctrl_d_empty_cancels_without_interrupt() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+
+        app.bottom_pane.set_task_running(false);
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
             crate::tui::FrameRequester::test_dummy(),
             80,
         );
