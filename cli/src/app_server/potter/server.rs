@@ -29,6 +29,7 @@ use codex_protocol::protocol::PotterRoundOutcome;
 #[cfg(test)]
 use codex_protocol::protocol::ServiceTier;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -1196,9 +1197,13 @@ async fn run_continue_round(
     continue_round: &ContinueRoundPlan,
     continue_prompt: &str,
     pad_before_first_cell: bool,
+    yolo_warning_emitted: &mut bool,
 ) -> anyhow::Result<crate::workflow::round_runner::PotterRoundResult> {
+    let effective_launch =
+        resolve_effective_backend_launch(round_context.backend_launch, yolo_warning_emitted, ui);
     let continue_context = crate::workflow::round_runner::PotterRoundContext {
         turn_prompt: continue_prompt.to_string(),
+        backend_launch: effective_launch,
         ..round_context.clone()
     };
 
@@ -1307,6 +1312,7 @@ async fn run_fresh_project(
     .context("read potter xmodel mode")?;
 
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+    let mut yolo_warning_emitted = false;
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
     let mut next_round_index = plan.round_start_index;
 
@@ -1322,6 +1328,7 @@ async fn run_fresh_project(
             &initial_continue_round,
             continue_prompt,
             false,
+            &mut yolo_warning_emitted,
         )
         .await;
 
@@ -1423,9 +1430,19 @@ async fn run_fresh_project(
             None
         };
 
+        let effective_launch = resolve_effective_backend_launch(
+            round_context.backend_launch,
+            &mut yolo_warning_emitted,
+            &mut ui,
+        );
+        let round_context_for_round = crate::workflow::round_runner::PotterRoundContext {
+            backend_launch: effective_launch,
+            ..round_context.clone()
+        };
+
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
-            &round_context,
+            &round_context_for_round,
             crate::workflow::round_runner::PotterRoundOptions {
                 pad_before_first_cell: round_index != plan.round_start_index
                     || plan.initial_continue_round.is_some(),
@@ -1578,6 +1595,7 @@ async fn run_resumed_project(
     };
 
     let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+    let mut yolo_warning_emitted = false;
     let potter_xmodel_runtime = potter_xmodel;
     let mut potter_xmodel_enabled_cache = None;
     let mut potter_xmodel_enabled = || -> anyhow::Result<bool> {
@@ -1677,6 +1695,7 @@ async fn run_resumed_project(
             &initial_continue_round,
             continue_prompt,
             true,
+            &mut yolo_warning_emitted,
         )
         .await;
 
@@ -1782,9 +1801,20 @@ async fn run_resumed_project(
     while rounds_run < rounds_total {
         let current_round = next_round_current;
         let project_rounds_run = rounds_run.saturating_add(1);
+
+        let effective_launch = resolve_effective_backend_launch(
+            round_context.backend_launch,
+            &mut yolo_warning_emitted,
+            &mut ui,
+        );
+        let round_context_for_round = crate::workflow::round_runner::PotterRoundContext {
+            backend_launch: effective_launch,
+            ..round_context.clone()
+        };
+
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
-            &round_context,
+            &round_context_for_round,
             crate::workflow::round_runner::PotterRoundOptions {
                 pad_before_first_cell: true,
                 project_started: None,
@@ -1890,6 +1920,40 @@ fn backend_event_mode_for_potter(mode: PotterEventMode) -> crate::app_server::Ap
     match mode {
         PotterEventMode::Interactive => crate::app_server::AppServerEventMode::Interactive,
         PotterEventMode::ExecJson => crate::app_server::AppServerEventMode::ExecJson,
+    }
+}
+
+fn apply_yolo_default_to_launch(
+    base: crate::app_server::AppServerLaunchConfig,
+    enabled: bool,
+) -> crate::app_server::AppServerLaunchConfig {
+    if base.bypass_approvals_and_sandbox || !enabled {
+        return base;
+    }
+
+    crate::app_server::AppServerLaunchConfig {
+        spawn_sandbox: None,
+        thread_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::DangerFullAccess),
+        bypass_approvals_and_sandbox: true,
+    }
+}
+
+fn resolve_effective_backend_launch(
+    base: crate::app_server::AppServerLaunchConfig,
+    warning_emitted: &mut bool,
+    ui: &mut EventForwardingRoundUi,
+) -> crate::app_server::AppServerLaunchConfig {
+    match codex_tui::load_potter_yolo_enabled() {
+        Ok(enabled) => apply_yolo_default_to_launch(base, enabled),
+        Err(err) => {
+            if !*warning_emitted {
+                ui.emit_marker(EventMsg::Warning(WarningEvent {
+                    message: format!("Failed to load YOLO default; using CLI settings only: {err}"),
+                }));
+                *warning_emitted = true;
+            }
+            base
+        }
     }
 }
 
@@ -2135,6 +2199,39 @@ git_branch: "main"
                 .expect("decode")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn apply_yolo_default_to_launch_enables_yolo_when_configured() {
+        let base = crate::app_server::AppServerLaunchConfig {
+            spawn_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
+            thread_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
+            bypass_approvals_and_sandbox: false,
+        };
+
+        assert_eq!(
+            apply_yolo_default_to_launch(base, true),
+            crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: Some(
+                    crate::app_server::upstream_protocol::SandboxMode::DangerFullAccess
+                ),
+                bypass_approvals_and_sandbox: true,
+            }
+        );
+    }
+
+    #[test]
+    fn apply_yolo_default_to_launch_preserves_cli_override() {
+        let base = crate::app_server::AppServerLaunchConfig {
+            spawn_sandbox: None,
+            thread_sandbox: Some(
+                crate::app_server::upstream_protocol::SandboxMode::DangerFullAccess,
+            ),
+            bypass_approvals_and_sandbox: true,
+        };
+
+        assert_eq!(apply_yolo_default_to_launch(base, false), base);
     }
 
     #[test]
