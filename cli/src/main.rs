@@ -474,7 +474,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = potter_app_server.shutdown().await;
                     drop(ui);
                     print_queued_prompts_note(&queued_prompts);
-                    print_resume_note(&resume_note_path);
+                    print_resume_note(&resume_note_path, &cli);
                     return Ok(());
                 }
                 crate::workflow::resume::ResumeExit::FatalExitRequested => {
@@ -487,7 +487,7 @@ async fn main() -> anyhow::Result<()> {
                     let resume_note_path = derive_resume_project_path_for_note(&project_path);
                     drop(ui);
                     print_queued_prompts_note(&queued_prompts);
-                    print_resume_note(&resume_note_path);
+                    print_resume_note(&resume_note_path, &cli);
                     std::process::exit(1);
                 }
             }
@@ -528,7 +528,7 @@ async fn main() -> anyhow::Result<()> {
     drop(ui);
     print_queued_prompts_note(&queued_prompts_on_exit);
     if let Some(project_path) = resume_note_project_path {
-        print_resume_note(&project_path);
+        print_resume_note(&project_path, &cli);
     }
 
     Ok(())
@@ -611,9 +611,57 @@ fn derive_resume_project_path_for_note(project_path: &Path) -> String {
     crate::path_utils::display_with_tilde(project_path)
 }
 
-fn print_resume_note(project_path: &str) {
+fn cli_sandbox_flag_value(sandbox: CliSandbox) -> Option<&'static str> {
+    match sandbox {
+        CliSandbox::Default => None,
+        CliSandbox::ReadOnly => Some("read-only"),
+        CliSandbox::WorkspaceWrite => Some("workspace-write"),
+        CliSandbox::DangerFullAccess => Some("danger-full-access"),
+    }
+}
+
+fn resume_note_global_args(cli: &Cli) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    if cli.dangerously_bypass_approvals_and_sandbox {
+        out.push("--yolo".to_string());
+    }
+
+    if let Some(sandbox) = cli_sandbox_flag_value(cli.sandbox) {
+        out.push("--sandbox".to_string());
+        out.push(sandbox.to_string());
+    }
+
+    if cli.rounds.get() != 10 {
+        out.push("--rounds".to_string());
+        out.push(cli.rounds.get().to_string());
+    }
+
+    if cli.codex_bin != "codex" {
+        out.push("--codex-bin".to_string());
+        out.push(cli.codex_bin.clone());
+    }
+
+    out.extend(cli.upstream_cli_args.to_potter_app_server_args());
+
+    if cli.xmodel {
+        out.push("--xmodel".to_string());
+    }
+
+    out
+}
+
+fn render_resume_note_command(project_path: &str, cli: &Cli) -> String {
+    let mut args: Vec<String> = vec!["codex-potter".to_string(), "resume".to_string()];
+    args.extend(resume_note_global_args(cli));
+    args.push(project_path.to_string());
+
+    shlex::try_join(args.iter().map(String::as_str)).unwrap_or_else(|_| args.join(" "))
+}
+
+fn print_resume_note(project_path: &str, cli: &Cli) {
     let color_enabled = stdout_color_enabled();
-    let command = format!("codex-potter resume {project_path}");
+    let command = render_resume_note_command(project_path, cli);
     println!(
         "{} To continue this project, run:",
         ansi_bold("Note:", color_enabled)
@@ -988,6 +1036,47 @@ mod tests {
         assert_eq!(
             derive_resume_project_path_for_note(&project_path),
             "2026/02/01/1"
+        );
+    }
+
+    #[test]
+    fn render_resume_note_command_omits_default_flags() {
+        let cli = Cli::try_parse_from(["codex-potter"]).expect("parse args");
+        assert_eq!(
+            render_resume_note_command("2026/02/01/1", &cli),
+            "codex-potter resume 2026/02/01/1"
+        );
+    }
+
+    #[test]
+    fn render_resume_note_command_includes_non_default_flags() {
+        let cli = Cli::try_parse_from([
+            "codex-potter",
+            "--yolo",
+            "--sandbox",
+            "read-only",
+            "--rounds",
+            "3",
+            "--codex-bin",
+            "custom-codex",
+            "--config",
+            "foo=bar",
+            "--enable",
+            "feature_a",
+            "--disable",
+            "feature_b",
+            "--model",
+            "o3",
+            "--profile",
+            "my-profile",
+            "--search",
+            "--xmodel",
+        ])
+        .expect("parse args");
+
+        assert_eq!(
+            render_resume_note_command("2026/02/01/1", &cli),
+            "codex-potter resume --yolo --sandbox read-only --rounds 3 --codex-bin custom-codex --config 'foo=bar' --enable feature_a --disable feature_b --model o3 --profile my-profile --search --xmodel 2026/02/01/1"
         );
     }
 
