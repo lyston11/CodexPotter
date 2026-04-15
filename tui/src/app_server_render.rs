@@ -8212,6 +8212,7 @@ mod tests {
             override_mode,
             std::path::Path::new("project"),
             Some("main"),
+            false,
         );
 
         let mut out = String::new();

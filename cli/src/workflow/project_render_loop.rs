@@ -47,6 +47,8 @@ pub struct PotterProjectRenderOptions {
     pub turn_prompt: String,
     /// Footer context (working dir + git branch) used by the TUI.
     pub prompt_footer: codex_tui::PromptFooterContext,
+    /// Whether the CLI `--yolo` flag is set for this process.
+    pub yolo_cli_override: bool,
     /// Whether to pad the transcript before the first round.
     pub pad_before_first_cell: bool,
     /// Optional status header prefix to use for the first round when no `PotterRoundStarted`
@@ -86,6 +88,7 @@ where
     let PotterProjectRenderOptions {
         turn_prompt,
         prompt_footer,
+        yolo_cli_override,
         pad_before_first_cell,
         initial_status_header_prefix,
     } = options;
@@ -130,11 +133,12 @@ where
         let (event_tx, event_rx) = unbounded_channel::<Event>();
         let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
 
+        let yolo_active = crate::yolo::effective_yolo_enabled(yolo_cli_override);
         let mut render = Box::pin(ui.render_round(codex_tui::RenderRoundParams {
             prompt: turn_prompt.clone(),
             pad_before_first_cell,
             status_header_prefix: Some(status_header_prefix.clone()),
-            prompt_footer: prompt_footer.clone(),
+            prompt_footer: prompt_footer.clone().with_yolo_active(yolo_active),
             codex_op_tx: op_tx.clone(),
             codex_event_rx: event_rx,
             fatal_exit_rx,
@@ -472,6 +476,7 @@ mod tests {
             PotterProjectRenderOptions {
                 turn_prompt: String::from("Continue"),
                 prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None),
+                yolo_cli_override: false,
                 pad_before_first_cell: false,
                 initial_status_header_prefix: None,
             },
@@ -563,6 +568,7 @@ mod tests {
             PotterProjectRenderOptions {
                 turn_prompt: String::from("Continue"),
                 prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("/tmp"), None),
+                yolo_cli_override: false,
                 pad_before_first_cell: false,
                 initial_status_header_prefix: None,
             },

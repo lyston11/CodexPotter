@@ -280,6 +280,7 @@ pub async fn run_resume(
     cwd: &Path,
     project_path: &Path,
     iterate_rounds: NonZeroUsize,
+    yolo_cli_override: bool,
 ) -> anyhow::Result<ResumeExit> {
     let mut buffered_events = Vec::new();
     let resume = app_server
@@ -304,7 +305,15 @@ pub async fn run_resume(
     // Best-effort; avoid emitting warnings here because stderr output can corrupt the TUI.
     let _ = crate::terminal_title::set_codexpotter_terminal_title(&resume.working_dir);
 
-    run_resume_with_deps(ui, app_server, resume, iterate_rounds, &SystemResumeClock).await
+    run_resume_with_deps(
+        ui,
+        app_server,
+        resume,
+        iterate_rounds,
+        yolo_cli_override,
+        &SystemResumeClock,
+    )
+    .await
 }
 
 async fn run_resume_with_deps<U, S, C>(
@@ -312,6 +321,7 @@ async fn run_resume_with_deps<U, S, C>(
     app_server: &mut S,
     resume: crate::app_server::potter::ProjectResumeResponse,
     iterate_rounds: NonZeroUsize,
+    yolo_cli_override: bool,
     clock: &C,
 ) -> anyhow::Result<ResumeExit>
 where
@@ -321,7 +331,8 @@ where
 {
     let project_id = resume.project_id.clone();
     let prompt_footer =
-        codex_tui::PromptFooterContext::new(resume.working_dir.clone(), resume.git_branch.clone());
+        codex_tui::PromptFooterContext::new(resume.working_dir.clone(), resume.git_branch.clone())
+            .with_yolo_active(crate::yolo::effective_yolo_enabled(yolo_cli_override));
 
     let (op_tx, mut op_rx) = unbounded_channel::<Op>();
     tokio::spawn(async move { while op_rx.recv().await.is_some() {} });
@@ -449,6 +460,7 @@ where
             crate::workflow::project_render_loop::PotterProjectRenderOptions {
                 turn_prompt: turn_prompt.clone(),
                 prompt_footer: prompt_footer.clone(),
+                yolo_cli_override,
                 pad_before_first_cell,
                 initial_status_header_prefix,
             },
@@ -1394,6 +1406,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(1).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await
@@ -1491,6 +1504,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(1).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await
@@ -1596,6 +1610,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(1).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await
@@ -1698,6 +1713,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(2).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await

@@ -69,6 +69,8 @@ pub struct PromptFooterContext {
     pub working_dir: PathBuf,
     /// Current git branch for `working_dir`, when available.
     pub git_branch: Option<String>,
+    /// Whether YOLO is active for the current session.
+    pub yolo_active: bool,
 }
 
 impl PromptFooterContext {
@@ -79,7 +81,13 @@ impl PromptFooterContext {
         Self {
             working_dir,
             git_branch: git_branch.and_then(|branch| (!branch.trim().is_empty()).then_some(branch)),
+            yolo_active: false,
         }
+    }
+
+    pub fn with_yolo_active(mut self, yolo_active: bool) -> Self {
+        self.yolo_active = yolo_active;
+        self
     }
 }
 
@@ -344,6 +352,7 @@ impl Renderable for BottomPane {
                 self.prompt_footer_override,
                 &self.prompt_footer.working_dir,
                 self.prompt_footer.git_branch.as_deref(),
+                self.prompt_footer.yolo_active,
             );
         }
 
@@ -437,6 +446,7 @@ fn render_prompt_footer(
     override_mode: Option<PromptFooterOverride>,
     working_dir: &Path,
     git_branch: Option<&str>,
+    yolo_active: bool,
 ) {
     if area.is_empty() {
         return;
@@ -450,7 +460,13 @@ fn render_prompt_footer(
         None => {
             let dir_display =
                 crate::text_formatting::format_directory_for_display(working_dir, Some(50));
-            let mut spans: Vec<Span<'static>> = vec![Span::from(dir_display).dim()];
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if yolo_active {
+                spans.push(Span::from("▲YOLO").red().bold());
+                spans.push(Span::from(" · ").dim());
+            }
+
+            spans.push(Span::from(dir_display).dim());
             if let Some(branch) = git_branch.filter(|branch| !branch.trim().is_empty()) {
                 spans.push(Span::from(format!(" [{branch}]")).cyan());
             }
@@ -479,6 +495,14 @@ pub fn render_prompt_footer_for_test(
     override_mode: Option<PromptFooterOverride>,
     working_dir: &Path,
     git_branch: Option<&str>,
+    yolo_active: bool,
 ) {
-    render_prompt_footer(area, buf, override_mode, working_dir, git_branch);
+    render_prompt_footer(
+        area,
+        buf,
+        override_mode,
+        working_dir,
+        git_branch,
+        yolo_active,
+    );
 }

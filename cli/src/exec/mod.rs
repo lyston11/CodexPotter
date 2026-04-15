@@ -148,6 +148,7 @@ pub async fn run_exec_human(
                 .trim_end()
                 .to_string(),
             prompt_footer,
+            yolo_cli_override: backend_launch.bypass_approvals_and_sandbox,
             pad_before_first_cell: false,
             initial_status_header_prefix: None,
         },

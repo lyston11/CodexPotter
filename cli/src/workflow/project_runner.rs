@@ -29,6 +29,8 @@ pub struct ProjectQueueOptions {
     pub rounds: NonZeroUsize,
     /// Per-round prompt passed to the TUI renderer.
     pub turn_prompt: String,
+    /// Whether the CLI `--yolo` flag is set for this process.
+    pub yolo_cli_override: bool,
 }
 
 /// Outcome of running the project queue.
@@ -206,11 +208,13 @@ where
     C: ProjectClock,
 {
     let mut pending_user_prompts = crate::workflow::prompt_queue::PromptQueue::empty();
+    let yolo_cli_override = options.yolo_cli_override;
     let build_prompt_footer = || {
         codex_tui::PromptFooterContext::new(
             workdir.clone(),
             crate::workflow::project::resolve_git_branch(&workdir),
         )
+        .with_yolo_active(crate::yolo::effective_yolo_enabled(yolo_cli_override))
     };
 
     'project: loop {
@@ -268,6 +272,7 @@ where
                 crate::workflow::project_render_loop::PotterProjectRenderOptions {
                     turn_prompt: options.turn_prompt.clone(),
                     prompt_footer: prompt_footer.clone(),
+                    yolo_cli_override,
                     pad_before_first_cell: false,
                     initial_status_header_prefix: initial_status_header_prefix.take(),
                 },
@@ -845,6 +850,7 @@ mod tests {
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
+                yolo_cli_override: false,
             },
             &clock,
         )
@@ -875,6 +881,7 @@ mod tests {
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
+                yolo_cli_override: false,
             },
             &clock,
         )
@@ -901,6 +908,7 @@ mod tests {
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
+                yolo_cli_override: false,
             },
             &clock,
         )
@@ -930,6 +938,7 @@ mod tests {
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(2).expect("rounds"),
                 turn_prompt: String::from("Continue"),
+                yolo_cli_override: false,
             },
             &clock,
         )
@@ -1012,6 +1021,7 @@ mod tests {
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
                 turn_prompt: String::from("Continue"),
+                yolo_cli_override: false,
             },
             &clock,
         )

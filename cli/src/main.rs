@@ -23,6 +23,7 @@ mod rounds;
 mod startup;
 mod terminal_title;
 mod workflow;
+mod yolo;
 
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -246,10 +247,9 @@ fn load_exec_human_verbosity(cli_override: Option<CliVerbosity>) -> codex_tui::V
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
-    let backend_launch = crate::app_server::AppServerLaunchConfig::from_cli(
-        cli.sandbox,
-        cli.dangerously_bypass_approvals_and_sandbox,
-    );
+    let yolo_cli_override = cli.dangerously_bypass_approvals_and_sandbox;
+    let backend_launch =
+        crate::app_server::AppServerLaunchConfig::from_cli(cli.sandbox, yolo_cli_override);
     let upstream_cli_args = cli.upstream_cli_args.clone();
 
     if let Some(CliCommand::Exec {
@@ -459,6 +459,7 @@ async fn main() -> anyhow::Result<()> {
                 &workdir,
                 &project_path,
                 cli.rounds,
+                yolo_cli_override,
             )
             .await
             .context("resume project")?;
@@ -502,6 +503,7 @@ async fn main() -> anyhow::Result<()> {
         crate::workflow::project_runner::ProjectQueueOptions {
             rounds: cli.rounds,
             turn_prompt: turn_prompt.clone(),
+            yolo_cli_override,
         },
     )
     .await?;
