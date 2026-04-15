@@ -29,6 +29,13 @@ pub fn load_potter_yolo_enabled() -> io::Result<bool> {
     load_yolo_from_path(&path)
 }
 
+/// Load whether YOLO is enabled by default from the provided config path.
+///
+/// Returns `false` when the file or key is missing.
+pub fn load_potter_yolo_enabled_from_path(path: &Path) -> io::Result<bool> {
+    load_yolo_from_path(path)
+}
+
 /// Persist whether YOLO is enabled by default for CodexPotter sessions.
 ///
 /// Writes `~/.codexpotter/config.toml` under `[potter].yolo`.

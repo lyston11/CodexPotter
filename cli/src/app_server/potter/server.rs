@@ -76,6 +76,7 @@ pub struct PotterAppServerConfig {
     pub rounds: NonZeroUsize,
     pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     pub potter_xmodel: bool,
+    pub potter_config_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1197,10 +1198,15 @@ async fn run_continue_round(
     continue_round: &ContinueRoundPlan,
     continue_prompt: &str,
     pad_before_first_cell: bool,
+    potter_config_path: Option<&Path>,
     yolo_warning_emitted: &mut bool,
 ) -> anyhow::Result<crate::workflow::round_runner::PotterRoundResult> {
-    let effective_launch =
-        resolve_effective_backend_launch(round_context.backend_launch, yolo_warning_emitted, ui);
+    let effective_launch = resolve_effective_backend_launch(
+        round_context.backend_launch,
+        potter_config_path,
+        yolo_warning_emitted,
+        ui,
+    );
     let continue_context = crate::workflow::round_runner::PotterRoundContext {
         turn_prompt: continue_prompt.to_string(),
         backend_launch: effective_launch,
@@ -1275,6 +1281,7 @@ async fn run_fresh_project(
         codex_compat_home,
         upstream_cli_args,
         potter_xmodel,
+        potter_config_path,
         ..
     } = config;
     let mut plan = plan;
@@ -1328,6 +1335,7 @@ async fn run_fresh_project(
             &initial_continue_round,
             continue_prompt,
             false,
+            potter_config_path.as_deref(),
             &mut yolo_warning_emitted,
         )
         .await;
@@ -1432,6 +1440,7 @@ async fn run_fresh_project(
 
         let effective_launch = resolve_effective_backend_launch(
             round_context.backend_launch,
+            potter_config_path.as_deref(),
             &mut yolo_warning_emitted,
             &mut ui,
         );
@@ -1553,6 +1562,7 @@ async fn run_resumed_project(
         codex_compat_home,
         upstream_cli_args,
         potter_xmodel,
+        potter_config_path,
         ..
     } = config;
     let ResumedProjectPlan {
@@ -1695,6 +1705,7 @@ async fn run_resumed_project(
             &initial_continue_round,
             continue_prompt,
             true,
+            potter_config_path.as_deref(),
             &mut yolo_warning_emitted,
         )
         .await;
@@ -1804,6 +1815,7 @@ async fn run_resumed_project(
 
         let effective_launch = resolve_effective_backend_launch(
             round_context.backend_launch,
+            potter_config_path.as_deref(),
             &mut yolo_warning_emitted,
             &mut ui,
         );
@@ -1940,10 +1952,15 @@ fn apply_yolo_default_to_launch(
 
 fn resolve_effective_backend_launch(
     base: crate::app_server::AppServerLaunchConfig,
+    potter_config_path: Option<&Path>,
     warning_emitted: &mut bool,
     ui: &mut EventForwardingRoundUi,
 ) -> crate::app_server::AppServerLaunchConfig {
-    match codex_tui::load_potter_yolo_enabled() {
+    let yolo_default = potter_config_path
+        .map(codex_tui::load_potter_yolo_enabled_from_path)
+        .unwrap_or_else(codex_tui::load_potter_yolo_enabled);
+
+    match yolo_default {
         Ok(enabled) => apply_yolo_default_to_launch(base, enabled),
         Err(err) => {
             if !*warning_emitted {
@@ -2183,6 +2200,10 @@ git_branch: "main"
         .expect("write progress file");
     }
 
+    fn isolated_potter_config_path(workdir: &Path) -> PathBuf {
+        workdir.join(".codexpotter").join("config.toml")
+    }
+
     #[test]
     fn decode_jsonrpc_message_line_errors_on_invalid_json() {
         let err = decode_jsonrpc_message_line("{not json").expect_err("should fail");
@@ -2371,6 +2392,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
         };
         let mut state = ServerState {
             config,
@@ -2513,6 +2535,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(10).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
         };
         let mut state = ServerState {
             config,
@@ -2654,6 +2677,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(temp.path())),
         };
         let mut state = ServerState {
             config,
@@ -2710,6 +2734,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(temp.path())),
         };
 
         let workdir = temp.path().to_path_buf();
@@ -2866,6 +2891,7 @@ done
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: true,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
         };
 
         let plan = ResumedProjectPlan {
@@ -3033,6 +3059,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(2).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
         };
 
         let plan = FreshProjectPlan {
@@ -3223,6 +3250,7 @@ git_branch: "main"
                     rounds: NonZeroUsize::new(4).expect("nonzero rounds"),
                     upstream_cli_args: Default::default(),
                     potter_xmodel: false,
+                    potter_config_path: Some(isolated_potter_config_path(&workdir)),
                 };
 
                 let mut state = ServerState {
@@ -3329,6 +3357,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(temp.path())),
         };
 
         let handle = tokio::spawn(async {
@@ -3403,6 +3432,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(temp.path())),
         };
 
         struct DropNotify(Option<tokio::sync::oneshot::Sender<()>>);
@@ -3492,6 +3522,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(temp.path())),
         };
 
         let handle = tokio::spawn(async {
@@ -3570,6 +3601,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(temp.path())),
         };
 
         let handle = tokio::spawn(async {});
@@ -3614,6 +3646,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
         };
 
         let plan = FreshProjectPlan {
@@ -3769,6 +3802,7 @@ git_branch: "main"
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
         };
 
         let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md");

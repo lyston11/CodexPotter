@@ -323,6 +323,7 @@ async fn main() -> anyhow::Result<()> {
                 rounds: cli.rounds,
                 upstream_cli_args,
                 potter_xmodel: cli.xmodel,
+                potter_config_path: None,
             },
         )
         .await?;

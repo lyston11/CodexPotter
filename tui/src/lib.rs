@@ -89,5 +89,6 @@ pub use version::CODEX_POTTER_VERSION;
 pub use markdown_render::render_markdown_text;
 pub use potter_config::load_potter_tui_verbosity;
 pub use potter_config::load_potter_yolo_enabled;
+pub use potter_config::load_potter_yolo_enabled_from_path;
 pub use startup_setup::StartupSetupStep;
 pub use verbosity::Verbosity;
