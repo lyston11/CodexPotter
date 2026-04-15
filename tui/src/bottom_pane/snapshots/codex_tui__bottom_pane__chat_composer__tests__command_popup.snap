@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 2223
 expression: terminal.backend()
 ---
 "                                                                                                    "
@@ -8,6 +9,6 @@ expression: terminal.backend()
 "  /mention        mention a file                                                                    "
 "  /theme          choose a syntax highlighting theme                                                "
 "  /verbosity      choose how much detail to show                                                    "
+"  /yolo           configure whether to enable YOLO by default                                       "
 "  /potter:xmodel  (Experimental) Enable cross model review (round 1~3: GPT 5.2 xhigh, round 4+: GPT "
 "                  5.4 xhigh)                                                                        "
-"  /exit           exit Codex                                                                        "
