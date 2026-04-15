@@ -1041,7 +1041,8 @@ mod tests {
 
     #[test]
     fn render_resume_note_command_omits_default_flags() {
-        let cli = Cli::try_parse_from(["codex-potter"]).expect("parse args");
+        let cli =
+            Cli::try_parse_from(["codex-potter", "--codex-bin", "codex"]).expect("parse args");
         assert_eq!(
             render_resume_note_command("2026/02/01/1", &cli),
             "codex-potter resume 2026/02/01/1"
