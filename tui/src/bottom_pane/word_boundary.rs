@@ -13,9 +13,15 @@
 
 use icu_segmenter::WordSegmenter;
 use icu_segmenter::options::WordBreakInvariantOptions;
+use std::sync::LazyLock;
 
 /// ASCII punctuation treated as word separators in addition to ICU4X segmentation boundaries.
 pub const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
+// Word-wise cursor movement sits on the key-repeat hot path. Cache the ICU4X segmenter once
+// instead of rebuilding it for every jump or delete operation.
+static WORD_SEGMENTER: LazyLock<icu_segmenter::WordSegmenterBorrowed<'static>> =
+    LazyLock::new(|| WordSegmenter::new_auto(WordBreakInvariantOptions::default()));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Segment {
@@ -91,9 +97,8 @@ fn segments(text: &str) -> Vec<Segment> {
         return Vec::new();
     }
 
-    let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
-
     let mut segments = Vec::new();
+    let segmenter = *WORD_SEGMENTER;
 
     let mut iter = text.char_indices();
     let Some((_, first_ch)) = iter.next() else {
@@ -111,7 +116,7 @@ fn segments(text: &str) -> Vec<Segment> {
 
         push_run(
             text,
-            &segmenter,
+            segmenter,
             run_start..idx,
             run_is_whitespace,
             &mut segments,
@@ -122,7 +127,7 @@ fn segments(text: &str) -> Vec<Segment> {
 
     push_run(
         text,
-        &segmenter,
+        segmenter,
         run_start..text.len(),
         run_is_whitespace,
         &mut segments,
@@ -133,7 +138,7 @@ fn segments(text: &str) -> Vec<Segment> {
 
 fn push_run(
     text: &str,
-    segmenter: &icu_segmenter::WordSegmenterBorrowed<'static>,
+    segmenter: icu_segmenter::WordSegmenterBorrowed<'static>,
     run: std::ops::Range<usize>,
     is_whitespace: bool,
     out: &mut Vec<Segment>,
@@ -190,7 +195,7 @@ fn non_whitespace_chunk_kind(ch: char) -> NonWhitespaceChunkKind {
 
 fn push_non_whitespace_chunk(
     text: &str,
-    segmenter: &icu_segmenter::WordSegmenterBorrowed<'static>,
+    segmenter: icu_segmenter::WordSegmenterBorrowed<'static>,
     chunk: std::ops::Range<usize>,
     kind: NonWhitespaceChunkKind,
     out: &mut Vec<Segment>,
@@ -211,7 +216,7 @@ fn push_non_whitespace_chunk(
 
 fn push_icu_segments(
     text: &str,
-    segmenter: &icu_segmenter::WordSegmenterBorrowed<'static>,
+    segmenter: icu_segmenter::WordSegmenterBorrowed<'static>,
     chunk: std::ops::Range<usize>,
     out: &mut Vec<Segment>,
 ) {
