@@ -178,7 +178,10 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
-      - name: Run npm packaging tests
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run packaging tests
         run: node --test npm/test/*.test.js
 
       - name: Download build artifacts

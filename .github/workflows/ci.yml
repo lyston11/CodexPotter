@@ -70,7 +70,7 @@ jobs:
         run: ${{ matrix.check.command }}
 
   npm:
-    name: NPM Tests
+    name: Packaging Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -81,5 +81,8 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run npm packaging tests
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run packaging tests
         run: node --test npm/test/*.test.js
