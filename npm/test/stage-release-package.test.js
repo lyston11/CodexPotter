@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +16,10 @@ const currentWindowsTargetTriple = getCurrentWindowsTargetTriple();
 const currentTargetTriple = currentUnixTargetTriple ?? currentWindowsTargetTriple;
 const hasBun = isAvailable("bun", ["--version"]);
 const requiredUnixRuntimeCommands = ["readlink", "uname"];
+// Real Windows verification showed Bun's generated `.exe` shims can start a
+// `.cmd` package bin with no args, but fail as soon as arguments are forwarded
+// through the shim (`The system cannot find the path specified.`).
+const supportsBunCmdBinArguments = process.platform !== "win32";
 
 function isAvailable(command, args) {
   const result = spawnSync(command, args, { stdio: "ignore" });
@@ -69,7 +73,7 @@ setlocal
 function listTarballFiles(tarballPath) {
   return execFileSync("tar", ["-tf", tarballPath], { encoding: "utf8" })
     .trim()
-    .split("\n")
+    .split(/\r?\n/)
     .filter(Boolean)
     .sort();
 }
@@ -151,6 +155,15 @@ function findCommandOnPath(command) {
   }
 
   throw new Error(`Missing required runtime command: ${command}`);
+}
+
+function getBunRuntimePath(runtimePath) {
+  const bunCommand = findCommandOnPath(process.platform === "win32" ? "bun.exe" : "bun");
+  const pathEntries = [path.dirname(bunCommand)];
+  if (runtimePath) {
+    pathEntries.push(runtimePath);
+  }
+  return pathEntries.join(path.delimiter);
 }
 
 function createUnixRuntimeBin(root) {
@@ -261,7 +274,7 @@ function quoteWindowsCmdArgument(argument) {
 }
 
 function buildWindowsCommandInvocation(command, args) {
-  return `"${[command, ...args].map(quoteWindowsCmdArgument).join(" ")}"`;
+  return [command, ...args].map(quoteWindowsCmdArgument).join(" ");
 }
 
 function runCommand(command, args, options) {
@@ -269,11 +282,13 @@ function runCommand(command, args, options) {
     return execFileSync(command, args, options);
   }
 
-  return execFileSync(
-    getWindowsCommandProcessorPath(),
-    ["/d", "/s", "/c", buildWindowsCommandInvocation(command, args)],
-    options,
-  );
+  // Let cmd.exe parse the already-escaped command line itself; feeding the same
+  // payload back through execFileSync(cmd.exe, argv) adds another quoting layer
+  // in Node's CreateProcess bridge and breaks real Windows `.cmd` launchers.
+  return execSync(buildWindowsCommandInvocation(command, args), {
+    ...options,
+    shell: getWindowsCommandProcessorPath(),
+  });
 }
 
 function normalizeOutput(output) {
@@ -311,7 +326,7 @@ function launcherSmokeArgs() {
 
 function launcherProbeArgs() {
   return process.platform === "win32"
-    ? ["/d", "/s", "/c", "echo launcher smoke ok & set CODEX_POTTER_MANAGED_BY"]
+    ? ["/d", "/s", "/c", "echo launcher smoke ok&& set CODEX_POTTER_MANAGED_BY"]
     : ["--version"];
 }
 
@@ -319,11 +334,11 @@ function createRuntimePath(root) {
   return process.platform === "win32" ? "" : createUnixRuntimeBin(root);
 }
 
-function createRuntimeEnv(root, extraEnv = {}) {
+function createRuntimeEnv(runtimePath, extraEnv = {}) {
   return {
     ...process.env,
     ...extraEnv,
-    PATH: extraEnv.PATH ?? createRuntimePath(root),
+    PATH: extraEnv.PATH ?? runtimePath,
   };
 }
 
@@ -440,6 +455,7 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const stageRoot = path.join(tmpdir, "stage");
       const installRoot = path.join(tmpdir, "install");
+      const runtimePath = createRuntimePath(tmpdir);
 
       stageLauncherBinary(distRoot, "smoke");
 
@@ -455,7 +471,7 @@ test(
 
       const launcherOutput = runCommand(installedBinPath, launcherSmokeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(tmpdir),
+        env: createRuntimeEnv(runtimePath),
       });
       assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
@@ -466,7 +482,7 @@ test(
 
 test(
   "stageReleasePackage launcher runs after bun installs the packed repository tarball without node on PATH",
-  { skip: !currentTargetTriple || !hasBun },
+  { skip: !currentTargetTriple || !hasBun || !supportsBunCmdBinArguments },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -474,6 +490,7 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const stageRoot = path.join(tmpdir, "stage");
       const installRoot = path.join(tmpdir, "install");
+      const runtimePath = createRuntimePath(tmpdir);
 
       stageLauncherBinary(distRoot, "smoke");
 
@@ -489,7 +506,9 @@ test(
 
       const launcherOutput = runCommand(installedBinPath, launcherSmokeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(tmpdir),
+        env: createRuntimeEnv(runtimePath, {
+          PATH: getBunRuntimePath(runtimePath),
+        }),
       });
       assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
@@ -524,7 +543,7 @@ test(
 
       const launcherOutput = runCommand("codex-potter", launcherProbeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(tmpdir, {
+        env: createRuntimeEnv(runtimePath, {
           PATH: runtimePath
             ? [path.dirname(binPath), runtimePath].join(path.delimiter)
             : path.dirname(binPath),
@@ -543,7 +562,7 @@ test(
 
 test(
   "stageReleasePackage launcher reports bun-managed env after bun installs the packed repository tarball globally without node on PATH",
-  { skip: !currentTargetTriple || !hasBun },
+  { skip: !currentTargetTriple || !hasBun || !supportsBunCmdBinArguments },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -570,11 +589,11 @@ test(
 
       const launcherOutput = runCommand("codex-potter", launcherProbeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(tmpdir, {
+        env: createRuntimeEnv(runtimePath, {
           ...installEnv,
-          PATH: runtimePath
-            ? [path.dirname(binPath), runtimePath].join(path.delimiter)
-            : path.dirname(binPath),
+          PATH: [path.dirname(binPath), getBunRuntimePath(runtimePath)]
+            .filter(Boolean)
+            .join(path.delimiter),
         }),
       });
 

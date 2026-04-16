@@ -10,8 +10,13 @@ npm install -g codex-potter
 bun install -g codex-potter
 ```
 
-The published package launches the bundled native binary directly, so Bun-managed installs do not
-require `node` on `PATH`.
+The published package launches the bundled native binary directly, so Bun-managed installs on Unix
+do not require `node` on `PATH`.
+
+On Windows, use `npm install -g codex-potter` for now. Real Windows verification showed Bun's
+generated `.exe` shims still fail to forward arguments to `.cmd` package bins, so Bun-managed
+Windows installs remain upstream-limited even though the packaged launcher itself works when run
+directly.
 
 Run:
 

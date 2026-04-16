@@ -94,13 +94,14 @@ if /I "%arch%"=="AMD64" set "target_triple=x86_64-pc-windows-msvc"
 if /I "%arch%"=="ARM64" set "target_triple=aarch64-pc-windows-msvc"
 
 if not defined target_triple (
-  >&2 echo Unsupported platform: Windows (%arch%)
+  >&2 echo Unsupported platform: Windows %arch%
   exit /b 1
 )
 
 set "package_root=%~dp0.."
 set "binary_path=%package_root%\vendor\%target_triple%\codex-potter\codex-potter.exe"
 set "path_dir=%package_root%\vendor\%target_triple%\path"
+set "launcher_dir=%~dp0"
 
 if not exist "%binary_path%" (
   set "package_root=%~dp0..\codex-potter"
@@ -117,10 +118,10 @@ if not exist "%binary_path%" (
 if exist "%path_dir%\" set "PATH=%path_dir%;%PATH%"
 
 set "managed_by_bun="
-if not "%npm_config_user_agent%"=="%npm_config_user_agent:bun/=%" set "managed_by_bun=1"
-if not "%npm_execpath%"=="%npm_execpath:bun=%" set "managed_by_bun=1"
-if not "%~dp0"=="%~dp0:.bun\bin\=%" set "managed_by_bun=1"
-if not "%~dp0"=="%~dp0:.bun\install\global\=%" set "managed_by_bun=1"
+if defined npm_config_user_agent if not "%npm_config_user_agent%"=="%npm_config_user_agent:bun/=%" set "managed_by_bun=1"
+if defined npm_execpath if not "%npm_execpath%"=="%npm_execpath:bun=%" set "managed_by_bun=1"
+if not "%launcher_dir%"=="%launcher_dir:.bun\bin\=%" set "managed_by_bun=1"
+if not "%launcher_dir%"=="%launcher_dir:.bun\install\global\=%" set "managed_by_bun=1"
 
 set "CODEX_POTTER_MANAGED_BY_NPM="
 set "CODEX_POTTER_MANAGED_BY_BUN="
