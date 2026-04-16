@@ -486,13 +486,16 @@ fn render_prompt_footer(
                 spans.push(Span::from(" · ").dim());
             }
 
-            spans.push(Span::from(dir_display).dim());
-            if let Some(branch) = git_branch.filter(|branch| !branch.trim().is_empty()) {
-                spans.push(Span::from(format!(" [{branch}]")).cyan());
-            }
-            spans.push(Span::from(" · ").dim());
             spans.push(Span::from("ctrl+g"));
             spans.push(Span::from(" editor").dim());
+            spans.push(Span::from(" · ").dim());
+
+            if let Some(branch) = git_branch.filter(|branch| !branch.trim().is_empty()) {
+                spans.push(Span::from(branch.to_string()).cyan());
+                spans.push(Span::from(" ❯ ").dim());
+            }
+
+            spans.push(Span::from(dir_display).dim());
             ratatui::text::Line::from(spans)
         }
     };
