@@ -471,6 +471,61 @@ test("buildReleaseTarballs produces main + platform npm tarballs", () => {
   }
 });
 
+test("buildReleaseTarballs preserves prerelease version suffixes", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+  try {
+    const distRoot = path.join(tmpdir, "dist");
+    const outputDir = path.join(tmpdir, "npm-dist");
+    const version = "0.1.25-alpha.1";
+
+    createArtifactFixtures(distRoot, "smoke");
+
+    const { mainTarball, platformTarballs } = buildReleaseTarballs({
+      npmRoot: repoNpmRoot,
+      distRoot,
+      outputDir,
+      version,
+    });
+
+    assert.equal(path.basename(mainTarball), `codex-potter-npm-${version}.tgz`);
+    assert.deepEqual(
+      platformTarballs.map((tarball) => path.basename(tarball)).sort(),
+      PLATFORM_VARIANTS.map(
+        (variant) => `codex-potter-npm-${variant.platformTag}-${version}.tgz`,
+      ).sort(),
+    );
+
+    const mainExtractRoot = path.join(tmpdir, "extract-main-prerelease");
+    const mainPackageRoot = extractPackage(mainTarball, mainExtractRoot);
+    const mainPackageJson = JSON.parse(
+      fs.readFileSync(path.join(mainPackageRoot, "package.json"), "utf8"),
+    );
+
+    assert.equal(mainPackageJson.version, version);
+    for (const variant of PLATFORM_VARIANTS) {
+      const aliasName = `codex-potter-${variant.platformTag}`;
+      assert.equal(
+        mainPackageJson.optionalDependencies[aliasName],
+        `npm:codex-potter@${version}-${variant.platformTag}`,
+      );
+
+      const tarballPath = path.join(
+        outputDir,
+        `codex-potter-npm-${variant.platformTag}-${version}.tgz`,
+      );
+      const extractRoot = path.join(tmpdir, `extract-prerelease-${variant.platformTag}`);
+      const packageRoot = extractPackage(tarballPath, extractRoot);
+      const packageJson = JSON.parse(
+        fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+      );
+      assert.equal(packageJson.version, `${version}-${variant.platformTag}`);
+    }
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
 test(
   "launcher runs after npm installs main tarball + local platform alias without node on PATH",
   { skip: !currentVariant },
