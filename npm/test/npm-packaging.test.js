@@ -510,6 +510,75 @@ test("stageReleaseTarballs produces main + platform npm tarballs", () => {
   }
 });
 
+test("stage_npm_packages can stage a single platform tarball from a partial dist root", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+  try {
+    const distRoot = path.join(tmpdir, "dist");
+    const outputDir = path.join(tmpdir, "npm-dist");
+    const version = "0.1.25";
+
+    const variant =
+      process.platform === "win32"
+        ? PLATFORM_VARIANTS.find((entry) => entry.platformTag === "win32-x64") ??
+          PLATFORM_VARIANTS[0]
+        : PLATFORM_VARIANTS.find((entry) => entry.platformTag === "linux-x64") ??
+          PLATFORM_VARIANTS[0];
+
+    const artifactDir = path.join(distRoot, `codex-potter-${variant.targetTriple}`);
+    fs.mkdirSync(artifactDir, { recursive: true });
+
+    const binaryName = variant.targetTriple.includes("windows")
+      ? "codex-potter.exe"
+      : "codex-potter";
+    const mode =
+      process.platform === "win32" || variant.targetTriple.includes("windows") ? undefined : 0o755;
+    writeFile(path.join(artifactDir, binaryName), "binary", mode);
+
+    const python = getPythonCommand();
+    const stageScript = path.resolve(repoNpmRoot, "..", "scripts", "stage_npm_packages.py");
+
+    runCommand(
+      python,
+      [
+        stageScript,
+        "--release-version",
+        version,
+        "--dist-root",
+        distRoot,
+        "--package",
+        `codex-potter-${variant.platformTag}`,
+        "--output-dir",
+        outputDir,
+      ],
+      { stdio: "ignore" },
+    );
+
+    const tarballPath = path.join(
+      outputDir,
+      `codex-potter-npm-${variant.platformTag}-${version}.tgz`,
+    );
+
+    assert.ok(fs.existsSync(tarballPath));
+    assert.ok(!fs.existsSync(path.join(outputDir, `codex-potter-npm-${version}.tgz`)));
+
+    const packageRoot = extractPackage(tarballPath, path.join(tmpdir, "extract-single-platform"));
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+    );
+
+    assert.equal(packageJson.name, "codex-potter");
+    assert.equal(packageJson.version, `0.1.25-${variant.platformTag}`);
+
+    const vendorPath = variant.targetTriple.includes("windows")
+      ? `package/vendor/${variant.targetTriple}/codex-potter/codex-potter.exe`
+      : `package/vendor/${variant.targetTriple}/codex-potter/codex-potter`;
+    assert.ok(listTarballFiles(tarballPath).includes(vendorPath));
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
 test("stageReleaseTarballs preserves prerelease version suffixes", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 

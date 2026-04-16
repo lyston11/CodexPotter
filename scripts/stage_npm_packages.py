@@ -81,12 +81,18 @@ def run_command(cmd: list[str]) -> None:
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
 
-def build_vendor_src(dist_root: Path, vendor_root: Path) -> None:
+def build_vendor_src(dist_root: Path, vendor_root: Path, target_triples: set[str]) -> None:
     if not CODEX_POTTER_PLATFORM_PACKAGES:
         raise RuntimeError("No platform packages registered in build_npm_package.py")
 
-    for package_config in CODEX_POTTER_PLATFORM_PACKAGES.values():
-        target_triple = package_config["target_triple"]
+    resolved_targets = {triple for triple in target_triples if triple}
+    if not resolved_targets:
+        resolved_targets = {
+            package_config["target_triple"]
+            for package_config in CODEX_POTTER_PLATFORM_PACKAGES.values()
+        }
+
+    for target_triple in sorted(resolved_targets):
         artifact_dir = dist_root / f"codex-potter-{target_triple}"
         if "windows" in target_triple:
             binary_name = "codex-potter.exe"
@@ -128,6 +134,12 @@ def main() -> int:
     packages = expand_packages(list(args.packages))
     native_components = collect_native_components(packages)
 
+    vendor_target_triples = {
+        CODEX_POTTER_PLATFORM_PACKAGES[package]["target_triple"]
+        for package in packages
+        if package in CODEX_POTTER_PLATFORM_PACKAGES
+    }
+
     vendor_temp_root: Path | None = None
     vendor_src: Path | None = None
 
@@ -138,7 +150,7 @@ def main() -> int:
             vendor_temp_root = Path(tempfile.mkdtemp(prefix="npm-vendor-", dir=runner_temp))
             vendor_src = vendor_temp_root / "vendor"
             vendor_src.mkdir(parents=True, exist_ok=True)
-            build_vendor_src(dist_root, vendor_src)
+            build_vendor_src(dist_root, vendor_src, vendor_target_triples)
 
         for package in packages:
             staging_dir = Path(tempfile.mkdtemp(prefix=f"npm-stage-{package}-", dir=runner_temp))
@@ -178,4 +190,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
