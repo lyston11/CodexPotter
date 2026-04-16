@@ -1,5 +1,5 @@
 ---
 source: tui/src/app_server_render.rs
-expression: "render_prompt_footer_line(Some(PromptFooterOverride::ExternalEditorHint))"
+expression: "render_prompt_footer_line(Some(PromptFooterOverride::ExternalEditorHint), Some(\"main\"), false)"
 ---
    Save and close external editor to continue.
