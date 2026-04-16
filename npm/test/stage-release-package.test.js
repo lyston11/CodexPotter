@@ -44,6 +44,27 @@ function writeFile(filePath, contents, mode) {
   }
 }
 
+function createNpmRootFixture(npmRoot, packageJsonOverrides = {}) {
+  fs.mkdirSync(npmRoot, { recursive: true });
+  fs.cpSync(path.join(repoNpmRoot, "bin"), path.join(npmRoot, "bin"), {
+    recursive: true,
+  });
+
+  const readmePath = path.join(repoNpmRoot, "README.md");
+  if (fs.existsSync(readmePath)) {
+    fs.copyFileSync(readmePath, path.join(npmRoot, "README.md"));
+  }
+
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(repoNpmRoot, "package.json"), "utf8"),
+  );
+  Object.assign(packageJson, packageJsonOverrides);
+  writeFile(
+    path.join(npmRoot, "package.json"),
+    JSON.stringify(packageJson, null, 2) + "\n",
+  );
+}
+
 function listTarballFiles(tarballPath) {
   const tarballArgs =
     process.platform === "win32" ? [path.basename(tarballPath)] : [tarballPath];
@@ -520,6 +541,56 @@ test("buildReleaseTarballs preserves prerelease version suffixes", () => {
         fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
       );
       assert.equal(packageJson.version, `${version}-${variant.platformTag}`);
+    }
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
+test("buildReleaseTarballs preserves upstream platform package metadata when present", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+  try {
+    const distRoot = path.join(tmpdir, "dist");
+    const outputDir = path.join(tmpdir, "npm-dist");
+    const npmRoot = path.join(tmpdir, "npm-root");
+
+    createNpmRootFixture(npmRoot, {
+      engines: { node: ">=20" },
+      packageManager: "pnpm@10.29.3",
+    });
+    createArtifactFixtures(distRoot, "smoke");
+
+    const { mainTarball, platformTarballs } = buildReleaseTarballs({
+      npmRoot,
+      distRoot,
+      outputDir,
+      version: "0.1.25",
+    });
+
+    const mainExtractRoot = path.join(tmpdir, "extract-main-metadata");
+    const mainPackageRoot = extractPackage(mainTarball, mainExtractRoot);
+    const mainPackageJson = JSON.parse(
+      fs.readFileSync(path.join(mainPackageRoot, "package.json"), "utf8"),
+    );
+
+    assert.deepEqual(mainPackageJson.engines, { node: ">=20" });
+    assert.equal(mainPackageJson.packageManager, "pnpm@10.29.3");
+
+    assert.equal(platformTarballs.length, PLATFORM_VARIANTS.length);
+    for (const variant of PLATFORM_VARIANTS) {
+      const tarballPath = path.join(
+        outputDir,
+        `codex-potter-npm-${variant.platformTag}-0.1.25.tgz`,
+      );
+      const extractRoot = path.join(tmpdir, `extract-metadata-${variant.platformTag}`);
+      const packageRoot = extractPackage(tarballPath, extractRoot);
+      const packageJson = JSON.parse(
+        fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+      );
+
+      assert.deepEqual(packageJson.engines, { node: ">=20" });
+      assert.equal(packageJson.packageManager, "pnpm@10.29.3");
     }
   } finally {
     fs.rmSync(tmpdir, { recursive: true, force: true });

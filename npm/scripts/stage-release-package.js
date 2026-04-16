@@ -186,6 +186,18 @@ function stagePlatformPackage({
     repository: sourcePackageJson.repository,
   };
 
+  if (typeof sourcePackageJson.packageManager === "string") {
+    packageJson.packageManager = sourcePackageJson.packageManager;
+  }
+
+  if (
+    sourcePackageJson.engines &&
+    typeof sourcePackageJson.engines === "object" &&
+    !Array.isArray(sourcePackageJson.engines)
+  ) {
+    packageJson.engines = sourcePackageJson.engines;
+  }
+
   writePackageJson(path.join(stageRoot, "package.json"), packageJson);
 
   copyArtifactBinary({ distRoot, stageRoot, targetTriple });
