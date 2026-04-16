@@ -76,9 +76,6 @@ npm install -g codex-potter
 bun install -g codex-potter
 ```
 
-The published package launches the bundled native binary directly, so Bun-managed installs do not
-require `node` on `PATH`.
-
 **3. Run:** Start CodexPotter in your project directory, just like Codex:
 
 ```sh
