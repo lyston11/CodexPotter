@@ -87,7 +87,7 @@ Cross-round persistence:
 
 - Code:
   - `tui/src/external_editor_integration.rs`: editor invocation
-  - `tui/src/bottom_pane/mod.rs`: `PromptFooterOverride::ExternalEditorHint`
+  - `tui/src/bottom_pane/prompt_footer.rs`: `PromptFooterOverride::ExternalEditorHint`
   - `tui/src/app_server_render.rs`: prompt screen + round renderer both share the same ctrl+g
     integration path (set override, draw, run editor, apply edit, clear override).
 
