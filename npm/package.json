@@ -6,6 +6,9 @@
     "codex-potter": "bin/codex-potter.js"
   },
   "type": "module",
+  "engines": {
+    "node": ">=16"
+  },
   "files": [
     "bin",
     "vendor",

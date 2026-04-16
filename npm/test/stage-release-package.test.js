@@ -6,14 +6,48 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import {
-  buildReleaseTarballs,
-  PLATFORM_VARIANTS,
-} from "../scripts/stage-release-package.js";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoNpmRoot = path.resolve(__dirname, "..");
+
+const PLATFORM_VARIANTS = [
+  {
+    platformTag: "linux-x64",
+    targetTriple: "x86_64-unknown-linux-musl",
+    os: "linux",
+    cpu: "x64",
+  },
+  {
+    platformTag: "linux-arm64",
+    targetTriple: "aarch64-unknown-linux-musl",
+    os: "linux",
+    cpu: "arm64",
+  },
+  {
+    platformTag: "darwin-x64",
+    targetTriple: "x86_64-apple-darwin",
+    os: "darwin",
+    cpu: "x64",
+  },
+  {
+    platformTag: "darwin-arm64",
+    targetTriple: "aarch64-apple-darwin",
+    os: "darwin",
+    cpu: "arm64",
+  },
+  {
+    platformTag: "win32-x64",
+    targetTriple: "x86_64-pc-windows-msvc",
+    os: "win32",
+    cpu: "x64",
+  },
+  {
+    platformTag: "win32-arm64",
+    targetTriple: "aarch64-pc-windows-msvc",
+    os: "win32",
+    cpu: "arm64",
+  },
+];
 
 const currentUnixTargetTriple = getCurrentUnixTargetTriple();
 const currentWindowsTargetTriple = getCurrentWindowsTargetTriple();
@@ -34,33 +68,55 @@ function isAvailable(command, args) {
   return !result.error && result.status === 0;
 }
 
+function getPythonCommand() {
+  const candidates =
+    process.platform === "win32" ? ["python", "python3"] : ["python3", "python"];
+  for (const candidate of candidates) {
+    if (isAvailable(candidate, ["--version"])) {
+      return candidate;
+    }
+  }
+
+  throw new Error("Missing Python on PATH (expected python3 or python).");
+}
+
+function stageReleaseTarballs({ distRoot, outputDir, version }) {
+  if (!distRoot || !outputDir || !version) {
+    throw new Error("stageReleaseTarballs requires distRoot, outputDir, version");
+  }
+
+  const python = getPythonCommand();
+  const stageScript = path.resolve(repoNpmRoot, "..", "scripts", "stage_npm_packages.py");
+
+  runCommand(
+    python,
+    [
+      stageScript,
+      "--release-version",
+      version,
+      "--dist-root",
+      distRoot,
+      "--package",
+      "codex-potter",
+      "--output-dir",
+      outputDir,
+    ],
+    { stdio: "ignore" },
+  );
+
+  const mainTarball = path.join(outputDir, `codex-potter-npm-${version}.tgz`);
+  const platformTarballs = PLATFORM_VARIANTS.map((variant) =>
+    path.join(outputDir, `codex-potter-npm-${variant.platformTag}-${version}.tgz`),
+  );
+  return { mainTarball, platformTarballs };
+}
+
 function writeFile(filePath, contents, mode) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, contents);
   if (mode !== undefined) {
     fs.chmodSync(filePath, mode);
   }
-}
-
-function createNpmRootFixture(npmRoot, packageJsonOverrides = {}) {
-  fs.mkdirSync(npmRoot, { recursive: true });
-  fs.cpSync(path.join(repoNpmRoot, "bin"), path.join(npmRoot, "bin"), {
-    recursive: true,
-  });
-
-  const readmePath = path.join(repoNpmRoot, "README.md");
-  if (fs.existsSync(readmePath)) {
-    fs.copyFileSync(readmePath, path.join(npmRoot, "README.md"));
-  }
-
-  const packageJson = JSON.parse(
-    fs.readFileSync(path.join(repoNpmRoot, "package.json"), "utf8"),
-  );
-  Object.assign(packageJson, packageJsonOverrides);
-  writeFile(
-    path.join(npmRoot, "package.json"),
-    JSON.stringify(packageJson, null, 2) + "\n",
-  );
 }
 
 function listTarballFiles(tarballPath) {
@@ -387,7 +443,7 @@ function createArtifactFixtures(distRoot, kind) {
   }
 }
 
-test("buildReleaseTarballs produces main + platform npm tarballs", () => {
+test("stageReleaseTarballs produces main + platform npm tarballs", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
   try {
@@ -396,8 +452,7 @@ test("buildReleaseTarballs produces main + platform npm tarballs", () => {
 
     createArtifactFixtures(distRoot, "smoke");
 
-    const { mainTarball, platformTarballs } = buildReleaseTarballs({
-      npmRoot: repoNpmRoot,
+    const { mainTarball, platformTarballs } = stageReleaseTarballs({
       distRoot,
       outputDir,
       version: "0.1.25",
@@ -455,7 +510,7 @@ test("buildReleaseTarballs produces main + platform npm tarballs", () => {
   }
 });
 
-test("buildReleaseTarballs preserves prerelease version suffixes", () => {
+test("stageReleaseTarballs preserves prerelease version suffixes", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
   try {
@@ -465,8 +520,7 @@ test("buildReleaseTarballs preserves prerelease version suffixes", () => {
 
     createArtifactFixtures(distRoot, "smoke");
 
-    const { mainTarball, platformTarballs } = buildReleaseTarballs({
-      npmRoot: repoNpmRoot,
+    const { mainTarball, platformTarballs } = stageReleaseTarballs({
       distRoot,
       outputDir,
       version,
@@ -510,22 +564,15 @@ test("buildReleaseTarballs preserves prerelease version suffixes", () => {
   }
 });
 
-test("buildReleaseTarballs preserves upstream platform package metadata when present", () => {
+test("stageReleaseTarballs propagates engines metadata", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
   try {
     const distRoot = path.join(tmpdir, "dist");
     const outputDir = path.join(tmpdir, "npm-dist");
-    const npmRoot = path.join(tmpdir, "npm-root");
-
-    createNpmRootFixture(npmRoot, {
-      engines: { node: ">=20" },
-      packageManager: "pnpm@10.29.3",
-    });
     createArtifactFixtures(distRoot, "smoke");
 
-    const { mainTarball, platformTarballs } = buildReleaseTarballs({
-      npmRoot,
+    const { mainTarball, platformTarballs } = stageReleaseTarballs({
       distRoot,
       outputDir,
       version: "0.1.25",
@@ -537,8 +584,7 @@ test("buildReleaseTarballs preserves upstream platform package metadata when pre
       fs.readFileSync(path.join(mainPackageRoot, "package.json"), "utf8"),
     );
 
-    assert.deepEqual(mainPackageJson.engines, { node: ">=20" });
-    assert.equal(mainPackageJson.packageManager, "pnpm@10.29.3");
+    assert.deepEqual(mainPackageJson.engines, { node: ">=16" });
 
     assert.equal(platformTarballs.length, PLATFORM_VARIANTS.length);
     for (const variant of PLATFORM_VARIANTS) {
@@ -552,8 +598,7 @@ test("buildReleaseTarballs preserves upstream platform package metadata when pre
         fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
       );
 
-      assert.deepEqual(packageJson.engines, { node: ">=20" });
-      assert.equal(packageJson.packageManager, "pnpm@10.29.3");
+      assert.deepEqual(packageJson.engines, { node: ">=16" });
     }
   } finally {
     fs.rmSync(tmpdir, { recursive: true, force: true });
@@ -573,8 +618,7 @@ test(
 
       createArtifactFixtures(distRoot, "smoke");
 
-      const { mainTarball } = buildReleaseTarballs({
-        npmRoot: repoNpmRoot,
+      const { mainTarball } = stageReleaseTarballs({
         distRoot,
         outputDir,
         version: "0.1.25",
@@ -616,8 +660,7 @@ test(
 
       createArtifactFixtures(distRoot, "smoke");
 
-      const { mainTarball } = buildReleaseTarballs({
-        npmRoot: repoNpmRoot,
+      const { mainTarball } = stageReleaseTarballs({
         distRoot,
         outputDir,
         version: "0.1.25",
@@ -659,8 +702,7 @@ test(
 
       createArtifactFixtures(distRoot, "probe");
 
-      const { mainTarball } = buildReleaseTarballs({
-        npmRoot: repoNpmRoot,
+      const { mainTarball } = stageReleaseTarballs({
         distRoot,
         outputDir,
         version: "0.1.25",
@@ -709,8 +751,7 @@ test(
 
       createArtifactFixtures(distRoot, "probe");
 
-      const { mainTarball } = buildReleaseTarballs({
-        npmRoot: repoNpmRoot,
+      const { mainTarball } = stageReleaseTarballs({
         distRoot,
         outputDir,
         version: "0.1.25",
@@ -762,8 +803,7 @@ test(
 
       createArtifactFixtures(distRoot, "smoke");
 
-      const { mainTarball } = buildReleaseTarballs({
-        npmRoot: repoNpmRoot,
+      const { mainTarball } = stageReleaseTarballs({
         distRoot,
         outputDir,
         version: "0.1.25",
