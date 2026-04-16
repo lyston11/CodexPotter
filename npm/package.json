@@ -11,8 +11,7 @@
   },
   "files": [
     "bin",
-    "vendor",
-    "README.md"
+    "vendor"
   ],
   "repository": {
     "type": "git",

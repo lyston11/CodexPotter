@@ -12,6 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 NPM_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = NPM_ROOT.parent
 CODEX_POTTER_NPM_NAME = "codex-potter"
+LAUNCHER_RELATIVE_PATH = Path("bin") / "codex-potter.js"
 
 # `npm_name` is the local optional-dependency alias consumed by the npm launcher.
 # The underlying package published to npm is always `codex-potter`.
@@ -200,19 +201,12 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     package_json_path: Path | None = None
 
     if package == "codex-potter":
-        bin_src = NPM_ROOT / "bin"
-        if not bin_src.exists():
-            raise RuntimeError(f"Missing npm bin directory: {bin_src}")
-
+        launcher_src = NPM_ROOT / LAUNCHER_RELATIVE_PATH
+        if not launcher_src.exists():
+            raise RuntimeError(f"Missing npm launcher: {launcher_src}")
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
-        for entry in bin_src.iterdir():
-            if entry.is_dir():
-                shutil.copytree(entry, bin_dir / entry.name)
-            elif entry.is_file():
-                shutil.copy2(entry, bin_dir / entry.name)
-            else:
-                raise RuntimeError(f"Unsupported npm bin entry: {entry}")
+        shutil.copy2(launcher_src, bin_dir / launcher_src.name)
 
         readme_src = NPM_ROOT / "README.md"
         if not readme_src.exists():
@@ -369,4 +363,3 @@ def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
