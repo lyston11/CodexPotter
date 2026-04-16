@@ -68,3 +68,18 @@ jobs:
 
       - name: ${{ matrix.check.command }}
         run: ${{ matrix.check.command }}
+
+  npm:
+    name: NPM Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run npm packaging tests
+        run: node --test npm/test/*.test.js

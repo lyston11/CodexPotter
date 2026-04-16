@@ -191,40 +191,7 @@ jobs:
           set -euo pipefail
 
           stage_root="${RUNNER_TEMP}/codex-potter-npm-stage"
-          rm -rf "${stage_root}"
-          mkdir -p "${stage_root}/bin"
-          mkdir -p "${stage_root}/vendor"
-
-          cp -R npm/bin/* "${stage_root}/bin/"
-          cp npm/README.md "${stage_root}/README.md"
-          cp npm/package.json "${stage_root}/package.json"
-
-          node -e "
-            const fs = require('fs');
-            const path = '${stage_root}/package.json';
-            const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
-            pkg.version = process.env.VERSION;
-            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\\n');
-          "
-
-          for artifact_dir in dist/codex-potter-*; do
-            target="${artifact_dir##dist/codex-potter-}"
-            vendor_target_dir="${stage_root}/vendor/${target}/codex-potter"
-            mkdir -p "${vendor_target_dir}"
-
-            if [[ "${target}" == *windows* ]]; then
-              exe_src="$(find "${artifact_dir}" -type f -name 'codex-potter.exe' | head -n 1)"
-              [[ -n "${exe_src}" ]] \
-                || { echo "❌ Missing codex-potter.exe in ${artifact_dir}"; exit 1; }
-              cp "${exe_src}" "${vendor_target_dir}/codex-potter.exe"
-            else
-              bin_src="$(find "${artifact_dir}" -type f -name 'codex-potter' | head -n 1)"
-              [[ -n "${bin_src}" ]] \
-                || { echo "❌ Missing codex-potter binary in ${artifact_dir}"; exit 1; }
-              cp "${bin_src}" "${vendor_target_dir}/codex-potter"
-              chmod +x "${vendor_target_dir}/codex-potter"
-            fi
-          done
+          node npm/scripts/stage-release-package.js "${stage_root}" "${GITHUB_WORKSPACE}/dist" "${VERSION}"
 
           mkdir -p dist/npm
           tarball_name="$(
