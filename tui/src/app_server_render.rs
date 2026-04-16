@@ -4474,6 +4474,67 @@ mod tests {
     }
 
     #[test]
+    fn prompt_slash_compact_kb_inserts_prompt_without_submission() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+
+        app.bottom_pane.set_task_running(false);
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/compact-kb".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.prompt_action, None);
+        assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
+
+        let (_log_id, entry_count) = app.prompt_history.metadata();
+        assert_eq!(entry_count, 0);
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            !saw_interrupt,
+            "did not expect Op::Interrupt in prompt screen"
+        );
+    }
+
+    #[test]
     fn prompt_ctrl_c_empty_cancels_without_interrupt() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
