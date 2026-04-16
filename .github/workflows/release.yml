@@ -276,7 +276,7 @@ jobs:
                 ;;
             esac
 
-            publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}" --access public)
+            publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}")
             if [[ -n "${tag}" ]]; then
               publish_cmd+=(--tag "${tag}")
             fi
