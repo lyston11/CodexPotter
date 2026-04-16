@@ -67,12 +67,12 @@ For agents: This file is carefully maintained and polished for better readabilit
 **2. Install CodexPotter via npm or bun:**
 
 ```shell
-# Install via npm
+# Install via npm (Windows / Linux / macOS)
 npm install -g codex-potter
 ```
 
 ```shell
-# Install via bun
+# Install via bun (Linux / macOS)
 bun install -g codex-potter
 ```
 
