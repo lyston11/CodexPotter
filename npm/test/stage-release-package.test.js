@@ -74,9 +74,22 @@ function listTarballFiles(tarballPath) {
     .sort();
 }
 
+function getNpmCommand() {
+  if (process.platform !== "win32") {
+    return "npm";
+  }
+
+  const npmCmd = path.join(path.dirname(process.execPath), "npm.cmd");
+  if (!fs.existsSync(npmCmd)) {
+    throw new Error(`Missing npm.cmd next to node: ${npmCmd}`);
+  }
+
+  return npmCmd;
+}
+
 function packStage(stageRoot, outputDir) {
   const packMetadata = JSON.parse(
-    execFileSync("npm", ["pack", "--json", "--pack-destination", outputDir], {
+    runCommand(getNpmCommand(), ["pack", "--json", "--pack-destination", outputDir], {
       cwd: stageRoot,
       encoding: "utf8",
     }),
@@ -92,7 +105,7 @@ function extractPackage(tarballPath, extractRoot) {
 
 function installPackedPackageWithNpm(tarballPath, installRoot) {
   fs.mkdirSync(installRoot, { recursive: true });
-  execFileSync("npm", ["install", "--prefix", installRoot, tarballPath], {
+  runCommand(getNpmCommand(), ["install", "--prefix", installRoot, tarballPath], {
     stdio: "ignore",
   });
   return resolveCommandPath(path.join(installRoot, "node_modules", ".bin", "codex-potter"));
@@ -179,7 +192,7 @@ function expectedLauncherOutput({ managedByNpm, managedByBun }) {
 
 function installPackedPackageGloballyWithNpm(tarballPath, installRoot) {
   fs.mkdirSync(installRoot, { recursive: true });
-  execFileSync("npm", ["install", "--global", "--prefix", installRoot, tarballPath], {
+  runCommand(getNpmCommand(), ["install", "--global", "--prefix", installRoot, tarballPath], {
     stdio: "ignore",
   });
   return {
