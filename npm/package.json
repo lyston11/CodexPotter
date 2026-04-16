@@ -3,12 +3,9 @@
   "version": "0.0.0-dev",
   "license": "Apache-2.0",
   "bin": {
-    "codex-potter": "bin/codex-potter.js"
+    "codex-potter": "bin/codex-potter.cmd"
   },
   "type": "module",
-  "engines": {
-    "node": ">=16"
-  },
   "files": [
     "bin",
     "vendor",

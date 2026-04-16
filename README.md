@@ -76,11 +76,8 @@ npm install -g codex-potter
 bun install -g codex-potter
 ```
 
-⚠️ **Bun note:** the published npm package still exposes `codex-potter` through a JavaScript
-launcher. Bun links that launcher directly, so machines that only have Bun and do not have `node`
-on `PATH` will fail before the launcher starts. On Bun-managed installs, keep `node` available for
-now, or use the [standalone release archives](https://github.com/breezewish/CodexPotter/releases/latest)
-instead of the npm package.
+The published package launches the bundled native binary directly, so Bun-managed installs do not
+require `node` on `PATH`.
 
 **3. Run:** Start CodexPotter in your project directory, just like Codex:
 

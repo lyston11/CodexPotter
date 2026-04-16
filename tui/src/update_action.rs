@@ -33,7 +33,7 @@ impl UpdateAction {
 
 /// Detect how `codex-potter` should self-update.
 ///
-/// When installed via npm/bun, the `codex-potter` JavaScript wrapper sets one of:
+/// When installed via npm/bun, the packaged launcher sets one of:
 /// - `CODEX_POTTER_MANAGED_BY_NPM=1`
 /// - `CODEX_POTTER_MANAGED_BY_BUN=1`
 pub fn get_update_action() -> Option<UpdateAction> {
