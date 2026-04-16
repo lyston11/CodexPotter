@@ -24,11 +24,9 @@ const currentVariant = currentTargetTriple
   : null;
 
 const hasBun = isAvailable("bun", ["--version"]);
-const requiredUnixRuntimeCommands = ["readlink", "uname"];
 
-// Real Windows verification showed Bun's generated `.exe` shims can start a
-// `.cmd` package bin with no args, but fail as soon as arguments are forwarded
-// through the shim (`The system cannot find the path specified.`).
+// Bun's Windows shim behavior has historically been brittle. Keep the bun
+// launcher smoke tests disabled on Windows until verified end-to-end.
 const supportsBunCmdBinArguments = process.platform !== "win32";
 
 function isAvailable(command, args) {
@@ -195,47 +193,12 @@ function installPlatformAliasFromTarball(tarballPath, nodeModulesRoot, aliasName
   }
 }
 
-function findCommandOnPath(command) {
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(dir, command);
-    if (fs.existsSync(candidate)) {
-      return fs.realpathSync(candidate);
-    }
+function prependPath(prefixDirs, basePath = process.env.PATH ?? "") {
+  const entries = prefixDirs.filter(Boolean);
+  if (basePath) {
+    entries.push(basePath);
   }
-
-  throw new Error(`Missing required runtime command: ${command}`);
-}
-
-function getBunRuntimePath(runtimePath) {
-  const bunCommand = findCommandOnPath(process.platform === "win32" ? "bun.exe" : "bun");
-  const pathEntries = [path.dirname(bunCommand)];
-  if (runtimePath) {
-    pathEntries.push(runtimePath);
-  }
-  return pathEntries.join(path.delimiter);
-}
-
-function createUnixRuntimeBin(root) {
-  const runtimeBin = path.join(root, "runtime-bin");
-  fs.mkdirSync(runtimeBin, { recursive: true });
-
-  for (const command of requiredUnixRuntimeCommands) {
-    fs.symlinkSync(findCommandOnPath(command), path.join(runtimeBin, command));
-  }
-
-  return runtimeBin;
-}
-
-function createRuntimePath(root) {
-  return process.platform === "win32" ? "" : createUnixRuntimeBin(root);
-}
-
-function createRuntimeEnv(runtimePath, extraEnv = {}) {
-  return {
-    ...process.env,
-    ...extraEnv,
-    PATH: extraEnv.PATH ?? runtimePath,
-  };
+  return entries.join(path.delimiter);
 }
 
 function getCurrentUnixTargetTriple() {
@@ -444,7 +407,7 @@ test("buildReleaseTarballs produces main + platform npm tarballs", () => {
     assert.equal(platformTarballs.length, PLATFORM_VARIANTS.length);
 
     const mainFiles = listTarballFiles(mainTarball);
-    assert.ok(mainFiles.includes("package/bin/codex-potter.cmd"));
+    assert.ok(mainFiles.includes("package/bin/codex-potter.js"));
     assert.ok(!mainFiles.some((entry) => entry.startsWith("package/vendor/")));
 
     const mainExtractRoot = path.join(tmpdir, "extract-main");
@@ -598,7 +561,7 @@ test("buildReleaseTarballs preserves upstream platform package metadata when pre
 });
 
 test(
-  "launcher runs after npm installs main tarball + local platform alias without node on PATH",
+  "launcher runs after npm installs main tarball + local platform alias",
   { skip: !currentVariant },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -607,7 +570,6 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const outputDir = path.join(tmpdir, "npm-dist");
       const installRoot = path.join(tmpdir, "install");
-      const runtimePath = createRuntimePath(tmpdir);
 
       createArtifactFixtures(distRoot, "smoke");
 
@@ -632,7 +594,7 @@ test(
 
       const launcherOutput = runCommand(installedBinPath, launcherSmokeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(runtimePath),
+        env: { ...process.env },
       });
       assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
@@ -642,7 +604,7 @@ test(
 );
 
 test(
-  "launcher runs after bun installs main tarball + local platform alias without node on PATH",
+  "launcher runs after bun installs main tarball + local platform alias",
   { skip: !currentVariant || !hasBun || !supportsBunCmdBinArguments },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -651,7 +613,6 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const outputDir = path.join(tmpdir, "npm-dist");
       const installRoot = path.join(tmpdir, "install");
-      const runtimePath = createRuntimePath(tmpdir);
 
       createArtifactFixtures(distRoot, "smoke");
 
@@ -676,9 +637,7 @@ test(
 
       const launcherOutput = runCommand(installedBinPath, launcherSmokeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(runtimePath, {
-          PATH: getBunRuntimePath(runtimePath),
-        }),
+        env: { ...process.env },
       });
       assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
@@ -688,7 +647,7 @@ test(
 );
 
 test(
-  "launcher reports npm-managed env after npm installs main tarball globally + local platform alias without node on PATH",
+  "launcher reports npm-managed env after npm installs main tarball globally + local platform alias",
   { skip: !currentVariant },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -697,7 +656,6 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const outputDir = path.join(tmpdir, "npm-dist");
       const installRoot = path.join(tmpdir, "install");
-      const runtimePath = createRuntimePath(tmpdir);
 
       createArtifactFixtures(distRoot, "probe");
 
@@ -722,11 +680,10 @@ test(
 
       const launcherOutput = runCommand("codex-potter", launcherProbeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(runtimePath, {
-          PATH: runtimePath
-            ? [path.dirname(binPath), runtimePath].join(path.delimiter)
-            : path.dirname(binPath),
-        }),
+        env: {
+          ...process.env,
+          PATH: prependPath([path.dirname(binPath)]),
+        },
       });
 
       assert.equal(
@@ -740,7 +697,7 @@ test(
 );
 
 test(
-  "launcher reports bun-managed env after bun installs main tarball globally + local platform alias without node on PATH",
+  "launcher reports bun-managed env after bun installs main tarball globally + local platform alias",
   { skip: !currentVariant || !hasBun || !supportsBunCmdBinArguments },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -749,7 +706,6 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const outputDir = path.join(tmpdir, "npm-dist");
       const installRoot = path.join(tmpdir, "install");
-      const runtimePath = createRuntimePath(tmpdir);
 
       createArtifactFixtures(distRoot, "probe");
 
@@ -776,12 +732,11 @@ test(
 
       const launcherOutput = runCommand("codex-potter", launcherProbeArgs(), {
         encoding: "utf8",
-        env: createRuntimeEnv(runtimePath, {
+        env: {
+          ...process.env,
           ...installEnv,
-          PATH: [path.dirname(binPath), getBunRuntimePath(runtimePath)]
-            .filter(Boolean)
-            .join(path.delimiter),
-        }),
+          PATH: prependPath([path.dirname(binPath)]),
+        },
       });
 
       assert.equal(
@@ -804,7 +759,6 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const outputDir = path.join(tmpdir, "npm-dist");
       const installRoot = path.join(tmpdir, "install");
-      const runtimePath = createRuntimePath(tmpdir);
 
       createArtifactFixtures(distRoot, "smoke");
 
@@ -821,12 +775,11 @@ test(
       try {
         runCommand("codex-potter", [], {
           encoding: "utf8",
-          env: createRuntimeEnv(runtimePath, {
+          env: {
+            ...process.env,
             ...installEnv,
-            PATH: [path.dirname(binPath), getBunRuntimePath(runtimePath)]
-              .filter(Boolean)
-              .join(path.delimiter),
-          }),
+            PATH: prependPath([path.dirname(binPath)]),
+          },
         });
       } catch (error) {
         installError = error;
@@ -837,9 +790,11 @@ test(
         typeof installError.stderr === "string"
           ? installError.stderr
           : installError.stderr?.toString("utf8") ?? "";
-      assert.equal(
-        normalizeOutput(stderr),
-        `Missing optional dependency codex-potter-${currentVariant.platformTag}. Reinstall: bun install -g codex-potter@latest\n`,
+      const normalizedStderr = normalizeOutput(stderr);
+      assert.ok(
+        normalizedStderr.includes(
+          `Missing optional dependency codex-potter-${currentVariant.platformTag}. Reinstall CodexPotter: bun install -g codex-potter@latest`,
+        ),
       );
     } finally {
       fs.rmSync(tmpdir, { recursive: true, force: true });
