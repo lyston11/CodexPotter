@@ -41,8 +41,51 @@ case "$platform:$arch" in
     ;;
 esac
 
-binary_path=$basedir/../vendor/$target_triple/codex-potter/codex-potter
-path_dir=$basedir/../vendor/$target_triple/path
+platform_tag=
+case "$target_triple" in
+  x86_64-unknown-linux-musl) platform_tag=linux-x64 ;;
+  aarch64-unknown-linux-musl) platform_tag=linux-arm64 ;;
+  x86_64-apple-darwin) platform_tag=darwin-x64 ;;
+  aarch64-apple-darwin) platform_tag=darwin-arm64 ;;
+  *) ;;
+esac
+
+local_vendor_root=$basedir/../vendor
+local_binary_path=$local_vendor_root/$target_triple/codex-potter/codex-potter
+
+optional_vendor_root=
+optional_binary_path=
+if [ -n "$platform_tag" ]; then
+  package_root=$basedir/..
+  node_modules_root=$package_root/..
+  optional_package=$node_modules_root/codex-potter-$platform_tag
+  optional_vendor_root=$optional_package/vendor
+  optional_binary_path=$optional_vendor_root/$target_triple/codex-potter/codex-potter
+fi
+
+if [ -n "$optional_binary_path" ] && [ -x "$optional_binary_path" ]; then
+  vendor_root=$optional_vendor_root
+  binary_path=$optional_binary_path
+elif [ -x "$local_binary_path" ]; then
+  vendor_root=$local_vendor_root
+  binary_path=$local_binary_path
+else
+  update_cmd='npm install -g codex-potter@latest'
+  if [ -n "${npm_config_user_agent-}" ] && printf '%s' "${npm_config_user_agent-}" | grep -q 'bun/'; then
+    update_cmd='bun install -g codex-potter@latest'
+  elif [ -n "${npm_execpath-}" ] && printf '%s' "${npm_execpath-}" | grep -q 'bun'; then
+    update_cmd='bun install -g codex-potter@latest'
+  fi
+
+  if [ -n "$platform_tag" ]; then
+    printf 'Missing optional dependency codex-potter-%s. Reinstall: %s\n' "$platform_tag" "$update_cmd" >&2
+  else
+    printf 'Missing packaged binary for target %s. Reinstall: %s\n' "$target_triple" "$update_cmd" >&2
+  fi
+  exit 1
+fi
+
+path_dir=$vendor_root/$target_triple/path
 
 if [ -d "$path_dir" ]; then
   PATH=$path_dir${PATH+:$PATH}
@@ -72,11 +115,6 @@ else
   export CODEX_POTTER_MANAGED_BY_NPM=1
 fi
 
-if [ ! -x "$binary_path" ]; then
-  printf 'Missing packaged binary: %s\n' "$binary_path" >&2
-  exit 1
-fi
-
 exec "$binary_path" "$@"
 exit 1
 
@@ -90,30 +128,23 @@ set "arch=%PROCESSOR_ARCHITECTURE%"
 if defined PROCESSOR_ARCHITEW6432 set "arch=%PROCESSOR_ARCHITEW6432%"
 
 set "target_triple="
-if /I "%arch%"=="AMD64" set "target_triple=x86_64-pc-windows-msvc"
-if /I "%arch%"=="ARM64" set "target_triple=aarch64-pc-windows-msvc"
+set "platform_tag="
+if /I "%arch%"=="AMD64" set "target_triple=x86_64-pc-windows-msvc" & set "platform_tag=win32-x64"
+if /I "%arch%"=="ARM64" set "target_triple=aarch64-pc-windows-msvc" & set "platform_tag=win32-arm64"
 
 if not defined target_triple (
   >&2 echo Unsupported platform: Windows %arch%
   exit /b 1
 )
 
-set "package_root=%~dp0.."
-set "binary_path=%package_root%\vendor\%target_triple%\codex-potter\codex-potter.exe"
-set "path_dir=%package_root%\vendor\%target_triple%\path"
+set "optional_package=codex-potter-%platform_tag%"
+set "binary_path="
+set "path_dir="
 set "launcher_dir=%~dp0"
 
-if not exist "%binary_path%" (
-  set "package_root=%~dp0..\codex-potter"
-  set "binary_path=%package_root%\vendor\%target_triple%\codex-potter\codex-potter.exe"
-  set "path_dir=%package_root%\vendor\%target_triple%\path"
-)
-
-if not exist "%binary_path%" (
-  set "package_root=%~dp0..\install\global\node_modules\codex-potter"
-  set "binary_path=%package_root%\vendor\%target_triple%\codex-potter\codex-potter.exe"
-  set "path_dir=%package_root%\vendor\%target_triple%\path"
-)
+call :resolve_binary_paths "%~dp0.."
+if not defined binary_path call :resolve_binary_paths "%~dp0..\codex-potter"
+if not defined binary_path call :resolve_binary_paths "%~dp0..\install\global\node_modules\codex-potter"
 
 if exist "%path_dir%\" set "PATH=%path_dir%;%PATH%"
 
@@ -131,10 +162,28 @@ if defined managed_by_bun (
   set "CODEX_POTTER_MANAGED_BY_NPM=1"
 )
 
-if not exist "%binary_path%" (
-  >&2 echo Missing packaged binary: %binary_path%
+if not defined binary_path (
+  >&2 echo Missing optional dependency %optional_package%. Reinstall: npm install -g codex-potter@latest
   exit /b 1
 )
 
 "%binary_path%" %*
 exit /b %ERRORLEVEL%
+
+:resolve_binary_paths
+set "package_root=%~1"
+set "optional_vendor_root=%package_root%\..\%optional_package%\vendor"
+set "optional_binary=%optional_vendor_root%\%target_triple%\codex-potter\codex-potter.exe"
+if exist "%optional_binary%" (
+  set "binary_path=%optional_binary%"
+  set "path_dir=%optional_vendor_root%\%target_triple%\path"
+  exit /b 0
+)
+
+set "local_vendor_root=%package_root%\vendor"
+set "local_binary=%local_vendor_root%\%target_triple%\codex-potter\codex-potter.exe"
+if exist "%local_binary%" (
+  set "binary_path=%local_binary%"
+  set "path_dir=%local_vendor_root%\%target_triple%\path"
+)
+exit /b 0
