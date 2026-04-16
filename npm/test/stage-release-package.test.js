@@ -301,3 +301,59 @@ test(
     }
   },
 );
+
+test(
+  "stageReleasePackage launcher fails before startup when bun-installed package has no node on PATH",
+  { skip: !currentUnixTargetTriple || !hasBun },
+  () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+    try {
+      const distRoot = path.join(tmpdir, "dist");
+      const stageRoot = path.join(tmpdir, "stage");
+      const installRoot = path.join(tmpdir, "install");
+      const bunDir = (process.env.PATH ?? "")
+        .split(path.delimiter)
+        .filter(Boolean)
+        .find((dir) => fs.existsSync(path.join(dir, "bun")));
+
+      assert.ok(bunDir, "bun must be discoverable on PATH for the bun-only smoke test");
+
+      writeFile(
+        path.join(
+          distRoot,
+          `codex-potter-${currentUnixTargetTriple}`,
+          "nested",
+          "codex-potter",
+        ),
+        "#!/bin/sh\nprintf 'launcher smoke ok\\n'\n",
+        0o755,
+      );
+
+      stageReleasePackage({
+        npmRoot: repoNpmRoot,
+        stageRoot,
+        distRoot,
+        version: "0.1.25",
+      });
+
+      const tarballPath = packStage(stageRoot, tmpdir);
+      const installedBinPath = installPackedPackageWithBun(tarballPath, installRoot);
+
+      const failure = spawnSync(installedBinPath, ["--version"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: bunDir,
+        },
+      });
+      const failureOutput = `${failure.stdout}${failure.stderr}`;
+
+      assert.notEqual(failure.status, 0);
+      assert.match(failureOutput, /\bnode\b/i);
+      assert.match(failureOutput, /No such file or directory|not found/i);
+    } finally {
+      fs.rmSync(tmpdir, { recursive: true, force: true });
+    }
+  },
+);
