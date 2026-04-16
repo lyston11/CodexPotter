@@ -214,21 +214,36 @@ jobs:
             dist/**/codex-potter-${{ needs.tag-check.outputs.version }}-*.zip
             dist/npm/codex-potter-npm-*.tgz
 
-      - name: Publish to npm
+      - name: Determine npm publish settings
+        id: npm_publish_settings
         shell: bash
         env:
           VERSION: ${{ needs.tag-check.outputs.version }}
         run: |
           set -euo pipefail
+          version="${VERSION}"
 
-          npm_tag=""
-          if [[ "${VERSION}" == *-alpha.* ]]; then
-            npm_tag="alpha"
-          elif [[ "${VERSION}" == *-beta.* ]]; then
-            npm_tag="beta"
-          elif [[ "${VERSION}" == *-* ]]; then
-            npm_tag="next"
+          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Publish to npm
+        if: ${{ steps.npm_publish_settings.outputs.should_publish == 'true' }}
+        shell: bash
+        env:
+          VERSION: ${{ needs.tag-check.outputs.version }}
+          NPM_TAG: ${{ steps.npm_publish_settings.outputs.npm_tag }}
+        run: |
+          set -euo pipefail
+
+          npm_tag="${NPM_TAG}"
 
           prefix=""
           if [[ -n "${npm_tag}" ]]; then
