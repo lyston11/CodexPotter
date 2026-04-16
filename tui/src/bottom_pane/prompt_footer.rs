@@ -16,8 +16,10 @@ use ratatui::widgets::WidgetRef;
 
 use crate::external_editor_integration;
 
+/// Temporary footer modes that replace the standard prompt footer content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptFooterOverride {
+    /// Replace the footer with the bold external-editor hint while the editor is opening.
     ExternalEditorHint,
 }
 
@@ -66,6 +68,11 @@ impl PromptFooterContext {
     }
 }
 
+/// Render CodexPotter's 1-line prompt footer into the provided area.
+///
+/// The standard footer layout is `ctrl+g editor · <branch> ❯ <dir>`, prefixed with
+/// `▲YOLO · ` when YOLO is active. When `override_mode` is set, the override content replaces the
+/// normal footer entirely.
 pub fn render_prompt_footer(
     area: Rect,
     buf: &mut Buffer,
@@ -118,6 +125,7 @@ pub fn render_prompt_footer(
 }
 
 #[cfg(test)]
+/// Test-only wrapper that exposes prompt footer rendering to snapshot tests outside this module.
 pub fn render_prompt_footer_for_test(
     area: Rect,
     buf: &mut Buffer,

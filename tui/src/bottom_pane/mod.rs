@@ -238,6 +238,11 @@ impl BottomPane {
         self.queued_user_messages.messages = queued;
     }
 
+    /// Set a temporary footer override beneath the composer.
+    ///
+    /// This setter intentionally does not schedule a redraw on its own. Current callers either
+    /// draw immediately before blocking on the external editor, or clear the override and request
+    /// a frame explicitly once the editor returns.
     pub fn set_prompt_footer_override(&mut self, override_mode: Option<PromptFooterOverride>) {
         self.prompt_footer_override = override_mode;
     }
