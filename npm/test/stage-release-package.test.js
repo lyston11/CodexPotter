@@ -12,6 +12,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoNpmRoot = path.resolve(__dirname, "..");
 const currentUnixTargetTriple = getCurrentUnixTargetTriple();
+const currentWindowsTargetTriple = getCurrentWindowsTargetTriple();
+const currentTargetTriple = currentUnixTargetTriple ?? currentWindowsTargetTriple;
 const hasBun = isAvailable("bun", ["--version"]);
 const requiredUnixRuntimeCommands = ["readlink", "uname"];
 
@@ -58,7 +60,7 @@ exit 1
 :batch
 @echo off
 setlocal
-"%~dp0..\\vendor\\x86_64-pc-windows-msvc\\codex-potter\\codex-potter.exe" %*
+"%~dp0..\\vendor\\${currentWindowsTargetTriple ?? "unsupported"}\\codex-potter\\codex-potter.exe" %*
 `,
     0o755,
   );
@@ -93,7 +95,7 @@ function installPackedPackageWithNpm(tarballPath, installRoot) {
   execFileSync("npm", ["install", "--prefix", installRoot, tarballPath], {
     stdio: "ignore",
   });
-  return path.join(installRoot, "node_modules", ".bin", "codex-potter");
+  return resolveCommandPath(path.join(installRoot, "node_modules", ".bin", "codex-potter"));
 }
 
 function installPackedPackageWithBun(tarballPath, installRoot) {
@@ -102,29 +104,28 @@ function installPackedPackageWithBun(tarballPath, installRoot) {
     cwd: installRoot,
     stdio: "ignore",
   });
-  return path.join(installRoot, "node_modules", ".bin", "codex-potter");
+  return resolveCommandPath(path.join(installRoot, "node_modules", ".bin", "codex-potter"));
 }
 
 function installPackedPackageGloballyWithBun(tarballPath, installRoot) {
   const homeDir = path.join(installRoot, "home");
   const bunInstallDir = path.join(homeDir, ".bun");
+  const installEnv = {
+    ...process.env,
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    BUN_INSTALL: bunInstallDir,
+  };
 
   fs.mkdirSync(homeDir, { recursive: true });
   execFileSync("bun", ["install", "-g", tarballPath], {
     stdio: "ignore",
-    env: {
-      ...process.env,
-      HOME: homeDir,
-      BUN_INSTALL: bunInstallDir,
-    },
+    env: installEnv,
   });
 
   return {
-    binPath: path.join(bunInstallDir, "bin", "codex-potter"),
-    env: {
-      HOME: homeDir,
-      BUN_INSTALL: bunInstallDir,
-    },
+    binPath: resolveCommandPath(path.join(bunInstallDir, "bin", "codex-potter")),
+    env: installEnv,
   };
 }
 
@@ -162,6 +163,17 @@ printf 'npm=%s bun=%s\\n' "\${CODEX_POTTER_MANAGED_BY_NPM-}" "\${CODEX_POTTER_MA
 }
 
 function expectedLauncherOutput({ managedByNpm, managedByBun }) {
+  if (process.platform === "win32") {
+    let managedByLine = "";
+    if (managedByNpm === "1") {
+      managedByLine = "CODEX_POTTER_MANAGED_BY_NPM=1\n";
+    } else if (managedByBun === "1") {
+      managedByLine = "CODEX_POTTER_MANAGED_BY_BUN=1\n";
+    }
+
+    return `launcher smoke ok\n${managedByLine}`;
+  }
+
   return `launcher smoke ok\nnpm=${managedByNpm} bun=${managedByBun}\n`;
 }
 
@@ -171,7 +183,140 @@ function installPackedPackageGloballyWithNpm(tarballPath, installRoot) {
     stdio: "ignore",
   });
   return {
-    binPath: path.join(installRoot, "bin", "codex-potter"),
+    binPath: resolveCommandPath(getGlobalNpmBinBasePath(installRoot)),
+  };
+}
+
+function resolveCommandPath(basePath) {
+  const candidates =
+    process.platform === "win32"
+      ? [`${basePath}.cmd`, `${basePath}.exe`, basePath]
+      : [basePath];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Missing installed command: ${candidates.join(", ")}`);
+}
+
+function getGlobalNpmBinBasePath(installRoot) {
+  return process.platform === "win32"
+    ? path.join(installRoot, "codex-potter")
+    : path.join(installRoot, "bin", "codex-potter");
+}
+
+function getCurrentWindowsTargetTriple() {
+  if (process.platform !== "win32") {
+    return null;
+  }
+
+  switch (process.arch) {
+    case "x64":
+      return "x86_64-pc-windows-msvc";
+    case "arm64":
+      return "aarch64-pc-windows-msvc";
+    default:
+      return null;
+  }
+}
+
+function getWindowsCommandProcessorPath() {
+  const candidate =
+    process.env.ComSpec ??
+    path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
+
+  if (!fs.existsSync(candidate)) {
+    throw new Error(`Missing Windows command processor: ${candidate}`);
+  }
+
+  return candidate;
+}
+
+function quoteWindowsCmdArgument(argument) {
+  if (argument.length === 0) {
+    return '""';
+  }
+
+  if (!/[\s"&()<>^|]/.test(argument)) {
+    return argument;
+  }
+
+  return `"${argument.replaceAll('"', '""')}"`;
+}
+
+function buildWindowsCommandInvocation(command, args) {
+  return `"${[command, ...args].map(quoteWindowsCmdArgument).join(" ")}"`;
+}
+
+function runCommand(command, args, options) {
+  if (process.platform !== "win32") {
+    return execFileSync(command, args, options);
+  }
+
+  return execFileSync(
+    getWindowsCommandProcessorPath(),
+    ["/d", "/s", "/c", buildWindowsCommandInvocation(command, args)],
+    options,
+  );
+}
+
+function normalizeOutput(output) {
+  return output.replaceAll("\r\n", "\n");
+}
+
+function stageLauncherBinary(distRoot, kind) {
+  if (currentUnixTargetTriple) {
+    writeFile(
+      path.join(
+        distRoot,
+        `codex-potter-${currentUnixTargetTriple}`,
+        "nested",
+        "codex-potter",
+      ),
+      kind === "probe" ? launcherProbeScript() : launcherSmokeScript(),
+      0o755,
+    );
+    return;
+  }
+
+  if (!currentWindowsTargetTriple) {
+    throw new Error(`Unsupported test platform: ${process.platform} (${process.arch})`);
+  }
+
+  const binaryPath = path.join(
+    distRoot,
+    `codex-potter-${currentWindowsTargetTriple}`,
+    "nested",
+    "codex-potter.exe",
+  );
+  fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
+  fs.copyFileSync(getWindowsCommandProcessorPath(), binaryPath);
+}
+
+function launcherSmokeArgs() {
+  return process.platform === "win32"
+    ? ["/d", "/s", "/c", "echo launcher smoke ok"]
+    : ["--version"];
+}
+
+function launcherProbeArgs() {
+  return process.platform === "win32"
+    ? ["/d", "/s", "/c", "echo launcher smoke ok & set CODEX_POTTER_MANAGED_BY"]
+    : ["--version"];
+}
+
+function createRuntimePath(root) {
+  return process.platform === "win32" ? "" : createUnixRuntimeBin(root);
+}
+
+function createRuntimeEnv(root, extraEnv = {}) {
+  return {
+    ...process.env,
+    ...extraEnv,
+    PATH: extraEnv.PATH ?? createRuntimePath(root),
   };
 }
 
@@ -202,7 +347,7 @@ function getCurrentUnixTargetTriple() {
 
 test(
   "stageReleasePackage packs a runnable launcher fixture",
-  { skip: !currentUnixTargetTriple },
+  { skip: !currentTargetTriple },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -213,11 +358,7 @@ test(
       const extractRoot = path.join(tmpdir, "extract");
 
       createPackageFixture(npmRoot);
-      writeFile(
-        path.join(distRoot, `codex-potter-${currentUnixTargetTriple}`, "codex-potter"),
-        "#!/bin/sh\nprintf 'fixture smoke ok\\n'\n",
-        0o755,
-      );
+      stageLauncherBinary(distRoot, "smoke");
 
       stageReleasePackage({
         npmRoot,
@@ -234,12 +375,12 @@ test(
       const tarballPath = packStage(stageRoot, tmpdir);
       const packageRoot = extractPackage(tarballPath, extractRoot);
 
-      const launcherOutput = execFileSync(
+      const launcherOutput = runCommand(
         path.join(packageRoot, "bin", "codex-potter.cmd"),
-        ["--version"],
+        launcherSmokeArgs(),
         { encoding: "utf8" },
       );
-      assert.equal(launcherOutput, "fixture smoke ok\n");
+      assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
       fs.rmSync(tmpdir, { recursive: true, force: true });
     }
@@ -285,7 +426,7 @@ test("stageReleasePackage preserves Windows executable names", () => {
 
 test(
   "stageReleasePackage launcher runs after npm installs the packed repository tarball without node on PATH",
-  { skip: !currentUnixTargetTriple },
+  { skip: !currentTargetTriple },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -294,16 +435,7 @@ test(
       const stageRoot = path.join(tmpdir, "stage");
       const installRoot = path.join(tmpdir, "install");
 
-      writeFile(
-        path.join(
-          distRoot,
-          `codex-potter-${currentUnixTargetTriple}`,
-          "nested",
-          "codex-potter",
-        ),
-        launcherSmokeScript(),
-        0o755,
-      );
+      stageLauncherBinary(distRoot, "smoke");
 
       stageReleasePackage({
         npmRoot: repoNpmRoot,
@@ -314,16 +446,12 @@ test(
 
       const tarballPath = packStage(stageRoot, tmpdir);
       const installedBinPath = installPackedPackageWithNpm(tarballPath, installRoot);
-      const runtimeBin = createUnixRuntimeBin(tmpdir);
 
-      const launcherOutput = execFileSync(installedBinPath, ["--version"], {
+      const launcherOutput = runCommand(installedBinPath, launcherSmokeArgs(), {
         encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: runtimeBin,
-        },
+        env: createRuntimeEnv(tmpdir),
       });
-      assert.equal(launcherOutput, "launcher smoke ok\n");
+      assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
       fs.rmSync(tmpdir, { recursive: true, force: true });
     }
@@ -332,7 +460,7 @@ test(
 
 test(
   "stageReleasePackage launcher runs after bun installs the packed repository tarball without node on PATH",
-  { skip: !currentUnixTargetTriple || !hasBun },
+  { skip: !currentTargetTriple || !hasBun },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -341,16 +469,7 @@ test(
       const stageRoot = path.join(tmpdir, "stage");
       const installRoot = path.join(tmpdir, "install");
 
-      writeFile(
-        path.join(
-          distRoot,
-          `codex-potter-${currentUnixTargetTriple}`,
-          "nested",
-          "codex-potter",
-        ),
-        launcherSmokeScript(),
-        0o755,
-      );
+      stageLauncherBinary(distRoot, "smoke");
 
       stageReleasePackage({
         npmRoot: repoNpmRoot,
@@ -361,16 +480,12 @@ test(
 
       const tarballPath = packStage(stageRoot, tmpdir);
       const installedBinPath = installPackedPackageWithBun(tarballPath, installRoot);
-      const runtimeBin = createUnixRuntimeBin(tmpdir);
 
-      const launcherOutput = execFileSync(installedBinPath, ["--version"], {
+      const launcherOutput = runCommand(installedBinPath, launcherSmokeArgs(), {
         encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: runtimeBin,
-        },
+        env: createRuntimeEnv(tmpdir),
       });
-      assert.equal(launcherOutput, "launcher smoke ok\n");
+      assert.equal(normalizeOutput(launcherOutput), "launcher smoke ok\n");
     } finally {
       fs.rmSync(tmpdir, { recursive: true, force: true });
     }
@@ -379,7 +494,7 @@ test(
 
 test(
   "stageReleasePackage launcher reports npm-managed env after npm installs the packed repository tarball globally without node on PATH",
-  { skip: !currentUnixTargetTriple },
+  { skip: !currentTargetTriple },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -387,18 +502,9 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const stageRoot = path.join(tmpdir, "stage");
       const installRoot = path.join(tmpdir, "install");
-      const runtimeBin = createUnixRuntimeBin(tmpdir);
+      const runtimePath = createRuntimePath(tmpdir);
 
-      writeFile(
-        path.join(
-          distRoot,
-          `codex-potter-${currentUnixTargetTriple}`,
-          "nested",
-          "codex-potter",
-        ),
-        launcherProbeScript(),
-        0o755,
-      );
+      stageLauncherBinary(distRoot, "probe");
 
       stageReleasePackage({
         npmRoot: repoNpmRoot,
@@ -410,16 +516,17 @@ test(
       const tarballPath = packStage(stageRoot, tmpdir);
       const { binPath } = installPackedPackageGloballyWithNpm(tarballPath, installRoot);
 
-      const launcherOutput = execFileSync("codex-potter", ["--version"], {
+      const launcherOutput = runCommand("codex-potter", launcherProbeArgs(), {
         encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: [path.dirname(binPath), runtimeBin].join(path.delimiter),
-        },
+        env: createRuntimeEnv(tmpdir, {
+          PATH: runtimePath
+            ? [path.dirname(binPath), runtimePath].join(path.delimiter)
+            : path.dirname(binPath),
+        }),
       });
 
       assert.equal(
-        launcherOutput,
+        normalizeOutput(launcherOutput),
         expectedLauncherOutput({ managedByNpm: "1", managedByBun: "" }),
       );
     } finally {
@@ -430,7 +537,7 @@ test(
 
 test(
   "stageReleasePackage launcher reports bun-managed env after bun installs the packed repository tarball globally without node on PATH",
-  { skip: !currentUnixTargetTriple || !hasBun },
+  { skip: !currentTargetTriple || !hasBun },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -438,18 +545,9 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const stageRoot = path.join(tmpdir, "stage");
       const installRoot = path.join(tmpdir, "install");
-      const runtimeBin = createUnixRuntimeBin(tmpdir);
+      const runtimePath = createRuntimePath(tmpdir);
 
-      writeFile(
-        path.join(
-          distRoot,
-          `codex-potter-${currentUnixTargetTriple}`,
-          "nested",
-          "codex-potter",
-        ),
-        launcherProbeScript(),
-        0o755,
-      );
+      stageLauncherBinary(distRoot, "probe");
 
       stageReleasePackage({
         npmRoot: repoNpmRoot,
@@ -464,17 +562,18 @@ test(
         installRoot,
       );
 
-      const launcherOutput = execFileSync("codex-potter", ["--version"], {
+      const launcherOutput = runCommand("codex-potter", launcherProbeArgs(), {
         encoding: "utf8",
-        env: {
-          ...process.env,
+        env: createRuntimeEnv(tmpdir, {
           ...installEnv,
-          PATH: [path.dirname(binPath), runtimeBin].join(path.delimiter),
-        },
+          PATH: runtimePath
+            ? [path.dirname(binPath), runtimePath].join(path.delimiter)
+            : path.dirname(binPath),
+        }),
       });
 
       assert.equal(
-        launcherOutput,
+        normalizeOutput(launcherOutput),
         expectedLauncherOutput({ managedByNpm: "", managedByBun: "1" }),
       );
     } finally {
