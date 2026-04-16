@@ -87,6 +87,14 @@ function extractPackage(tarballPath, extractRoot) {
   return path.join(extractRoot, "package");
 }
 
+function installPackedPackageWithNpm(tarballPath, installRoot) {
+  fs.mkdirSync(installRoot, { recursive: true });
+  execFileSync("npm", ["install", "--prefix", installRoot, tarballPath], {
+    stdio: "ignore",
+  });
+  return path.join(installRoot, "node_modules", ".bin", "codex-potter");
+}
+
 function getCurrentUnixTargetTriple() {
   switch (process.platform) {
     case "linux":
@@ -196,7 +204,7 @@ test("stageReleasePackage preserves Windows executable names", () => {
 });
 
 test(
-  "stageReleasePackage launcher runs from the packed repository tarball through a symlinked bin entry on the current unix platform",
+  "stageReleasePackage launcher runs after npm installs the packed repository tarball on the current unix platform",
   { skip: !currentUnixTargetTriple },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -204,8 +212,7 @@ test(
     try {
       const distRoot = path.join(tmpdir, "dist");
       const stageRoot = path.join(tmpdir, "stage");
-      const extractRoot = path.join(tmpdir, "extract");
-      const binLinkPath = path.join(tmpdir, "codex-potter");
+      const installRoot = path.join(tmpdir, "install");
 
       writeFile(
         path.join(
@@ -226,10 +233,9 @@ test(
       });
 
       const tarballPath = packStage(stageRoot, tmpdir);
-      const packageRoot = extractPackage(tarballPath, extractRoot);
-      fs.symlinkSync(path.join(packageRoot, "bin", "codex-potter.js"), binLinkPath);
+      const installedBinPath = installPackedPackageWithNpm(tarballPath, installRoot);
 
-      const launcherOutput = execFileSync(binLinkPath, ["--version"], {
+      const launcherOutput = execFileSync(installedBinPath, ["--version"], {
         encoding: "utf8",
       });
       assert.equal(launcherOutput, "launcher smoke ok\n");
