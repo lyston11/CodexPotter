@@ -1732,6 +1732,80 @@ mod tests {
     }
 
     #[test]
+    fn alt_arrow_word_navigation_groups_repeated_separators() {
+        let text = "====abc+-==";
+        let mut t = ta_with(text);
+        t.set_cursor(0);
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+-".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), text.len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+-".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(t.cursor(), 0);
+    }
+
+    #[test]
+    fn control_arrow_word_navigation_groups_repeated_separators() {
+        let text = "====abc+-==";
+        let mut t = ta_with(text);
+        t.set_cursor(0);
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====abc+".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====abc+-".len());
+
+        t.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), text.len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====abc+-".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====abc+".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), "====".len());
+
+        t.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(t.cursor(), 0);
+    }
+
+    #[test]
     fn super_up_down_match_regular_line_navigation() {
         let mut regular = ta_with("hello\nworld");
         regular.set_cursor(7);
