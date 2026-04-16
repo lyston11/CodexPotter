@@ -1985,25 +1985,36 @@ mod tests {
 
         let abc_start = text.find("abc").unwrap();
         let abc_end = abc_start + "abc".len();
+        let leading_equals_mid = abc_start / 2;
+        let middle_equals_mid = abc_end + 2;
         let plus_pos = text.find('+').unwrap();
         let minus_pos = text.find('-').unwrap();
         assert_eq!(minus_pos, plus_pos + 1);
         let tail_equals_start = minus_pos + "-".len();
+        let tail_equals_mid = tail_equals_start + 2;
 
         t.set_cursor(0);
         assert_eq!(t.end_of_next_word(), abc_start);
+        t.set_cursor(leading_equals_mid);
+        assert_eq!(t.end_of_next_word(), abc_start);
         t.set_cursor(abc_start);
         assert_eq!(t.end_of_next_word(), abc_end);
+        t.set_cursor(middle_equals_mid);
+        assert_eq!(t.end_of_next_word(), plus_pos);
         t.set_cursor(abc_end);
         assert_eq!(t.end_of_next_word(), plus_pos);
         t.set_cursor(plus_pos);
         assert_eq!(t.end_of_next_word(), plus_pos + "+".len());
         t.set_cursor(minus_pos);
         assert_eq!(t.end_of_next_word(), minus_pos + "-".len());
+        t.set_cursor(tail_equals_mid);
+        assert_eq!(t.end_of_next_word(), text.len());
         t.set_cursor(tail_equals_start);
         assert_eq!(t.end_of_next_word(), text.len());
 
         t.set_cursor(text.len());
+        assert_eq!(t.beginning_of_previous_word(), tail_equals_start);
+        t.set_cursor(tail_equals_mid);
         assert_eq!(t.beginning_of_previous_word(), tail_equals_start);
         t.set_cursor(tail_equals_start);
         assert_eq!(t.beginning_of_previous_word(), minus_pos);
@@ -2011,8 +2022,12 @@ mod tests {
         assert_eq!(t.beginning_of_previous_word(), plus_pos);
         t.set_cursor(plus_pos);
         assert_eq!(t.beginning_of_previous_word(), abc_end);
+        t.set_cursor(middle_equals_mid);
+        assert_eq!(t.beginning_of_previous_word(), abc_end);
         t.set_cursor(abc_end);
         assert_eq!(t.beginning_of_previous_word(), abc_start);
+        t.set_cursor(leading_equals_mid);
+        assert_eq!(t.beginning_of_previous_word(), 0);
         t.set_cursor(abc_start);
         assert_eq!(t.beginning_of_previous_word(), 0);
     }
@@ -2023,9 +2038,24 @@ mod tests {
         t.set_cursor(t.text().len());
         t.delete_backward_word();
         assert_eq!(t.text(), "abc====");
+        assert_eq!(t.cursor(), t.text().len());
 
         t.delete_backward_word();
         assert_eq!(t.text(), "abc");
+        assert_eq!(t.cursor(), t.text().len());
+    }
+
+    #[test]
+    fn delete_forward_word_deletes_separator_runs() {
+        let mut t = ta_with("abc====def");
+        t.set_cursor("abc".len());
+        t.delete_forward_word();
+        assert_eq!(t.text(), "abcdef");
+        assert_eq!(t.cursor(), "abc".len());
+
+        t.delete_forward_word();
+        assert_eq!(t.text(), "abc");
+        assert_eq!(t.cursor(), t.text().len());
     }
 
     #[test]
