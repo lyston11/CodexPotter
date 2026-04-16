@@ -30,7 +30,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Hardens non-bracketed paste bursts against delayed trailing `Enter` key events: after a burst flush, keep Enter suppression alive briefly so they insert a newline instead of submit/queue.
 - No image pasting support.
 - Bottom pane prompt footer shows the ctrl+g editor hint first, then the optional git branch + working dir (`<branch> ❯ <dir>`). When YOLO is active, it prefixes the footer with a red bold `▲YOLO`.
-- Better word jump by using ICU4X word segmentations.
+- Better word jump by using ICU4X word segmentation, plus grouping consecutive identical ASCII separators as a single segment (e.g. `====` one jump; `+-` splits).
 - Prompt history is persisted under `~/.codexpotter/history.jsonl`.
 
 ### Message Items

@@ -6,6 +6,9 @@
 //! characters) to provide more predictable <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> and
 //! <kbd>Alt</kbd>+<kbd>Backspace</kbd> behavior across ASCII and non-ASCII text.
 //!
+//! Additionally, consecutive identical ASCII separator characters are treated as a single
+//! segment (e.g. `====`), while mixed separators are split by character (e.g. `+-`).
+//!
 //! See `tui/AGENTS.md` ("Better word jump by using ICU4X word segmentations").
 
 use icu_segmenter::WordSegmenter;
@@ -19,6 +22,12 @@ struct Segment {
     start: usize,
     end: usize,
     is_whitespace: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonWhitespaceChunkKind {
+    NonSeparator,
+    Separator(char),
 }
 
 /// Return the byte index of the start of the previous word.
@@ -143,6 +152,70 @@ fn push_run(
     }
 
     let slice = &text[run.clone()];
+    let mut iter = slice.char_indices();
+    let Some((_, first_ch)) = iter.next() else {
+        return;
+    };
+
+    let mut chunk_start = run.start;
+    let mut chunk_kind = non_whitespace_chunk_kind(first_ch);
+
+    for (idx, ch) in iter {
+        let kind = non_whitespace_chunk_kind(ch);
+        if kind == chunk_kind {
+            continue;
+        }
+
+        push_non_whitespace_chunk(
+            text,
+            segmenter,
+            chunk_start..run.start + idx,
+            chunk_kind,
+            out,
+        );
+        chunk_start = run.start + idx;
+        chunk_kind = kind;
+    }
+
+    push_non_whitespace_chunk(text, segmenter, chunk_start..run.end, chunk_kind, out);
+}
+
+fn non_whitespace_chunk_kind(ch: char) -> NonWhitespaceChunkKind {
+    if WORD_SEPARATORS.contains(ch) {
+        NonWhitespaceChunkKind::Separator(ch)
+    } else {
+        NonWhitespaceChunkKind::NonSeparator
+    }
+}
+
+fn push_non_whitespace_chunk(
+    text: &str,
+    segmenter: &icu_segmenter::WordSegmenterBorrowed<'static>,
+    chunk: std::ops::Range<usize>,
+    kind: NonWhitespaceChunkKind,
+    out: &mut Vec<Segment>,
+) {
+    if chunk.start >= chunk.end {
+        return;
+    }
+
+    match kind {
+        NonWhitespaceChunkKind::Separator(_) => out.push(Segment {
+            start: chunk.start,
+            end: chunk.end,
+            is_whitespace: false,
+        }),
+        NonWhitespaceChunkKind::NonSeparator => push_icu_segments(text, segmenter, chunk, out),
+    }
+}
+
+fn push_icu_segments(
+    text: &str,
+    segmenter: &icu_segmenter::WordSegmenterBorrowed<'static>,
+    chunk: std::ops::Range<usize>,
+    out: &mut Vec<Segment>,
+) {
+    let slice = &text[chunk.clone()];
     let mut breakpoints: Vec<usize> = segmenter.segment_str(slice).collect();
     if breakpoints.first().copied() != Some(0) {
         breakpoints.insert(0, 0);
@@ -152,42 +225,17 @@ fn push_run(
     }
 
     for w in breakpoints.windows(2) {
-        let start = run.start + w[0];
-        let end = run.start + w[1];
+        let start = chunk.start + w[0];
+        let end = chunk.start + w[1];
         if start >= end {
             continue;
         }
-        split_by_word_separators(text, start, end, out);
+        out.push(Segment {
+            start,
+            end,
+            is_whitespace: false,
+        });
     }
-}
-
-fn split_by_word_separators(text: &str, start: usize, end: usize, out: &mut Vec<Segment>) {
-    let slice = &text[start..end];
-    let mut seg_start = start;
-    let mut current_is_separator = None;
-
-    for (idx, ch) in slice.char_indices() {
-        let is_separator = WORD_SEPARATORS.contains(ch);
-        match current_is_separator {
-            None => current_is_separator = Some(is_separator),
-            Some(prev) if prev != is_separator => {
-                out.push(Segment {
-                    start: seg_start,
-                    end: start + idx,
-                    is_whitespace: false,
-                });
-                seg_start = start + idx;
-                current_is_separator = Some(is_separator);
-            }
-            Some(_) => {}
-        }
-    }
-
-    out.push(Segment {
-        start: seg_start,
-        end,
-        is_whitespace: false,
-    });
 }
 
 fn find_segment_containing(segments: &[Segment], pos: usize) -> Option<usize> {
