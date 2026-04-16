@@ -178,6 +178,10 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
+      # Trusted publishing requires a recent npm CLI (OIDC support).
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
@@ -189,23 +193,14 @@ jobs:
         with:
           path: dist
 
-      - name: Stage npm package
+      - name: Stage npm tarballs
         shell: bash
         env:
           VERSION: ${{ needs.tag-check.outputs.version }}
         run: |
           set -euo pipefail
-
-          stage_root="${RUNNER_TEMP}/codex-potter-npm-stage"
-          node npm/scripts/stage-release-package.js "${stage_root}" "${GITHUB_WORKSPACE}/dist" "${VERSION}"
-
           mkdir -p dist/npm
-          tarball_name="$(
-            cd "${stage_root}" \
-              && npm pack --json --pack-destination "${GITHUB_WORKSPACE}/dist/npm" \
-              | node -e "const fs=require('fs'); const out=JSON.parse(fs.readFileSync(0,'utf8')); process.stdout.write(out[0].filename || out[0].name);"
-          )"
-          mv "dist/npm/${tarball_name}" "dist/npm/codex-potter-npm-${VERSION}.tgz"
+          node npm/scripts/stage-release-package.js "${GITHUB_WORKSPACE}/dist" "${VERSION}" "${GITHUB_WORKSPACE}/dist/npm"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -217,7 +212,7 @@ jobs:
           files: |
             dist/**/codex-potter-${{ needs.tag-check.outputs.version }}-*.tar.gz
             dist/**/codex-potter-${{ needs.tag-check.outputs.version }}-*.zip
-            dist/npm/codex-potter-npm-${{ needs.tag-check.outputs.version }}.tgz
+            dist/npm/codex-potter-npm-*.tgz
 
       - name: Publish to npm
         shell: bash
@@ -226,13 +221,66 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag_args=()
+          npm_tag=""
           if [[ "${VERSION}" == *-alpha.* ]]; then
-            tag_args+=(--tag alpha)
+            npm_tag="alpha"
           elif [[ "${VERSION}" == *-beta.* ]]; then
-            tag_args+=(--tag beta)
+            npm_tag="beta"
           elif [[ "${VERSION}" == *-* ]]; then
-            tag_args+=(--tag next)
+            npm_tag="next"
           fi
 
-          npm publish "dist/npm/codex-potter-npm-${VERSION}.tgz" --access public "${tag_args[@]}"
+          prefix=""
+          if [[ -n "${npm_tag}" ]]; then
+            prefix="${npm_tag}-"
+          fi
+
+          shopt -s nullglob
+          tarballs=(dist/npm/*-"${VERSION}".tgz)
+          if [[ ${#tarballs[@]} -eq 0 ]]; then
+            echo "No npm tarballs found in dist/npm for version ${VERSION}"
+            exit 1
+          fi
+
+          for tarball in "${tarballs[@]}"; do
+            filename="$(basename "${tarball}")"
+            tag=""
+
+            case "${filename}" in
+              codex-potter-npm-"${VERSION}".tgz)
+                tag="${npm_tag}"
+                ;;
+              codex-potter-npm-*-"${VERSION}".tgz)
+                platform="${filename#codex-potter-npm-}"
+                platform="${platform%-${VERSION}.tgz}"
+                tag="${prefix}${platform}"
+                ;;
+              *)
+                echo "Unexpected npm tarball: ${filename}"
+                exit 1
+                ;;
+            esac
+
+            publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}" --access public)
+            if [[ -n "${tag}" ]]; then
+              publish_cmd+=(--tag "${tag}")
+            fi
+
+            echo "+ ${publish_cmd[*]}"
+            set +e
+            publish_output="$("${publish_cmd[@]}" 2>&1)"
+            publish_status=$?
+            set -e
+
+            echo "${publish_output}"
+            if [[ ${publish_status} -eq 0 ]]; then
+              continue
+            fi
+
+            if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
+              echo "Skipping already-published package version for ${filename}"
+              continue
+            fi
+
+            exit "${publish_status}"
+          done
