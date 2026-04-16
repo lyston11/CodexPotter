@@ -270,12 +270,7 @@ function normalizeOutput(output) {
 function stageLauncherBinary(distRoot, kind) {
   if (currentUnixTargetTriple) {
     writeFile(
-      path.join(
-        distRoot,
-        `codex-potter-${currentUnixTargetTriple}`,
-        "nested",
-        "codex-potter",
-      ),
+      path.join(distRoot, `codex-potter-${currentUnixTargetTriple}`, "codex-potter"),
       kind === "probe" ? launcherProbeScript() : launcherSmokeScript(),
       0o755,
     );
@@ -289,7 +284,6 @@ function stageLauncherBinary(distRoot, kind) {
   const binaryPath = path.join(
     distRoot,
     `codex-potter-${currentWindowsTargetTriple}`,
-    "nested",
     "codex-potter.exe",
   );
   fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
@@ -400,7 +394,6 @@ test("stageReleasePackage preserves Windows executable names", () => {
       path.join(
         distRoot,
         "codex-potter-x86_64-pc-windows-msvc",
-        "nested",
         "codex-potter.exe",
       ),
       "binary",

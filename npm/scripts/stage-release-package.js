@@ -5,35 +5,15 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function findFirstMatchingFile(root, fileName) {
-  const entries = fs.readdirSync(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const entryPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      const nestedMatch = findFirstMatchingFile(entryPath, fileName);
-      if (nestedMatch) {
-        return nestedMatch;
-      }
-      continue;
-    }
-
-    if (entry.name === fileName) {
-      return entryPath;
-    }
-  }
-
-  return null;
-}
-
 function copyArtifactBinary(artifactDir, vendorRoot) {
   const target = path.basename(artifactDir).replace(/^codex-potter-/, "");
   const vendorTargetDir = path.join(vendorRoot, target, "codex-potter");
   const binaryName = target.includes("windows")
     ? "codex-potter.exe"
     : "codex-potter";
-  const binarySource = findFirstMatchingFile(artifactDir, binaryName);
+  const binarySource = path.join(artifactDir, binaryName);
 
-  if (!binarySource) {
+  if (!fs.existsSync(binarySource)) {
     throw new Error(`Missing ${binaryName} in ${artifactDir}`);
   }
 

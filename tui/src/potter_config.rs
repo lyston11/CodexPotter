@@ -55,173 +55,82 @@ fn potter_config_path() -> io::Result<PathBuf> {
 }
 
 fn load_tui_verbosity_from_path(path: &Path) -> io::Result<Option<Verbosity>> {
-    let Some(content) = read_document_string(path)? else {
-        return Ok(None);
-    };
-
-    let doc = match content.parse::<DocumentMut>() {
-        Ok(doc) => doc,
-        Err(_) => return Ok(parse_tui_verbosity_fallback(&content)),
-    };
-
-    Ok(read_tui_verbosity(&doc))
+    load_config_value(
+        path,
+        || None,
+        read_tui_verbosity,
+        parse_tui_verbosity_fallback,
+    )
 }
 
 fn load_yolo_from_path(path: &Path) -> io::Result<bool> {
-    let Some(content) = read_document_string(path)? else {
-        return Ok(false);
-    };
-
-    let doc = match content.parse::<DocumentMut>() {
-        Ok(doc) => doc,
-        Err(_) => return Ok(parse_yolo_fallback(&content).unwrap_or(false)),
-    };
-
-    Ok(read_yolo(&doc).unwrap_or(false))
+    load_config_value(
+        path,
+        || false,
+        |doc| read_yolo(doc).unwrap_or(false),
+        |content| parse_yolo_fallback(content).unwrap_or(false),
+    )
 }
 
 fn persist_tui_verbosity_to_path(path: &Path, verbosity: Verbosity) -> io::Result<()> {
-    let content = match read_document_string(path) {
-        Ok(Some(existing)) => existing,
-        Ok(None) => String::new(),
-        Err(err) => {
-            // Avoid clobbering a file we can't read.
-            return Err(err);
-        }
-    };
-
-    let updated = match content.parse::<DocumentMut>() {
-        Ok(mut doc) => {
-            set_tui_verbosity(&mut doc, verbosity);
-            doc.to_string()
-        }
-        Err(_) => append_tui_fallback(&content, verbosity),
-    };
-
-    crate::path_utils::write_atomically(path, &updated)
+    persist_config_value(
+        path,
+        |doc| set_tui_verbosity(doc, verbosity),
+        |content| append_tui_fallback(content, verbosity),
+    )
 }
 
 fn persist_yolo_to_path(path: &Path, enabled: bool) -> io::Result<()> {
-    let content = match read_document_string(path) {
-        Ok(Some(existing)) => existing,
-        Ok(None) => String::new(),
-        Err(err) => {
-            // Avoid clobbering a file we can't read.
-            return Err(err);
-        }
-    };
-
-    let updated = match content.parse::<DocumentMut>() {
-        Ok(mut doc) => {
-            set_yolo(&mut doc, enabled);
-            doc.to_string()
-        }
-        Err(_) => append_yolo_fallback(&content, enabled),
-    };
-
-    crate::path_utils::write_atomically(path, &updated)
+    persist_config_value(
+        path,
+        |doc| set_yolo(doc, enabled),
+        |content| append_yolo_fallback(content, enabled),
+    )
 }
 
 fn read_tui_verbosity(doc: &DocumentMut) -> Option<Verbosity> {
-    doc.get("tui")
-        .and_then(TomlItem::as_table)
-        .and_then(|tui| tui.get("verbosity"))
-        .and_then(TomlItem::as_value)
+    read_table_value(doc, "tui", "verbosity")
         .and_then(|v| v.as_str())
         .and_then(Verbosity::parse_config_value)
 }
 
 fn read_yolo(doc: &DocumentMut) -> Option<bool> {
-    doc.get("potter")
-        .and_then(TomlItem::as_table)
-        .and_then(|potter| potter.get("yolo"))
-        .and_then(TomlItem::as_value)
-        .and_then(toml_edit::Value::as_bool)
+    read_table_value(doc, "potter", "yolo").and_then(toml_edit::Value::as_bool)
 }
 
 fn set_tui_verbosity(doc: &mut DocumentMut, verbosity: Verbosity) {
-    let tui = ensure_table_for_write(doc, "tui");
-    tui["verbosity"] = value(verbosity.config_value().to_string());
+    set_table_value(
+        doc,
+        "tui",
+        "verbosity",
+        value(verbosity.config_value().to_string()),
+    );
 }
 
 fn set_yolo(doc: &mut DocumentMut, enabled: bool) {
-    let potter = ensure_table_for_write(doc, "potter");
-    potter["yolo"] = value(enabled);
+    set_table_value(doc, "potter", "yolo", value(enabled));
 }
 
 fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
-    let mut in_tui = false;
-    let mut result = None;
-
-    for line in contents.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('[') {
-            in_tui = matches!(parse_table_header_name(trimmed), Some("tui"));
-            continue;
-        }
-
-        if !in_tui {
-            continue;
-        }
-
-        let Some(line) = strip_toml_comment(trimmed) else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "verbosity" {
-            continue;
-        }
-
+    parse_fallback_table_key(contents, "tui", "verbosity", |value| {
         let token = value
             .split_whitespace()
             .next()
             .unwrap_or_default()
             .trim()
             .trim_matches('"');
-        if let Some(verbosity) = Verbosity::parse_config_value(token) {
-            result = Some(verbosity);
-        }
-    }
-
-    result
+        Verbosity::parse_config_value(token)
+    })
 }
 
 fn parse_yolo_fallback(contents: &str) -> Option<bool> {
-    let mut in_potter = false;
-    let mut result = None;
-
-    for line in contents.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('[') {
-            in_potter = matches!(parse_table_header_name(trimmed), Some("potter"));
-            continue;
+    parse_fallback_table_key(contents, "potter", "yolo", |value| {
+        match value.split_whitespace().next().unwrap_or_default() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
         }
-
-        if !in_potter {
-            continue;
-        }
-
-        let Some(line) = strip_toml_comment(trimmed) else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "yolo" {
-            continue;
-        }
-
-        let token = value.split_whitespace().next().unwrap_or_default();
-        if token == "true" {
-            result = Some(true);
-        } else if token == "false" {
-            result = Some(false);
-        }
-    }
-
-    result
+    })
 }
 
 fn parse_table_header_name(line: &str) -> Option<&str> {
@@ -262,25 +171,123 @@ fn ensure_table_for_write<'a>(doc: &'a mut DocumentMut, key: &str) -> &'a mut To
     }
 }
 
-fn append_tui_fallback(existing: &str, verbosity: Verbosity) -> String {
-    let mut out = existing.to_string();
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+fn load_config_value<T>(
+    path: &Path,
+    missing: impl FnOnce() -> T,
+    read_doc: impl FnOnce(&DocumentMut) -> T,
+    parse_fallback: impl FnOnce(&str) -> T,
+) -> io::Result<T> {
+    let Some(content) = read_document_string(path)? else {
+        return Ok(missing());
+    };
+
+    let doc = match content.parse::<DocumentMut>() {
+        Ok(doc) => doc,
+        Err(_) => return Ok(parse_fallback(&content)),
+    };
+
+    Ok(read_doc(&doc))
+}
+
+fn persist_config_value(
+    path: &Path,
+    update_doc: impl FnOnce(&mut DocumentMut),
+    append_fallback: impl FnOnce(&str) -> String,
+) -> io::Result<()> {
+    let content = match read_document_string(path) {
+        Ok(Some(existing)) => existing,
+        Ok(None) => String::new(),
+        Err(err) => {
+            // Avoid clobbering a file we can't read.
+            return Err(err);
+        }
+    };
+
+    let updated = match content.parse::<DocumentMut>() {
+        Ok(mut doc) => {
+            update_doc(&mut doc);
+            doc.to_string()
+        }
+        Err(_) => append_fallback(&content),
+    };
+
+    crate::path_utils::write_atomically(path, &updated)
+}
+
+fn read_table_value<'a>(
+    doc: &'a DocumentMut,
+    table_key: &str,
+    value_key: &str,
+) -> Option<&'a toml_edit::Value> {
+    doc.get(table_key)
+        .and_then(TomlItem::as_table)
+        .and_then(|table| table.get(value_key))
+        .and_then(TomlItem::as_value)
+}
+
+fn set_table_value(doc: &mut DocumentMut, table_key: &str, value_key: &str, value: TomlItem) {
+    let table = ensure_table_for_write(doc, table_key);
+    table[value_key] = value;
+}
+
+fn parse_fallback_table_key<T>(
+    contents: &str,
+    table_name: &str,
+    key_name: &str,
+    mut parse_value: impl FnMut(&str) -> Option<T>,
+) -> Option<T> {
+    let mut in_table = false;
+    let mut result = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            in_table = matches!(parse_table_header_name(trimmed), Some(name) if name == table_name);
+            continue;
+        }
+
+        if !in_table {
+            continue;
+        }
+
+        let Some(line) = strip_toml_comment(trimmed) else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != key_name {
+            continue;
+        }
+
+        if let Some(parsed) = parse_value(value) {
+            result = Some(parsed);
+        }
     }
-    out.push('\n');
-    out.push_str("[tui]\n");
-    out.push_str(&format!("verbosity = \"{}\"\n", verbosity.config_value()));
-    out
+
+    result
+}
+
+fn append_tui_fallback(existing: &str, verbosity: Verbosity) -> String {
+    append_table_fallback(
+        existing,
+        "tui",
+        format!("verbosity = \"{}\"\n", verbosity.config_value()),
+    )
 }
 
 fn append_yolo_fallback(existing: &str, enabled: bool) -> String {
+    append_table_fallback(existing, "potter", format!("yolo = {enabled}\n"))
+}
+
+fn append_table_fallback(existing: &str, table_name: &str, assignment: String) -> String {
     let mut out = existing.to_string();
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
     out.push('\n');
-    out.push_str("[potter]\n");
-    out.push_str(&format!("yolo = {enabled}\n"));
+    out.push_str(&format!("[{table_name}]\n"));
+    out.push_str(&assignment);
     out
 }
 
