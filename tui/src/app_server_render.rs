@@ -3840,6 +3840,53 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_slash_popup_compact_kb_inserts_prompt_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/c".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
+    }
+
+    #[test]
     fn round_renderer_slash_exit_requests_interrupt_and_exit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
