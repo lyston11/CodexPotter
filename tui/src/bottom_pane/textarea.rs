@@ -1732,6 +1732,69 @@ mod tests {
     }
 
     #[test]
+    fn alt_b_f_word_navigation_groups_repeated_separators() {
+        let text = "====abc+-==";
+        let mut t = ta_with(text);
+        t.set_cursor(0);
+
+        t.input(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+-".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), text.len());
+
+        t.input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+-".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc+".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), "====".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert_eq!(t.cursor(), 0);
+    }
+
+    #[test]
+    fn alt_word_delete_groups_repeated_separators() {
+        let mut t = ta_with("abc====def");
+        t.set_cursor(t.text().len());
+        t.input(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(t.text(), "abc====");
+        assert_eq!(t.cursor(), t.text().len());
+
+        t.input(KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        assert_eq!(t.text(), "abc");
+        assert_eq!(t.cursor(), t.text().len());
+
+        let mut t = ta_with("abc====def");
+        t.set_cursor("abc".len());
+        t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(t.text(), "abcdef");
+        assert_eq!(t.cursor(), "abc".len());
+
+        t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(t.text(), "abc");
+        assert_eq!(t.cursor(), t.text().len());
+    }
+
+    #[test]
     fn alt_arrow_word_navigation_groups_repeated_separators() {
         let text = "====abc+-==";
         let mut t = ta_with(text);
