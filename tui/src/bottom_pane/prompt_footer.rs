@@ -143,3 +143,24 @@ pub fn render_prompt_footer_for_test(
         yolo_active,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PromptFooterContext;
+    use std::path::PathBuf;
+
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn prompt_footer_context_discards_whitespace_only_branch() {
+        assert_eq!(
+            PromptFooterContext::new(PathBuf::from("project"), Some("   ".to_string())),
+            PromptFooterContext {
+                working_dir: PathBuf::from("project"),
+                git_branch: None,
+                yolo_active: false,
+                yolo_cli_override: false,
+            }
+        );
+    }
+}
