@@ -178,6 +178,9 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
+      - name: Run npm packaging tests
+        run: node --test npm/test/*.test.js
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:

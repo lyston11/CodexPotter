@@ -11,6 +11,7 @@ import { stageReleasePackage } from "../scripts/stage-release-package.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoNpmRoot = path.resolve(__dirname, "..");
+const currentUnixTargetTriple = getCurrentUnixTargetTriple();
 
 function writeFile(filePath, contents, mode) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -57,6 +58,41 @@ function listTarballFiles(tarballPath) {
     .sort();
 }
 
+function packStage(stageRoot, outputDir) {
+  const packMetadata = JSON.parse(
+    execFileSync("npm", ["pack", "--json", "--pack-destination", outputDir], {
+      cwd: stageRoot,
+      encoding: "utf8",
+    }),
+  );
+  return path.join(outputDir, packMetadata[0].filename);
+}
+
+function getCurrentUnixTargetTriple() {
+  switch (process.platform) {
+    case "linux":
+      switch (process.arch) {
+        case "x64":
+          return "x86_64-unknown-linux-musl";
+        case "arm64":
+          return "aarch64-unknown-linux-musl";
+        default:
+          return null;
+      }
+    case "darwin":
+      switch (process.arch) {
+        case "x64":
+          return "x86_64-apple-darwin";
+        case "arm64":
+          return "aarch64-apple-darwin";
+        default:
+          return null;
+      }
+    default:
+      return null;
+  }
+}
+
 test("stageReleasePackage keeps runtime lib files in the packed tarball", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
@@ -88,13 +124,7 @@ test("stageReleasePackage keeps runtime lib files in the packed tarball", () => 
       "export function reemitSignalOrExit() {}\n",
     );
 
-    const packMetadata = JSON.parse(
-      execFileSync("npm", ["pack", "--json", "--pack-destination", tmpdir], {
-        cwd: stageRoot,
-        encoding: "utf8",
-      }),
-    );
-    const tarballPath = path.join(tmpdir, packMetadata[0].filename);
+    const tarballPath = packStage(stageRoot, tmpdir);
 
     assert.deepEqual(listTarballFiles(tarballPath), [
       "package/README.md",
@@ -172,13 +202,7 @@ test("stageReleasePackage keeps the repository runtime files in the packed tarba
       version: "0.1.25",
     });
 
-    const packMetadata = JSON.parse(
-      execFileSync("npm", ["pack", "--json", "--pack-destination", tmpdir], {
-        cwd: stageRoot,
-        encoding: "utf8",
-      }),
-    );
-    const tarballPath = path.join(tmpdir, packMetadata[0].filename);
+    const tarballPath = packStage(stageRoot, tmpdir);
     const tarballFiles = listTarballFiles(tarballPath);
 
     assert.ok(tarballFiles.includes("package/bin/codex-potter.js"));
@@ -192,3 +216,48 @@ test("stageReleasePackage keeps the repository runtime files in the packed tarba
     fs.rmSync(tmpdir, { recursive: true, force: true });
   }
 });
+
+test(
+  "stageReleasePackage launcher runs from the packed repository tarball on the current unix platform",
+  { skip: !currentUnixTargetTriple },
+  () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+    try {
+      const distRoot = path.join(tmpdir, "dist");
+      const stageRoot = path.join(tmpdir, "stage");
+      const extractRoot = path.join(tmpdir, "extract");
+
+      writeFile(
+        path.join(
+          distRoot,
+          `codex-potter-${currentUnixTargetTriple}`,
+          "nested",
+          "codex-potter",
+        ),
+        "#!/bin/sh\nprintf 'launcher smoke ok\\n'\n",
+        0o755,
+      );
+
+      stageReleasePackage({
+        npmRoot: repoNpmRoot,
+        stageRoot,
+        distRoot,
+        version: "0.1.25",
+      });
+
+      const tarballPath = packStage(stageRoot, tmpdir);
+      fs.mkdirSync(extractRoot, { recursive: true });
+      execFileSync("tar", ["-xf", tarballPath, "-C", extractRoot]);
+
+      const launcherOutput = execFileSync(
+        "node",
+        [path.join(extractRoot, "package", "bin", "codex-potter.js"), "--version"],
+        { encoding: "utf8" },
+      );
+      assert.equal(launcherOutput, "launcher smoke ok\n");
+    } finally {
+      fs.rmSync(tmpdir, { recursive: true, force: true });
+    }
+  },
+);
