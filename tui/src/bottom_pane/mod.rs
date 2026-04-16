@@ -18,6 +18,7 @@ mod list_selection_view;
 mod paste_burst;
 pub mod popup_consts;
 mod prompt_args;
+mod prompt_footer;
 mod queued_user_messages;
 mod scroll_state;
 mod selection_popup_common;
@@ -35,6 +36,10 @@ pub use list_selection_view::SelectionViewParams;
 pub use list_selection_view::SideContentWidth;
 pub use list_selection_view::popup_content_width;
 pub use list_selection_view::side_by_side_layout_widths;
+pub use prompt_footer::PromptFooterContext;
+pub use prompt_footer::PromptFooterOverride;
+#[cfg(test)]
+pub use prompt_footer::render_prompt_footer_for_test;
 pub use queued_user_messages::QueuedUserMessages;
 
 use std::path::Path;
@@ -43,68 +48,16 @@ use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Stylize;
-use ratatui::text::Span;
-use ratatui::widgets::WidgetRef;
 
 use crate::app_event_sender::AppEventSender;
-use crate::external_editor_integration;
 use crate::render::renderable::Renderable;
 use crate::status_indicator_widget::StatusIndicatorWidget;
 use crate::tui::FrameRequester;
+use prompt_footer::render_prompt_footer;
 
 /// How long the "press again to quit" hint stays visible.
 #[cfg(test)]
 pub const QUIT_SHORTCUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptFooterOverride {
-    ExternalEditorHint,
-}
-
-/// The context shown in the 1-line prompt footer under the composer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptFooterContext {
-    /// Working directory shown in the footer.
-    pub working_dir: PathBuf,
-    /// Current git branch for `working_dir`, when available.
-    pub git_branch: Option<String>,
-    /// Whether YOLO is active for the current session.
-    pub yolo_active: bool,
-    /// Whether the CLI `--yolo` flag forces YOLO on for this process.
-    pub yolo_cli_override: bool,
-}
-
-impl PromptFooterContext {
-    /// Create a new prompt footer context.
-    ///
-    /// Empty or whitespace-only branch names are treated as `None`.
-    pub fn new(working_dir: PathBuf, git_branch: Option<String>) -> Self {
-        Self {
-            working_dir,
-            git_branch: git_branch.and_then(|branch| (!branch.trim().is_empty()).then_some(branch)),
-            yolo_active: false,
-            yolo_cli_override: false,
-        }
-    }
-
-    pub fn with_yolo_active(mut self, yolo_active: bool) -> Self {
-        self.yolo_active = yolo_active;
-        self
-    }
-
-    /// Record whether the CLI `--yolo` flag is forcing YOLO on for this process.
-    pub fn with_yolo_cli_override(mut self, yolo_cli_override: bool) -> Self {
-        self.yolo_cli_override = yolo_cli_override;
-        self
-    }
-
-    /// Recompute the footer indicator after the persisted default YOLO setting changes.
-    pub fn with_persisted_yolo_enabled(mut self, enabled: bool) -> Self {
-        self.yolo_active = self.yolo_cli_override || enabled;
-        self
-    }
-}
 
 pub struct BottomPaneParams {
     pub frame_requester: FrameRequester,
@@ -458,74 +411,4 @@ impl Renderable for BottomPane {
         );
         self.composer.cursor_pos(composer_area)
     }
-}
-
-fn render_prompt_footer(
-    area: Rect,
-    buf: &mut Buffer,
-    override_mode: Option<PromptFooterOverride>,
-    working_dir: &Path,
-    git_branch: Option<&str>,
-    yolo_active: bool,
-) {
-    if area.is_empty() {
-        return;
-    }
-
-    let line = match override_mode {
-        Some(PromptFooterOverride::ExternalEditorHint) => ratatui::text::Line::from(vec![
-            " ".into(),
-            Span::from(external_editor_integration::EXTERNAL_EDITOR_HINT).bold(),
-        ]),
-        None => {
-            let dir_display =
-                crate::text_formatting::format_directory_for_display(working_dir, Some(50));
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            if yolo_active {
-                spans.push(Span::from("▲YOLO").red().bold());
-                spans.push(Span::from(" · ").dim());
-            }
-
-            spans.push(Span::from("ctrl+g"));
-            spans.push(Span::from(" editor").dim());
-            spans.push(Span::from(" · ").dim());
-
-            if let Some(branch) = git_branch.filter(|branch| !branch.trim().is_empty()) {
-                spans.push(Span::from(branch.to_string()).cyan());
-                spans.push(Span::from(" ❯ ").dim());
-            }
-
-            spans.push(Span::from(dir_display).dim());
-            ratatui::text::Line::from(spans)
-        }
-    };
-
-    // Match the legacy footer indent.
-    let mut footer_rect = area;
-    let indent = crate::ui_consts::LIVE_PREFIX_COLS;
-    if footer_rect.width > indent {
-        footer_rect.x += indent;
-        footer_rect.width = footer_rect.width.saturating_sub(indent);
-    }
-
-    WidgetRef::render_ref(&line, footer_rect, buf);
-}
-
-#[cfg(test)]
-pub fn render_prompt_footer_for_test(
-    area: Rect,
-    buf: &mut Buffer,
-    override_mode: Option<PromptFooterOverride>,
-    working_dir: &Path,
-    git_branch: Option<&str>,
-    yolo_active: bool,
-) {
-    render_prompt_footer(
-        area,
-        buf,
-        override_mode,
-        working_dir,
-        git_branch,
-        yolo_active,
-    );
 }

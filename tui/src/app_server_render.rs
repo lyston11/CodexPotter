@@ -8337,9 +8337,9 @@ mod tests {
     }
 
     #[test]
-    fn prompt_footer_includes_external_editor_hint() {
+    fn prompt_footer_includes_branch_and_working_dir() {
         assert_snapshot!(
-            "prompt_footer_includes_external_editor",
+            "prompt_footer_includes_branch_and_working_dir",
             render_prompt_footer_line(None)
         );
     }
