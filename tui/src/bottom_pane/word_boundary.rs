@@ -9,7 +9,8 @@
 //! Additionally, consecutive identical ASCII separator characters are treated as a single
 //! segment (e.g. `====`), while mixed separators are split by character (e.g. `+-`).
 //!
-//! See `tui/AGENTS.md` ("Better word jump by using ICU4X word segmentations").
+//! See `tui/AGENTS.md` ("Better word jump by using ICU4X word segmentation, plus
+//! grouping consecutive identical ASCII separators as a single segment").
 
 use icu_segmenter::WordSegmenter;
 use icu_segmenter::options::WordBreakInvariantOptions;
@@ -245,4 +246,59 @@ fn push_icu_segments(
 
 fn find_segment_containing(segments: &[Segment], pos: usize) -> Option<usize> {
     segments.iter().position(|s| pos >= s.start && pos < s.end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn segments_group_repeated_ascii_separators_by_character_run() {
+        let text = "====abc==+-==";
+
+        assert_eq!(
+            segments(text),
+            vec![
+                Segment {
+                    start: 0,
+                    end: 4,
+                    is_whitespace: false,
+                },
+                Segment {
+                    start: 4,
+                    end: 7,
+                    is_whitespace: false,
+                },
+                Segment {
+                    start: 7,
+                    end: 9,
+                    is_whitespace: false,
+                },
+                Segment {
+                    start: 9,
+                    end: 10,
+                    is_whitespace: false,
+                },
+                Segment {
+                    start: 10,
+                    end: 11,
+                    is_whitespace: false,
+                },
+                Segment {
+                    start: 11,
+                    end: 13,
+                    is_whitespace: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn word_helpers_clamp_invalid_utf8_positions_before_navigation() {
+        let text = "a😀====b";
+
+        assert_eq!(beginning_of_previous_word(text, 4), 0);
+        assert_eq!(end_of_next_word(text, 4), "a😀".len());
+    }
 }
