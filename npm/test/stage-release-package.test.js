@@ -81,6 +81,12 @@ function packStage(stageRoot, outputDir) {
   return path.join(outputDir, packMetadata[0].filename);
 }
 
+function extractPackage(tarballPath, extractRoot) {
+  fs.mkdirSync(extractRoot, { recursive: true });
+  execFileSync("tar", ["-xf", tarballPath, "-C", extractRoot]);
+  return path.join(extractRoot, "package");
+}
+
 function getCurrentUnixTargetTriple() {
   switch (process.platform) {
     case "linux":
@@ -138,12 +144,11 @@ test(
       assert.equal(stagedPackageJson.version, "0.1.25");
 
       const tarballPath = packStage(stageRoot, tmpdir);
-      fs.mkdirSync(extractRoot, { recursive: true });
-      execFileSync("tar", ["-xf", tarballPath, "-C", extractRoot]);
+      const packageRoot = extractPackage(tarballPath, extractRoot);
 
       const launcherOutput = execFileSync(
         "node",
-        [path.join(extractRoot, "package", "bin", "codex-potter.js"), "--version"],
+        [path.join(packageRoot, "bin", "codex-potter.js"), "--version"],
         { encoding: "utf8" },
       );
       assert.equal(launcherOutput, "fixture smoke ok\n");
@@ -191,7 +196,7 @@ test("stageReleasePackage preserves Windows executable names", () => {
 });
 
 test(
-  "stageReleasePackage launcher runs from the packed repository tarball on the current unix platform",
+  "stageReleasePackage launcher runs from the packed repository tarball through a symlinked bin entry on the current unix platform",
   { skip: !currentUnixTargetTriple },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -200,6 +205,7 @@ test(
       const distRoot = path.join(tmpdir, "dist");
       const stageRoot = path.join(tmpdir, "stage");
       const extractRoot = path.join(tmpdir, "extract");
+      const binLinkPath = path.join(tmpdir, "codex-potter");
 
       writeFile(
         path.join(
@@ -220,14 +226,12 @@ test(
       });
 
       const tarballPath = packStage(stageRoot, tmpdir);
-      fs.mkdirSync(extractRoot, { recursive: true });
-      execFileSync("tar", ["-xf", tarballPath, "-C", extractRoot]);
+      const packageRoot = extractPackage(tarballPath, extractRoot);
+      fs.symlinkSync(path.join(packageRoot, "bin", "codex-potter.js"), binLinkPath);
 
-      const launcherOutput = execFileSync(
-        "node",
-        [path.join(extractRoot, "package", "bin", "codex-potter.js"), "--version"],
-        { encoding: "utf8" },
-      );
+      const launcherOutput = execFileSync(binLinkPath, ["--version"], {
+        encoding: "utf8",
+      });
       assert.equal(launcherOutput, "launcher smoke ok\n");
     } finally {
       fs.rmSync(tmpdir, { recursive: true, force: true });

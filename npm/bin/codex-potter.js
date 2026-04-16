@@ -3,7 +3,7 @@
 
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -166,6 +166,9 @@ async function main(argv) {
   process.exit(childResult.exitCode);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+// npm and bun typically expose package bins through symlinks, so resolve the
+// invoked path before deciding whether this module is the direct entry point.
+const invokedPath = process.argv[1] ? realpathSync(process.argv[1]) : null;
+if (invokedPath === __filename) {
   await main(process.argv.slice(2));
 }
