@@ -51,13 +51,17 @@ impl PromptFooterContext {
 
     /// Set whether the current session should render the YOLO indicator.
     pub fn with_yolo_active(mut self, yolo_active: bool) -> Self {
-        self.yolo_active = yolo_active;
+        self.yolo_active = self.yolo_cli_override || yolo_active;
         self
     }
 
     /// Record whether the CLI `--yolo` flag is forcing YOLO on for this process.
+    ///
+    /// When enabled, this also keeps `yolo_active` true so the context cannot enter an
+    /// inconsistent state.
     pub fn with_yolo_cli_override(mut self, yolo_cli_override: bool) -> Self {
         self.yolo_cli_override = yolo_cli_override;
+        self.yolo_active = yolo_cli_override || self.yolo_active;
         self
     }
 
@@ -160,6 +164,35 @@ mod tests {
                 git_branch: None,
                 yolo_active: false,
                 yolo_cli_override: false,
+            }
+        );
+    }
+
+    #[test]
+    fn prompt_footer_context_cli_override_forces_yolo_active() {
+        assert_eq!(
+            PromptFooterContext::new(PathBuf::from("project"), Some("main".to_string()))
+                .with_yolo_cli_override(true),
+            PromptFooterContext {
+                working_dir: PathBuf::from("project"),
+                git_branch: Some("main".to_string()),
+                yolo_active: true,
+                yolo_cli_override: true,
+            }
+        );
+    }
+
+    #[test]
+    fn prompt_footer_context_keeps_cli_override_authoritative_after_yolo_updates() {
+        assert_eq!(
+            PromptFooterContext::new(PathBuf::from("project"), Some("main".to_string()))
+                .with_yolo_cli_override(true)
+                .with_yolo_active(false),
+            PromptFooterContext {
+                working_dir: PathBuf::from("project"),
+                git_branch: Some("main".to_string()),
+                yolo_active: true,
+                yolo_cli_override: true,
             }
         );
     }
