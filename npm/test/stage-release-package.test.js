@@ -71,7 +71,10 @@ setlocal
 }
 
 function listTarballFiles(tarballPath) {
-  return execFileSync("tar", ["-tf", tarballPath], { encoding: "utf8" })
+  const tarballArgs =
+    process.platform === "win32" ? [path.basename(tarballPath)] : [tarballPath];
+  const cwd = process.platform === "win32" ? path.dirname(tarballPath) : undefined;
+  return execFileSync("tar", ["-tf", ...tarballArgs], { cwd, encoding: "utf8" })
     .trim()
     .split(/\r?\n/)
     .filter(Boolean)
@@ -103,7 +106,11 @@ function packStage(stageRoot, outputDir) {
 
 function extractPackage(tarballPath, extractRoot) {
   fs.mkdirSync(extractRoot, { recursive: true });
-  execFileSync("tar", ["-xf", tarballPath, "-C", extractRoot]);
+  const cwd = process.platform === "win32" ? path.dirname(tarballPath) : undefined;
+  const tarballArg = process.platform === "win32" ? path.basename(tarballPath) : tarballPath;
+  const extractArg =
+    process.platform === "win32" ? path.relative(cwd ?? "", extractRoot) || "." : extractRoot;
+  execFileSync("tar", ["-xf", tarballArg, "-C", extractArg], { cwd });
   return path.join(extractRoot, "package");
 }
 
@@ -277,9 +284,29 @@ function buildWindowsCommandInvocation(command, args) {
   return [command, ...args].map(quoteWindowsCmdArgument).join(" ");
 }
 
+function quotePosixShellArgument(argument) {
+  if (argument.length === 0) {
+    return "''";
+  }
+
+  return `'${argument.replaceAll("'", `'"'"'`)}'`;
+}
+
+function buildPosixShellInvocation(command, args) {
+  return [command, ...args].map(quotePosixShellArgument).join(" ");
+}
+
 function runCommand(command, args, options) {
   if (process.platform !== "win32") {
-    return execFileSync(command, args, options);
+    try {
+      return execFileSync(command, args, options);
+    } catch (error) {
+      if (error?.code !== "ENOEXEC") {
+        throw error;
+      }
+
+      return execFileSync("/bin/sh", ["-c", buildPosixShellInvocation(command, args)], options);
+    }
   }
 
   // Let cmd.exe parse the already-escaped command line itself; feeding the same
