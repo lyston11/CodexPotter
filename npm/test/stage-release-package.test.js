@@ -150,6 +150,31 @@ function createUnixRuntimeBin(root) {
   return runtimeBin;
 }
 
+function launcherSmokeScript() {
+  return "#!/bin/sh\nprintf 'launcher smoke ok\\n'\n";
+}
+
+function launcherProbeScript() {
+  return `#!/bin/sh
+printf 'launcher smoke ok\\n'
+printf 'npm=%s bun=%s\\n' "\${CODEX_POTTER_MANAGED_BY_NPM-}" "\${CODEX_POTTER_MANAGED_BY_BUN-}"
+`;
+}
+
+function expectedLauncherOutput({ managedByNpm, managedByBun }) {
+  return `launcher smoke ok\nnpm=${managedByNpm} bun=${managedByBun}\n`;
+}
+
+function installPackedPackageGloballyWithNpm(tarballPath, installRoot) {
+  fs.mkdirSync(installRoot, { recursive: true });
+  execFileSync("npm", ["install", "--global", "--prefix", installRoot, tarballPath], {
+    stdio: "ignore",
+  });
+  return {
+    binPath: path.join(installRoot, "bin", "codex-potter"),
+  };
+}
+
 function getCurrentUnixTargetTriple() {
   switch (process.platform) {
     case "linux":
@@ -276,7 +301,7 @@ test(
           "nested",
           "codex-potter",
         ),
-        "#!/bin/sh\nprintf 'launcher smoke ok\\n'\n",
+        launcherSmokeScript(),
         0o755,
       );
 
@@ -323,7 +348,7 @@ test(
           "nested",
           "codex-potter",
         ),
-        "#!/bin/sh\nprintf 'launcher smoke ok\\n'\n",
+        launcherSmokeScript(),
         0o755,
       );
 
@@ -353,7 +378,58 @@ test(
 );
 
 test(
-  "stageReleasePackage launcher runs after bun installs the packed repository tarball globally without node on PATH",
+  "stageReleasePackage launcher reports npm-managed env after npm installs the packed repository tarball globally without node on PATH",
+  { skip: !currentUnixTargetTriple },
+  () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+    try {
+      const distRoot = path.join(tmpdir, "dist");
+      const stageRoot = path.join(tmpdir, "stage");
+      const installRoot = path.join(tmpdir, "install");
+      const runtimeBin = createUnixRuntimeBin(tmpdir);
+
+      writeFile(
+        path.join(
+          distRoot,
+          `codex-potter-${currentUnixTargetTriple}`,
+          "nested",
+          "codex-potter",
+        ),
+        launcherProbeScript(),
+        0o755,
+      );
+
+      stageReleasePackage({
+        npmRoot: repoNpmRoot,
+        stageRoot,
+        distRoot,
+        version: "0.1.25",
+      });
+
+      const tarballPath = packStage(stageRoot, tmpdir);
+      const { binPath } = installPackedPackageGloballyWithNpm(tarballPath, installRoot);
+
+      const launcherOutput = execFileSync("codex-potter", ["--version"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: [path.dirname(binPath), runtimeBin].join(path.delimiter),
+        },
+      });
+
+      assert.equal(
+        launcherOutput,
+        expectedLauncherOutput({ managedByNpm: "1", managedByBun: "" }),
+      );
+    } finally {
+      fs.rmSync(tmpdir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "stageReleasePackage launcher reports bun-managed env after bun installs the packed repository tarball globally without node on PATH",
   { skip: !currentUnixTargetTriple || !hasBun },
   () => {
     const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -371,7 +447,7 @@ test(
           "nested",
           "codex-potter",
         ),
-        "#!/bin/sh\nprintf 'launcher smoke ok\\n'\n",
+        launcherProbeScript(),
         0o755,
       );
 
@@ -397,7 +473,10 @@ test(
         },
       });
 
-      assert.equal(launcherOutput, "launcher smoke ok\n");
+      assert.equal(
+        launcherOutput,
+        expectedLauncherOutput({ managedByNpm: "", managedByBun: "1" }),
+      );
     } finally {
       fs.rmSync(tmpdir, { recursive: true, force: true });
     }

@@ -10,6 +10,7 @@ case $script in
   */*) ;;
   *) script=$(command -v "$script") || exit 1 ;;
 esac
+launcher_path=$script
 
 # Resolve package-manager symlinks before locating the bundled native binary.
 while [ -L "$script" ]; do
@@ -55,10 +56,16 @@ esac
 case ${npm_execpath-} in
   *bun*) managed_by_bun=1 ;;
 esac
+case $launcher_path in
+  *".bun/bin/"*|*".bun\\bin\\"*|*".bun/install/global/"*|*".bun\\install\\global\\"*)
+    managed_by_bun=1
+    ;;
+esac
 case $basedir in
   *".bun/install/global"*|*".bun\\install\\global"*) managed_by_bun=1 ;;
 esac
 
+unset CODEX_POTTER_MANAGED_BY_NPM CODEX_POTTER_MANAGED_BY_BUN
 if [ "$managed_by_bun" -eq 1 ]; then
   export CODEX_POTTER_MANAGED_BY_BUN=1
 else
@@ -112,8 +119,11 @@ if exist "%path_dir%\" set "PATH=%path_dir%;%PATH%"
 set "managed_by_bun="
 if not "%npm_config_user_agent%"=="%npm_config_user_agent:bun/=%" set "managed_by_bun=1"
 if not "%npm_execpath%"=="%npm_execpath:bun=%" set "managed_by_bun=1"
+if not "%~dp0"=="%~dp0:.bun\bin\=%" set "managed_by_bun=1"
 if not "%~dp0"=="%~dp0:.bun\install\global\=%" set "managed_by_bun=1"
 
+set "CODEX_POTTER_MANAGED_BY_NPM="
+set "CODEX_POTTER_MANAGED_BY_BUN="
 if defined managed_by_bun (
   set "CODEX_POTTER_MANAGED_BY_BUN=1"
 ) else (
