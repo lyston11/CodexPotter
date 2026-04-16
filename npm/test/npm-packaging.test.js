@@ -633,7 +633,7 @@ test("stageReleaseTarballs preserves prerelease version suffixes", () => {
   }
 });
 
-test("stageReleaseTarballs propagates engines metadata", () => {
+test("stageReleaseTarballs propagates package metadata", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
   try {
@@ -654,6 +654,10 @@ test("stageReleaseTarballs propagates engines metadata", () => {
     );
 
     assert.deepEqual(mainPackageJson.engines, { node: ">=16" });
+    assert.equal(
+      mainPackageJson.packageManager,
+      "pnpm@10.29.3+sha512.498e1fb4cca5aa06c1dcf2611e6fafc50972ffe7189998c409e90de74566444298ffe43e6cd2acdc775ba1aa7cc5e092a8b7054c811ba8c5770f84693d33d2dc",
+    );
 
     assert.equal(platformTarballs.length, PLATFORM_VARIANTS.length);
     for (const variant of PLATFORM_VARIANTS) {
@@ -668,6 +672,10 @@ test("stageReleaseTarballs propagates engines metadata", () => {
       );
 
       assert.deepEqual(packageJson.engines, { node: ">=16" });
+      assert.equal(
+        packageJson.packageManager,
+        "pnpm@10.29.3+sha512.498e1fb4cca5aa06c1dcf2611e6fafc50972ffe7189998c409e90de74566444298ffe43e6cd2acdc775ba1aa7cc5e092a8b7054c811ba8c5770f84693d33d2dc",
+      );
     }
   } finally {
     fs.rmSync(tmpdir, { recursive: true, force: true });
