@@ -124,9 +124,20 @@ function copyArtifactBinary({ distRoot, stageRoot, targetTriple }) {
 
 function stageMainPackage({ npmRoot, stageRoot, version }) {
   fs.rmSync(stageRoot, { recursive: true, force: true });
-  fs.cpSync(npmRoot, stageRoot, { recursive: true });
+  fs.mkdirSync(stageRoot, { recursive: true });
 
-  const packageJsonPath = path.join(stageRoot, "package.json");
+  const binSource = path.join(npmRoot, "bin");
+  if (!fs.existsSync(binSource)) {
+    throw new Error(`Missing npm bin directory: ${binSource}`);
+  }
+  fs.cpSync(binSource, path.join(stageRoot, "bin"), { recursive: true });
+
+  const readmeSource = path.join(npmRoot, "README.md");
+  if (fs.existsSync(readmeSource)) {
+    fs.copyFileSync(readmeSource, path.join(stageRoot, "README.md"));
+  }
+
+  const packageJsonPath = path.join(npmRoot, "package.json");
   const packageJson = readPackageJson(packageJsonPath);
   packageJson.name = PACKAGE_NAME;
   packageJson.version = version;
@@ -142,10 +153,7 @@ function stageMainPackage({ npmRoot, stageRoot, version }) {
     }),
   );
 
-  writePackageJson(packageJsonPath, packageJson);
-
-  // Ensure we never ship the legacy "all platforms in one tarball" payload.
-  fs.rmSync(path.join(stageRoot, "vendor"), { recursive: true, force: true });
+  writePackageJson(path.join(stageRoot, "package.json"), packageJson);
 }
 
 function stagePlatformPackage({
