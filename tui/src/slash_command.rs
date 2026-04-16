@@ -6,6 +6,8 @@
 pub enum SlashCommand {
     /// Insert a file mention trigger (`@`) into the composer.
     Mention,
+    /// Insert a canned prompt that asks CodexPotter to compact its local knowledge base.
+    CompactKb,
     /// Configure whether to enable YOLO by default.
     Yolo,
     /// Insert the `/potter:xmodel` marker into the composer.
@@ -23,6 +25,7 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention a file",
+            SlashCommand::CompactKb => "compact CodexPotter's knowledge base",
             SlashCommand::Yolo => "configure whether to enable YOLO by default",
             SlashCommand::PotterXModel => {
                 "(Experimental) Enable cross model review (round 1~3: GPT 5.2 xhigh, round 4+: GPT 5.4 xhigh)"
@@ -37,6 +40,7 @@ impl SlashCommand {
     pub fn command(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention",
+            SlashCommand::CompactKb => "compact-kb",
             SlashCommand::Yolo => "yolo",
             SlashCommand::PotterXModel => "potter:xmodel",
             SlashCommand::Theme => "theme",
@@ -50,6 +54,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Theme => false,
             SlashCommand::Mention
+            | SlashCommand::CompactKb
             | SlashCommand::Yolo
             | SlashCommand::PotterXModel
             | SlashCommand::Verbosity
@@ -71,10 +76,11 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         (SlashCommand::Theme.command(), SlashCommand::Theme),
         (SlashCommand::Verbosity.command(), SlashCommand::Verbosity),
         (SlashCommand::Yolo.command(), SlashCommand::Yolo),
+        (SlashCommand::CompactKb.command(), SlashCommand::CompactKb),
+        (SlashCommand::Exit.command(), SlashCommand::Exit),
         (
             SlashCommand::PotterXModel.command(),
             SlashCommand::PotterXModel,
         ),
-        (SlashCommand::Exit.command(), SlashCommand::Exit),
     ]
 }

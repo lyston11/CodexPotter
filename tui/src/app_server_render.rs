@@ -55,6 +55,9 @@ use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use crate::verbosity::Verbosity;
 
+/// Prompt inserted by the `/compact-kb` slash command.
+const COMPACT_KB_PROMPT: &str = "Cleanup and compact the knowledge base in .codexpotter, remove outdated or duplicated contents, remove unnecessary detailed steps or records, reorganize into a few domain specific topics.";
+
 fn render_runner_viewport(
     area: ratatui::layout::Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -1885,6 +1888,12 @@ impl RenderAppState {
             InputResult::Command(cmd) => match cmd {
                 SlashCommand::Mention => {
                     self.bottom_pane.composer_mut().insert_str("@");
+                    frame_requester.schedule_frame();
+                }
+                SlashCommand::CompactKb => {
+                    self.bottom_pane
+                        .composer_mut()
+                        .insert_str(COMPACT_KB_PROMPT);
                     frame_requester.schedule_frame();
                 }
                 SlashCommand::Yolo => {
@@ -3781,6 +3790,53 @@ mod tests {
             saw_file_search,
             "expected StartFileSearch after inserting '@'"
         );
+    }
+
+    #[test]
+    fn round_renderer_slash_compact_kb_inserts_prompt_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/compact-kb".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
     }
 
     #[test]

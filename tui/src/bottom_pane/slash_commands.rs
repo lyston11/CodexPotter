@@ -41,4 +41,12 @@ mod tests {
     fn yolo_command_resolves_for_dispatch() {
         assert_eq!(find_builtin_command("yolo"), Some(SlashCommand::Yolo));
     }
+
+    #[test]
+    fn compact_kb_command_resolves_for_dispatch() {
+        assert_eq!(
+            find_builtin_command("compact-kb"),
+            Some(SlashCommand::CompactKb)
+        );
+    }
 }
