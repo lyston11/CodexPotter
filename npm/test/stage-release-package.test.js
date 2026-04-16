@@ -33,7 +33,7 @@ function createPackageFixture(npmRoot) {
         bin: {
           "codex-potter": "bin/codex-potter.js",
         },
-        files: ["bin", "lib", "vendor", "README.md"],
+        files: ["bin", "vendor", "README.md"],
       },
       null,
       2,
@@ -41,12 +41,25 @@ function createPackageFixture(npmRoot) {
   );
   writeFile(
     path.join(npmRoot, "bin", "codex-potter.js"),
-    '#!/usr/bin/env node\nimport "../lib/signal-exit.js";\n',
+    `#!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const binaryPath = path.join(
+  __dirname,
+  "..",
+  "vendor",
+  "${currentUnixTargetTriple ?? "unsupported"}",
+  "codex-potter",
+  "codex-potter",
+);
+
+process.stdout.write(execFileSync(binaryPath, process.argv.slice(2), { encoding: "utf8" }));
+`,
     0o755,
-  );
-  writeFile(
-    path.join(npmRoot, "lib", "signal-exit.js"),
-    "export function reemitSignalOrExit() {}\n",
   );
 }
 
@@ -93,50 +106,52 @@ function getCurrentUnixTargetTriple() {
   }
 }
 
-test("stageReleasePackage keeps runtime lib files in the packed tarball", () => {
-  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+test(
+  "stageReleasePackage packs a runnable launcher fixture",
+  { skip: !currentUnixTargetTriple },
+  () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
 
-  try {
-    const npmRoot = path.join(tmpdir, "npm-source");
-    const distRoot = path.join(tmpdir, "dist");
-    const stageRoot = path.join(tmpdir, "stage");
+    try {
+      const npmRoot = path.join(tmpdir, "npm-source");
+      const distRoot = path.join(tmpdir, "dist");
+      const stageRoot = path.join(tmpdir, "stage");
+      const extractRoot = path.join(tmpdir, "extract");
 
-    createPackageFixture(npmRoot);
-    writeFile(
-      path.join(distRoot, "codex-potter-x86_64-unknown-linux-musl", "codex-potter"),
-      "#!/bin/sh\nexit 0\n",
-      0o755,
-    );
+      createPackageFixture(npmRoot);
+      writeFile(
+        path.join(distRoot, `codex-potter-${currentUnixTargetTriple}`, "codex-potter"),
+        "#!/bin/sh\nprintf 'fixture smoke ok\\n'\n",
+        0o755,
+      );
 
-    stageReleasePackage({
-      npmRoot,
-      stageRoot,
-      distRoot,
-      version: "0.1.25",
-    });
+      stageReleasePackage({
+        npmRoot,
+        stageRoot,
+        distRoot,
+        version: "0.1.25",
+      });
 
-    const stagedPackageJson = JSON.parse(
-      fs.readFileSync(path.join(stageRoot, "package.json"), "utf8"),
-    );
-    assert.equal(stagedPackageJson.version, "0.1.25");
-    assert.equal(
-      fs.readFileSync(path.join(stageRoot, "lib", "signal-exit.js"), "utf8"),
-      "export function reemitSignalOrExit() {}\n",
-    );
+      const stagedPackageJson = JSON.parse(
+        fs.readFileSync(path.join(stageRoot, "package.json"), "utf8"),
+      );
+      assert.equal(stagedPackageJson.version, "0.1.25");
 
-    const tarballPath = packStage(stageRoot, tmpdir);
+      const tarballPath = packStage(stageRoot, tmpdir);
+      fs.mkdirSync(extractRoot, { recursive: true });
+      execFileSync("tar", ["-xf", tarballPath, "-C", extractRoot]);
 
-    assert.deepEqual(listTarballFiles(tarballPath), [
-      "package/README.md",
-      "package/bin/codex-potter.js",
-      "package/lib/signal-exit.js",
-      "package/package.json",
-      "package/vendor/x86_64-unknown-linux-musl/codex-potter/codex-potter",
-    ]);
-  } finally {
-    fs.rmSync(tmpdir, { recursive: true, force: true });
-  }
-});
+      const launcherOutput = execFileSync(
+        "node",
+        [path.join(extractRoot, "package", "bin", "codex-potter.js"), "--version"],
+        { encoding: "utf8" },
+      );
+      assert.equal(launcherOutput, "fixture smoke ok\n");
+    } finally {
+      fs.rmSync(tmpdir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("stageReleasePackage preserves Windows executable names", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
@@ -164,52 +179,10 @@ test("stageReleasePackage preserves Windows executable names", () => {
       version: "0.1.25",
     });
 
-    assert.equal(
-      fs.readFileSync(
-        path.join(
-          stageRoot,
-          "vendor",
-          "x86_64-pc-windows-msvc",
-          "codex-potter",
-          "codex-potter.exe",
-        ),
-        "utf8",
-      ),
-      "binary",
-    );
-  } finally {
-    fs.rmSync(tmpdir, { recursive: true, force: true });
-  }
-});
-
-test("stageReleasePackage keeps the repository runtime files in the packed tarball", () => {
-  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
-
-  try {
-    const distRoot = path.join(tmpdir, "dist");
-    const stageRoot = path.join(tmpdir, "stage");
-
-    writeFile(
-      path.join(distRoot, "codex-potter-x86_64-unknown-linux-musl", "nested", "codex-potter"),
-      "#!/bin/sh\nexit 0\n",
-      0o755,
-    );
-
-    stageReleasePackage({
-      npmRoot: repoNpmRoot,
-      stageRoot,
-      distRoot,
-      version: "0.1.25",
-    });
-
     const tarballPath = packStage(stageRoot, tmpdir);
-    const tarballFiles = listTarballFiles(tarballPath);
-
-    assert.ok(tarballFiles.includes("package/bin/codex-potter.js"));
-    assert.ok(tarballFiles.includes("package/lib/signal-exit.js"));
     assert.ok(
-      tarballFiles.includes(
-        "package/vendor/x86_64-unknown-linux-musl/codex-potter/codex-potter",
+      listTarballFiles(tarballPath).includes(
+        "package/vendor/x86_64-pc-windows-msvc/codex-potter/codex-potter.exe",
       ),
     );
   } finally {

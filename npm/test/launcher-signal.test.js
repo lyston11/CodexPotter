@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { exitCodeFromSignal, reemitSignalOrExit } from "../lib/signal-exit.js";
+import { exitCodeFromSignal, reemitSignalOrExit } from "../bin/codex-potter.js";
 
 test("exitCodeFromSignal uses conventional signal exit code", () => {
   assert.equal(exitCodeFromSignal("SIGHUP"), 129);
