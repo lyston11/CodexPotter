@@ -214,7 +214,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/npm
-          node npm/scripts/stage-release-package.js "${GITHUB_WORKSPACE}/dist" "${VERSION}" "${GITHUB_WORKSPACE}/dist/npm"
+          python3 scripts/stage_npm_packages.py \
+            --release-version "${VERSION}" \
+            --dist-root "${GITHUB_WORKSPACE}/dist" \
+            --package codex-potter \
+            --output-dir "${GITHUB_WORKSPACE}/dist/npm"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
