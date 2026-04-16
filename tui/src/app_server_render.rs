@@ -8310,8 +8310,9 @@ mod tests {
         );
     }
 
-    fn render_prompt_footer_line_with_yolo(
+    fn render_prompt_footer_line(
         override_mode: Option<PromptFooterOverride>,
+        git_branch: Option<&str>,
         yolo_active: bool,
     ) -> String {
         let area = Rect::new(0, 0, 80, 1);
@@ -8321,7 +8322,7 @@ mod tests {
             &mut buf,
             override_mode,
             std::path::Path::new("project"),
-            Some("main"),
+            git_branch,
             yolo_active,
         );
 
@@ -8332,15 +8333,23 @@ mod tests {
         out.trim_end().to_string()
     }
 
-    fn render_prompt_footer_line(override_mode: Option<PromptFooterOverride>) -> String {
-        render_prompt_footer_line_with_yolo(override_mode, false)
+    fn render_prompt_footer_line_for_branch(git_branch: Option<&str>) -> String {
+        render_prompt_footer_line(None, git_branch, false)
     }
 
     #[test]
     fn prompt_footer_includes_branch_and_working_dir() {
         assert_snapshot!(
             "prompt_footer_includes_branch_and_working_dir",
-            render_prompt_footer_line(None)
+            render_prompt_footer_line_for_branch(Some("main"))
+        );
+    }
+
+    #[test]
+    fn prompt_footer_omits_branch_separator_when_branch_unknown() {
+        assert_snapshot!(
+            "prompt_footer_omits_branch_separator_when_branch_unknown",
+            render_prompt_footer_line_for_branch(None)
         );
     }
 
@@ -8348,7 +8357,7 @@ mod tests {
     fn prompt_footer_includes_yolo_indicator() {
         assert_snapshot!(
             "prompt_footer_includes_yolo_indicator",
-            render_prompt_footer_line_with_yolo(None, true)
+            render_prompt_footer_line(None, Some("main"), true)
         );
     }
 
@@ -8356,7 +8365,11 @@ mod tests {
     fn prompt_footer_external_editor_override_replaces_footer() {
         assert_snapshot!(
             "prompt_footer_external_editor_override",
-            render_prompt_footer_line(Some(PromptFooterOverride::ExternalEditorHint))
+            render_prompt_footer_line(
+                Some(PromptFooterOverride::ExternalEditorHint),
+                Some("main"),
+                false,
+            )
         );
     }
 
