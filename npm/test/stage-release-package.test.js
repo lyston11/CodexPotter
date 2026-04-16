@@ -667,3 +667,56 @@ test(
     }
   },
 );
+
+test(
+  "launcher suggests bun reinstall after bun global install omits platform alias",
+  { skip: !currentVariant || !hasBun },
+  () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-potter-stage-"));
+
+    try {
+      const distRoot = path.join(tmpdir, "dist");
+      const outputDir = path.join(tmpdir, "npm-dist");
+      const installRoot = path.join(tmpdir, "install");
+      const runtimePath = createRuntimePath(tmpdir);
+
+      createArtifactFixtures(distRoot, "smoke");
+
+      const { mainTarball } = buildReleaseTarballs({
+        npmRoot: repoNpmRoot,
+        distRoot,
+        outputDir,
+        version: "0.1.25",
+      });
+
+      const { binPath, env: installEnv } = installPackedMainGloballyWithBun(mainTarball, installRoot);
+
+      let installError;
+      try {
+        runCommand("codex-potter", [], {
+          encoding: "utf8",
+          env: createRuntimeEnv(runtimePath, {
+            ...installEnv,
+            PATH: [path.dirname(binPath), getBunRuntimePath(runtimePath)]
+              .filter(Boolean)
+              .join(path.delimiter),
+          }),
+        });
+      } catch (error) {
+        installError = error;
+      }
+
+      assert.ok(installError);
+      const stderr =
+        typeof installError.stderr === "string"
+          ? installError.stderr
+          : installError.stderr?.toString("utf8") ?? "";
+      assert.equal(
+        normalizeOutput(stderr),
+        `Missing optional dependency codex-potter-${currentVariant.platformTag}. Reinstall: bun install -g codex-potter@latest\n`,
+      );
+    } finally {
+      fs.rmSync(tmpdir, { recursive: true, force: true });
+    }
+  },
+);

@@ -63,35 +63,6 @@ if [ -n "$platform_tag" ]; then
   optional_binary_path=$optional_vendor_root/$target_triple/codex-potter/codex-potter
 fi
 
-if [ -n "$optional_binary_path" ] && [ -x "$optional_binary_path" ]; then
-  vendor_root=$optional_vendor_root
-  binary_path=$optional_binary_path
-elif [ -x "$local_binary_path" ]; then
-  vendor_root=$local_vendor_root
-  binary_path=$local_binary_path
-else
-  update_cmd='npm install -g codex-potter@latest'
-  if [ -n "${npm_config_user_agent-}" ] && printf '%s' "${npm_config_user_agent-}" | grep -q 'bun/'; then
-    update_cmd='bun install -g codex-potter@latest'
-  elif [ -n "${npm_execpath-}" ] && printf '%s' "${npm_execpath-}" | grep -q 'bun'; then
-    update_cmd='bun install -g codex-potter@latest'
-  fi
-
-  if [ -n "$platform_tag" ]; then
-    printf 'Missing optional dependency codex-potter-%s. Reinstall: %s\n' "$platform_tag" "$update_cmd" >&2
-  else
-    printf 'Missing packaged binary for target %s. Reinstall: %s\n' "$target_triple" "$update_cmd" >&2
-  fi
-  exit 1
-fi
-
-path_dir=$vendor_root/$target_triple/path
-
-if [ -d "$path_dir" ]; then
-  PATH=$path_dir${PATH+:$PATH}
-  export PATH
-fi
-
 managed_by_bun=0
 case ${npm_config_user_agent-} in
   *bun/*) managed_by_bun=1 ;;
@@ -107,6 +78,33 @@ esac
 case $basedir in
   *".bun/install/global"*|*".bun\\install\\global"*) managed_by_bun=1 ;;
 esac
+
+update_cmd='npm install -g codex-potter@latest'
+if [ "$managed_by_bun" -eq 1 ]; then
+  update_cmd='bun install -g codex-potter@latest'
+fi
+
+if [ -n "$optional_binary_path" ] && [ -x "$optional_binary_path" ]; then
+  vendor_root=$optional_vendor_root
+  binary_path=$optional_binary_path
+elif [ -x "$local_binary_path" ]; then
+  vendor_root=$local_vendor_root
+  binary_path=$local_binary_path
+else
+  if [ -n "$platform_tag" ]; then
+    printf 'Missing optional dependency codex-potter-%s. Reinstall: %s\n' "$platform_tag" "$update_cmd" >&2
+  else
+    printf 'Missing packaged binary for target %s. Reinstall: %s\n' "$target_triple" "$update_cmd" >&2
+  fi
+  exit 1
+fi
+
+path_dir=$vendor_root/$target_triple/path
+
+if [ -d "$path_dir" ]; then
+  PATH=$path_dir${PATH+:$PATH}
+  export PATH
+fi
 
 unset CODEX_POTTER_MANAGED_BY_NPM CODEX_POTTER_MANAGED_BY_BUN
 if [ "$managed_by_bun" -eq 1 ]; then
@@ -162,8 +160,11 @@ if defined managed_by_bun (
   set "CODEX_POTTER_MANAGED_BY_NPM=1"
 )
 
+set "reinstall_cmd=npm install -g codex-potter@latest"
+if defined managed_by_bun set "reinstall_cmd=bun install -g codex-potter@latest"
+
 if not defined binary_path (
-  >&2 echo Missing optional dependency %optional_package%. Reinstall: npm install -g codex-potter@latest
+  >&2 echo Missing optional dependency %optional_package%. Reinstall: %reinstall_cmd%
   exit /b 1
 )
 
