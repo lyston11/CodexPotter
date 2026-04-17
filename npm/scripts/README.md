@@ -1,10 +1,10 @@
 # npm releases
 
-Use the repo-root staging helper to generate npm tarballs for a release. For
+Use the staging helper in `npm/scripts/` to generate npm tarballs for a release. For
 example, after the release workflow has downloaded build artifacts into `dist/`:
 
 ```bash
-./scripts/stage_npm_packages.py \
+./npm/scripts/stage_npm_packages.py \
   --release-version 0.1.25 \
   --dist-root dist \
   --package codex-potter

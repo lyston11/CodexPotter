@@ -4,25 +4,20 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-BUILD_SCRIPT = REPO_ROOT / "npm" / "scripts" / "build_npm_package.py"
+import build_npm_package
 
-_SPEC = importlib.util.spec_from_file_location("codex_potter_build_npm_package", BUILD_SCRIPT)
-if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError(f"Unable to load module from {BUILD_SCRIPT}")
-_BUILD_MODULE = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_BUILD_MODULE)
+REPO_ROOT = build_npm_package.REPO_ROOT
+BUILD_SCRIPT = Path(build_npm_package.__file__).resolve()
 
-PACKAGE_NATIVE_COMPONENTS = getattr(_BUILD_MODULE, "PACKAGE_NATIVE_COMPONENTS", {})
-PACKAGE_EXPANSIONS = getattr(_BUILD_MODULE, "PACKAGE_EXPANSIONS", {})
-CODEX_POTTER_PLATFORM_PACKAGES = getattr(_BUILD_MODULE, "CODEX_POTTER_PLATFORM_PACKAGES", {})
+PACKAGE_NATIVE_COMPONENTS = build_npm_package.PACKAGE_NATIVE_COMPONENTS
+PACKAGE_EXPANSIONS = build_npm_package.PACKAGE_EXPANSIONS
+CODEX_POTTER_PLATFORM_PACKAGES = build_npm_package.CODEX_POTTER_PLATFORM_PACKAGES
 
 
 def parse_args() -> argparse.Namespace:

@@ -214,7 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/npm
-          python3 scripts/stage_npm_packages.py \
+          python3 npm/scripts/stage_npm_packages.py \
             --release-version "${VERSION}" \
             --dist-root "${GITHUB_WORKSPACE}/dist" \
             --package codex-potter \
