@@ -224,160 +224,104 @@ mod tests {
     }
 
     #[test]
-    fn build_resume_index_records_completed_round() {
+    fn build_resume_index_records_completed_round_variants() {
+        #[derive(Debug)]
+        struct CompletedRoundCase {
+            name: &'static str,
+            user_message: Option<&'static str>,
+            service_tier: Option<ServiceTier>,
+            project_succeeded: Option<ProjectSucceededIndex>,
+            outcome: PotterRoundOutcome,
+        }
+
         let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md");
-        let lines = vec![
-            PotterRolloutLine::ProjectStarted {
-                user_message: Some("hello".to_string()),
-                user_prompt_file: user_prompt_file.clone(),
-            },
-            PotterRolloutLine::RoundStarted {
-                current: 1,
-                total: 10,
-            },
-            PotterRolloutLine::RoundConfigured {
-                thread_id: thread_id(),
-                rollout_path: PathBuf::from("rollout.jsonl"),
+        let cases = vec![
+            CompletedRoundCase {
+                name: "completed",
+                user_message: Some("hello"),
                 service_tier: None,
-                rollout_path_raw: None,
-                rollout_base_dir: None,
-            },
-            PotterRolloutLine::RoundFinished {
+                project_succeeded: None,
                 outcome: PotterRoundOutcome::Completed,
             },
-        ];
-
-        let index = build_resume_index(&lines).expect("build resume index");
-        assert_eq!(
-            index,
-            PotterRolloutResumeIndex {
-                project_started: ProjectStartedIndex {
-                    user_message: Some("hello".to_string()),
-                    user_prompt_file: user_prompt_file.clone(),
-                },
-                completed_rounds: vec![CompletedRoundIndex {
-                    round_current: 1,
-                    round_total: 10,
-                    configured: Some(RoundConfigurationIndex {
-                        thread_id: thread_id(),
-                        rollout_path: PathBuf::from("rollout.jsonl"),
-                        service_tier: None,
-                    }),
-                    project_succeeded: None,
-                    outcome: PotterRoundOutcome::Completed,
-                }],
-                unfinished_round: None,
-            }
-        );
-    }
-
-    #[test]
-    fn build_resume_index_treats_interrupted_round_finish_as_completed_round() {
-        let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md");
-        let lines = vec![
-            PotterRolloutLine::ProjectStarted {
-                user_message: Some("hello".to_string()),
-                user_prompt_file: user_prompt_file.clone(),
-            },
-            PotterRolloutLine::RoundStarted {
-                current: 1,
-                total: 10,
-            },
-            PotterRolloutLine::RoundConfigured {
-                thread_id: thread_id(),
-                rollout_path: PathBuf::from("rollout.jsonl"),
+            CompletedRoundCase {
+                name: "interrupted",
+                user_message: Some("hello"),
                 service_tier: None,
-                rollout_path_raw: None,
-                rollout_base_dir: None,
-            },
-            PotterRolloutLine::RoundFinished {
+                project_succeeded: None,
                 outcome: PotterRoundOutcome::Interrupted,
             },
-        ];
-
-        let index = build_resume_index(&lines).expect("build resume index");
-        assert_eq!(
-            index,
-            PotterRolloutResumeIndex {
-                project_started: ProjectStartedIndex {
-                    user_message: Some("hello".to_string()),
-                    user_prompt_file: user_prompt_file.clone(),
-                },
-                completed_rounds: vec![CompletedRoundIndex {
-                    round_current: 1,
-                    round_total: 10,
-                    configured: Some(RoundConfigurationIndex {
-                        thread_id: thread_id(),
-                        rollout_path: PathBuf::from("rollout.jsonl"),
-                        service_tier: None,
-                    }),
-                    project_succeeded: None,
-                    outcome: PotterRoundOutcome::Interrupted,
-                }],
-                unfinished_round: None,
-            }
-        );
-    }
-
-    #[test]
-    fn build_resume_index_attaches_project_succeeded_to_completed_round() {
-        let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md");
-        let lines = vec![
-            PotterRolloutLine::ProjectStarted {
+            CompletedRoundCase {
+                name: "project_succeeded",
                 user_message: None,
-                user_prompt_file: user_prompt_file.clone(),
-            },
-            PotterRolloutLine::RoundStarted {
-                current: 1,
-                total: 10,
-            },
-            PotterRolloutLine::RoundConfigured {
-                thread_id: thread_id(),
-                rollout_path: PathBuf::from("rollout.jsonl"),
                 service_tier: Some(ServiceTier::Fast),
-                rollout_path_raw: None,
-                rollout_base_dir: None,
-            },
-            PotterRolloutLine::ProjectSucceeded {
-                rounds: 3,
-                duration_secs: 42,
-                user_prompt_file: user_prompt_file.clone(),
-                git_commit_start: "start".to_string(),
-                git_commit_end: "end".to_string(),
-            },
-            PotterRolloutLine::RoundFinished {
+                project_succeeded: Some(ProjectSucceededIndex {
+                    rounds: 3,
+                    duration_secs: 42,
+                    user_prompt_file: user_prompt_file.clone(),
+                    git_commit_start: "start".to_string(),
+                    git_commit_end: "end".to_string(),
+                }),
                 outcome: PotterRoundOutcome::Completed,
             },
         ];
 
-        let index = build_resume_index(&lines).expect("build resume index");
-        assert_eq!(
-            index,
-            PotterRolloutResumeIndex {
-                project_started: ProjectStartedIndex {
-                    user_message: None,
+        for case in cases {
+            let mut lines = vec![
+                PotterRolloutLine::ProjectStarted {
+                    user_message: case.user_message.map(str::to_string),
                     user_prompt_file: user_prompt_file.clone(),
                 },
-                completed_rounds: vec![CompletedRoundIndex {
-                    round_current: 1,
-                    round_total: 10,
-                    configured: Some(RoundConfigurationIndex {
-                        thread_id: thread_id(),
-                        rollout_path: PathBuf::from("rollout.jsonl"),
-                        service_tier: Some(ServiceTier::Fast),
-                    }),
-                    project_succeeded: Some(ProjectSucceededIndex {
-                        rounds: 3,
-                        duration_secs: 42,
-                        user_prompt_file,
-                        git_commit_start: "start".to_string(),
-                        git_commit_end: "end".to_string(),
-                    }),
-                    outcome: PotterRoundOutcome::Completed,
-                }],
-                unfinished_round: None,
+                PotterRolloutLine::RoundStarted {
+                    current: 1,
+                    total: 10,
+                },
+                PotterRolloutLine::RoundConfigured {
+                    thread_id: thread_id(),
+                    rollout_path: PathBuf::from("rollout.jsonl"),
+                    service_tier: case.service_tier,
+                    rollout_path_raw: None,
+                    rollout_base_dir: None,
+                },
+            ];
+            let expected_project_succeeded = case.project_succeeded.clone();
+            if let Some(project_succeeded) = expected_project_succeeded.clone() {
+                lines.push(PotterRolloutLine::ProjectSucceeded {
+                    rounds: project_succeeded.rounds,
+                    duration_secs: project_succeeded.duration_secs,
+                    user_prompt_file: project_succeeded.user_prompt_file,
+                    git_commit_start: project_succeeded.git_commit_start,
+                    git_commit_end: project_succeeded.git_commit_end,
+                });
             }
-        );
+            lines.push(PotterRolloutLine::RoundFinished {
+                outcome: case.outcome.clone(),
+            });
+
+            let index = build_resume_index(&lines).expect("build resume index");
+            assert_eq!(
+                index,
+                PotterRolloutResumeIndex {
+                    project_started: ProjectStartedIndex {
+                        user_message: case.user_message.map(str::to_string),
+                        user_prompt_file: user_prompt_file.clone(),
+                    },
+                    completed_rounds: vec![CompletedRoundIndex {
+                        round_current: 1,
+                        round_total: 10,
+                        configured: Some(RoundConfigurationIndex {
+                            thread_id: thread_id(),
+                            rollout_path: PathBuf::from("rollout.jsonl"),
+                            service_tier: case.service_tier,
+                        }),
+                        project_succeeded: expected_project_succeeded,
+                        outcome: case.outcome,
+                    }],
+                    unfinished_round: None,
+                },
+                "case: {}",
+                case.name,
+            );
+        }
     }
 
     #[test]
