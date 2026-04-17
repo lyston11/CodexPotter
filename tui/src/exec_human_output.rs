@@ -1377,77 +1377,78 @@ mod tests {
     }
 
     #[test]
-    fn round_marker_has_no_bullet() {
-        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
-        let blocks = renderer
-            .handle_event(&EventMsg::PotterRoundStarted {
-                current: 1,
-                total: 10,
-            })
-            .expect("round marker");
-        assert!(blocks.is_empty());
+    fn round_marker_emits_for_session_and_round_started_in_any_order() {
+        let expected = vec!["CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string()];
 
-        let blocks = renderer
-            .handle_event(&EventMsg::SessionConfigured(
-                codex_protocol::protocol::SessionConfiguredEvent {
-                    session_id: codex_protocol::ThreadId::from_string(
-                        "019ca423-63d9-7641-ae83-db060ad3c000",
-                    )
-                    .expect("thread id"),
-                    forked_from_id: None,
-                    model: "gpt-5.2".to_string(),
-                    model_provider_id: "openai".to_string(),
-                    service_tier: None,
-                    cwd: PathBuf::from("/repo"),
-                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
-                    history_log_id: 0,
-                    history_entry_count: 0,
-                    initial_messages: None,
-                    rollout_path: PathBuf::from("/repo/rollout.jsonl"),
-                },
-            ))
-            .expect("session configured");
-        assert_eq!(
-            blocks,
-            vec!["CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string()]
-        );
-    }
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+            let blocks = renderer
+                .handle_event(&EventMsg::PotterRoundStarted {
+                    current: 1,
+                    total: 10,
+                })
+                .expect("round marker");
+            assert!(blocks.is_empty());
 
-    #[test]
-    fn round_marker_emits_when_session_configured_arrives_before_round_started() {
-        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
-        let blocks = renderer
-            .handle_event(&EventMsg::SessionConfigured(
-                codex_protocol::protocol::SessionConfiguredEvent {
-                    session_id: codex_protocol::ThreadId::from_string(
-                        "019ca423-63d9-7641-ae83-db060ad3c000",
-                    )
-                    .expect("thread id"),
-                    forked_from_id: None,
-                    model: "gpt-5.2".to_string(),
-                    model_provider_id: "openai".to_string(),
-                    service_tier: None,
-                    cwd: PathBuf::from("/repo"),
-                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::XHigh),
-                    history_log_id: 0,
-                    history_entry_count: 0,
-                    initial_messages: None,
-                    rollout_path: PathBuf::from("/repo/rollout.jsonl"),
-                },
-            ))
-            .expect("session configured");
-        assert!(blocks.is_empty());
+            let blocks = renderer
+                .handle_event(&EventMsg::SessionConfigured(
+                    codex_protocol::protocol::SessionConfiguredEvent {
+                        session_id: codex_protocol::ThreadId::from_string(
+                            "019ca423-63d9-7641-ae83-db060ad3c000",
+                        )
+                        .expect("thread id"),
+                        forked_from_id: None,
+                        model: "gpt-5.2".to_string(),
+                        model_provider_id: "openai".to_string(),
+                        service_tier: None,
+                        cwd: PathBuf::from("/repo"),
+                        reasoning_effort: Some(
+                            codex_protocol::openai_models::ReasoningEffort::XHigh,
+                        ),
+                        history_log_id: 0,
+                        history_entry_count: 0,
+                        initial_messages: None,
+                        rollout_path: PathBuf::from("/repo/rollout.jsonl"),
+                    },
+                ))
+                .expect("session configured");
+            assert_eq!(blocks, expected);
+        }
 
-        let blocks = renderer
-            .handle_event(&EventMsg::PotterRoundStarted {
-                current: 1,
-                total: 10,
-            })
-            .expect("round marker");
-        assert_eq!(
-            blocks,
-            vec!["CodexPotter: iteration round 1/10 (gpt-5.2 xhigh)".to_string()]
-        );
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+            let blocks = renderer
+                .handle_event(&EventMsg::SessionConfigured(
+                    codex_protocol::protocol::SessionConfiguredEvent {
+                        session_id: codex_protocol::ThreadId::from_string(
+                            "019ca423-63d9-7641-ae83-db060ad3c000",
+                        )
+                        .expect("thread id"),
+                        forked_from_id: None,
+                        model: "gpt-5.2".to_string(),
+                        model_provider_id: "openai".to_string(),
+                        service_tier: None,
+                        cwd: PathBuf::from("/repo"),
+                        reasoning_effort: Some(
+                            codex_protocol::openai_models::ReasoningEffort::XHigh,
+                        ),
+                        history_log_id: 0,
+                        history_entry_count: 0,
+                        initial_messages: None,
+                        rollout_path: PathBuf::from("/repo/rollout.jsonl"),
+                    },
+                ))
+                .expect("session configured");
+            assert!(blocks.is_empty());
+
+            let blocks = renderer
+                .handle_event(&EventMsg::PotterRoundStarted {
+                    current: 1,
+                    total: 10,
+                })
+                .expect("round marker");
+            assert_eq!(blocks, expected);
+        }
     }
 
     #[test]
@@ -1593,29 +1594,53 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
     }
 
     #[test]
-    fn simple_mode_keeps_search_and_image_events_visible() {
-        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(120), false);
+    fn search_and_image_events_visibility_depends_on_verbosity() {
         let repo = synthetic_absolute_path(&["repo"]);
-        renderer.cwd = repo.clone();
 
-        let search_blocks = renderer
-            .handle_event(&EventMsg::WebSearchEnd(WebSearchEndEvent {
-                call_id: "search-1".to_string(),
-                query: "rust fmt".to_string(),
-            }))
-            .expect("search event");
-        assert_eq!(search_blocks, vec!["Searched\n  rust fmt".to_string()]);
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(120), false);
+            renderer.cwd = repo.clone();
 
-        let image_blocks = renderer
-            .handle_event(&EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
-                call_id: "image-1".to_string(),
-                path: repo.join("screenshot.png"),
-            }))
-            .expect("image event");
-        assert_eq!(
-            image_blocks,
-            vec!["Viewed Image\n  screenshot.png".to_string()]
-        );
+            let search_blocks = renderer
+                .handle_event(&EventMsg::WebSearchEnd(WebSearchEndEvent {
+                    call_id: "search-1".to_string(),
+                    query: "rust fmt".to_string(),
+                }))
+                .expect("search event");
+            assert_eq!(search_blocks, vec!["Searched\n  rust fmt".to_string()]);
+
+            let image_blocks = renderer
+                .handle_event(&EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: "image-1".to_string(),
+                    path: repo.join("screenshot.png"),
+                }))
+                .expect("image event");
+            assert_eq!(
+                image_blocks,
+                vec!["Viewed Image\n  screenshot.png".to_string()]
+            );
+        }
+
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+            renderer.cwd = repo.clone();
+
+            let search_blocks = renderer
+                .handle_event(&EventMsg::WebSearchEnd(WebSearchEndEvent {
+                    call_id: "search-1".to_string(),
+                    query: "rust fmt".to_string(),
+                }))
+                .expect("search event");
+            assert!(search_blocks.is_empty());
+
+            let image_blocks = renderer
+                .handle_event(&EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: "image-1".to_string(),
+                    path: repo.join("screenshot.png"),
+                }))
+                .expect("image event");
+            assert!(image_blocks.is_empty());
+        }
     }
 
     #[test]
@@ -1660,100 +1685,78 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
     }
 
     #[test]
-    fn simple_mode_inserts_worked_separator_after_request_permissions() {
-        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
-        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "turn-1".to_string(),
-            model_context_window: None,
-        }));
-
-        let write_root = synthetic_absolute_path_buf(&["Users", "me", "project"]);
-        let request_blocks = renderer
-            .handle_event(&EventMsg::RequestPermissions(RequestPermissionsEvent {
-                call_id: "call-1".to_string(),
+    fn simple_mode_inserts_worked_separator_after_non_agent_cells() {
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
+            let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".to_string(),
-                reason: Some("Select a workspace root".to_string()),
-                permissions: RequestPermissionProfile {
-                    network: Some(NetworkPermissions {
-                        enabled: Some(true),
-                    }),
-                    file_system: Some(FileSystemPermissions {
-                        read: None,
-                        write: Some(vec![write_root]),
-                    }),
-                },
-            }))
-            .expect("request permissions");
-        assert_eq!(request_blocks.len(), 1);
+                model_context_window: None,
+            }));
 
-        let blocks = renderer
-            .handle_event(&EventMsg::AgentMessage(
-                codex_protocol::protocol::AgentMessageEvent {
-                    message: "done".to_string(),
-                    phase: None,
-                },
-            ))
-            .expect("agent message");
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks[0].contains("Worked for "));
-        assert_eq!(blocks[1], "done");
-    }
+            let write_root = synthetic_absolute_path_buf(&["Users", "me", "project"]);
+            let request_blocks = renderer
+                .handle_event(&EventMsg::RequestPermissions(RequestPermissionsEvent {
+                    call_id: "call-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    reason: Some("Select a workspace root".to_string()),
+                    permissions: RequestPermissionProfile {
+                        network: Some(NetworkPermissions {
+                            enabled: Some(true),
+                        }),
+                        file_system: Some(FileSystemPermissions {
+                            read: None,
+                            write: Some(vec![write_root]),
+                        }),
+                    },
+                }))
+                .expect("request permissions");
+            assert_eq!(request_blocks.len(), 1);
 
-    #[test]
-    fn simple_mode_inserts_worked_separator_after_guardian_assessment() {
-        let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
-        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "turn-1".to_string(),
-            model_context_window: None,
-        }));
+            let blocks = renderer
+                .handle_event(&EventMsg::AgentMessage(
+                    codex_protocol::protocol::AgentMessageEvent {
+                        message: "done".to_string(),
+                        phase: None,
+                    },
+                ))
+                .expect("agent message");
+            assert_eq!(blocks.len(), 2);
+            assert!(blocks[0].contains("Worked for "));
+            assert_eq!(blocks[1], "done");
+        }
 
-        let guardian_blocks = renderer
-            .handle_event(&EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-                id: "assessment-1".to_string(),
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Simple, Some(80), false);
+            let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".to_string(),
-                status: GuardianAssessmentStatus::Approved,
-                risk_score: Some(15),
-                risk_level: Some(GuardianRiskLevel::Low),
-                rationale: Some("Looks safe.".to_string()),
-                action: None,
-            }))
-            .expect("guardian assessment");
-        assert_eq!(guardian_blocks.len(), 1);
+                model_context_window: None,
+            }));
 
-        let blocks = renderer
-            .handle_event(&EventMsg::AgentMessage(
-                codex_protocol::protocol::AgentMessageEvent {
-                    message: "done".to_string(),
-                    phase: None,
-                },
-            ))
-            .expect("agent message");
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks[0].contains("Worked for "));
-        assert_eq!(blocks[1], "done");
-    }
+            let guardian_blocks = renderer
+                .handle_event(&EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                    id: "assessment-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    status: GuardianAssessmentStatus::Approved,
+                    risk_score: Some(15),
+                    risk_level: Some(GuardianRiskLevel::Low),
+                    rationale: Some("Looks safe.".to_string()),
+                    action: None,
+                }))
+                .expect("guardian assessment");
+            assert_eq!(guardian_blocks.len(), 1);
 
-    #[test]
-    fn minimal_mode_hides_search_and_image_events() {
-        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
-        let repo = synthetic_absolute_path(&["repo"]);
-        renderer.cwd = repo.clone();
-
-        let search_blocks = renderer
-            .handle_event(&EventMsg::WebSearchEnd(WebSearchEndEvent {
-                call_id: "search-1".to_string(),
-                query: "rust fmt".to_string(),
-            }))
-            .expect("search event");
-        assert!(search_blocks.is_empty());
-
-        let image_blocks = renderer
-            .handle_event(&EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
-                call_id: "image-1".to_string(),
-                path: repo.join("screenshot.png"),
-            }))
-            .expect("image event");
-        assert!(image_blocks.is_empty());
+            let blocks = renderer
+                .handle_event(&EventMsg::AgentMessage(
+                    codex_protocol::protocol::AgentMessageEvent {
+                        message: "done".to_string(),
+                        phase: None,
+                    },
+                ))
+                .expect("agent message");
+            assert_eq!(blocks.len(), 2);
+            assert!(blocks[0].contains("Worked for "));
+            assert_eq!(blocks[1], "done");
+        }
     }
 
     #[test]
