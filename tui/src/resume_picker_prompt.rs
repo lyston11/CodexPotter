@@ -640,149 +640,69 @@ mod tests {
     use ratatui::Terminal;
     use std::time::Duration;
 
-    #[test]
-    fn resume_picker_empty_screen_snapshot() {
+    fn sample_rows(now: SystemTime) -> Vec<ResumePickerRow> {
+        vec![
+            ResumePickerRow {
+                project_path: PathBuf::from("/tmp/a"),
+                user_request: "Fix resume picker timestamps".to_string(),
+                created_at: now - Duration::from_secs(3 * 24 * 60 * 60),
+                updated_at: now - Duration::from_secs(42),
+                git_branch: None,
+            },
+            ResumePickerRow {
+                project_path: PathBuf::from("/tmp/b"),
+                user_request: "Investigate lazy pagination cap".to_string(),
+                created_at: now - Duration::from_secs(24 * 60 * 60),
+                updated_at: now - Duration::from_secs(35 * 60),
+                git_branch: Some("feature/resume".to_string()),
+            },
+            ResumePickerRow {
+                project_path: PathBuf::from("/tmp/c"),
+                user_request: "Explain the codebase".to_string(),
+                created_at: now - Duration::from_secs(2 * 60 * 60),
+                updated_at: now - Duration::from_secs(2 * 60 * 60),
+                git_branch: Some("main".to_string()),
+            },
+        ]
+    }
+
+    fn render_screen_vt100(screen: &ResumePickerScreen) -> String {
         let backend = VT100Backend::new(80, 9);
         let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal
+            .draw(|frame| {
+                WidgetRef::render_ref(&screen, frame.area(), frame.buffer_mut());
+            })
+            .expect("draw");
+        terminal.backend().vt100().screen().contents()
+    }
 
+    #[test]
+    fn resume_picker_screen_snapshots_cover_empty_default_and_created_sort() {
         let screen =
             ResumePickerScreen::new(FrameRequester::test_dummy(), vec![], SystemTime::UNIX_EPOCH);
-        terminal
-            .draw(|frame| {
-                WidgetRef::render_ref(&&screen, frame.area(), frame.buffer_mut());
-            })
-            .expect("draw");
-
-        assert_snapshot!(
-            "resume_picker_empty_vt100",
-            terminal.backend().vt100().screen().contents()
-        );
-    }
-
-    #[test]
-    fn resume_picker_table_screen_snapshot() {
-        let backend = VT100Backend::new(80, 9);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
+        assert_snapshot!("resume_picker_empty_vt100", render_screen_vt100(&screen));
 
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let rows = vec![
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/a"),
-                user_request: "Fix resume picker timestamps".to_string(),
-                created_at: now - Duration::from_secs(3 * 24 * 60 * 60),
-                updated_at: now - Duration::from_secs(42),
-                git_branch: None,
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/b"),
-                user_request: "Investigate lazy pagination cap".to_string(),
-                created_at: now - Duration::from_secs(24 * 60 * 60),
-                updated_at: now - Duration::from_secs(35 * 60),
-                git_branch: Some("feature/resume".to_string()),
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/c"),
-                user_request: "Explain the codebase".to_string(),
-                created_at: now - Duration::from_secs(2 * 60 * 60),
-                updated_at: now - Duration::from_secs(2 * 60 * 60),
-                git_branch: Some("main".to_string()),
-            },
-        ];
-
-        let mut screen = ResumePickerScreen::new(FrameRequester::test_dummy(), rows, now);
+        let mut screen =
+            ResumePickerScreen::new(FrameRequester::test_dummy(), sample_rows(now), now);
         screen.set_view_rows(5);
         screen.selected = 1;
         screen.ensure_selected_visible();
-
-        terminal
-            .draw(|frame| {
-                WidgetRef::render_ref(&&screen, frame.area(), frame.buffer_mut());
-            })
-            .expect("draw");
-
-        assert_snapshot!(
-            "resume_picker_table_vt100",
-            terminal.backend().vt100().screen().contents()
-        );
-    }
-
-    #[test]
-    fn resume_picker_table_sorted_by_created_screen_snapshot() {
-        let backend = VT100Backend::new(80, 9);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
-
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let rows = vec![
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/a"),
-                user_request: "Fix resume picker timestamps".to_string(),
-                created_at: now - Duration::from_secs(3 * 24 * 60 * 60),
-                updated_at: now - Duration::from_secs(42),
-                git_branch: None,
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/b"),
-                user_request: "Investigate lazy pagination cap".to_string(),
-                created_at: now - Duration::from_secs(24 * 60 * 60),
-                updated_at: now - Duration::from_secs(35 * 60),
-                git_branch: Some("feature/resume".to_string()),
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/c"),
-                user_request: "Explain the codebase".to_string(),
-                created_at: now - Duration::from_secs(2 * 60 * 60),
-                updated_at: now - Duration::from_secs(2 * 60 * 60),
-                git_branch: Some("main".to_string()),
-            },
-        ];
-
-        let mut screen = ResumePickerScreen::new(FrameRequester::test_dummy(), rows, now);
-        screen.set_view_rows(5);
-        screen.selected = 1;
-        screen.ensure_selected_visible();
+        assert_snapshot!("resume_picker_table_vt100", render_screen_vt100(&screen));
 
         screen.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        terminal
-            .draw(|frame| {
-                WidgetRef::render_ref(&&screen, frame.area(), frame.buffer_mut());
-            })
-            .expect("draw");
-
         assert_snapshot!(
             "resume_picker_table_created_sort_vt100",
-            terminal.backend().vt100().screen().contents()
+            render_screen_vt100(&screen)
         );
     }
 
     #[test]
     fn resume_picker_ctrl_p_ctrl_n_moves_selection() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let rows = vec![
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/a"),
-                user_request: "Fix resume picker timestamps".to_string(),
-                created_at: now - Duration::from_secs(3 * 24 * 60 * 60),
-                updated_at: now - Duration::from_secs(42),
-                git_branch: None,
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/b"),
-                user_request: "Investigate lazy pagination cap".to_string(),
-                created_at: now - Duration::from_secs(24 * 60 * 60),
-                updated_at: now - Duration::from_secs(35 * 60),
-                git_branch: Some("feature/resume".to_string()),
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/c"),
-                user_request: "Explain the codebase".to_string(),
-                created_at: now - Duration::from_secs(2 * 60 * 60),
-                updated_at: now - Duration::from_secs(2 * 60 * 60),
-                git_branch: Some("main".to_string()),
-            },
-        ];
-
-        let mut screen = ResumePickerScreen::new(FrameRequester::test_dummy(), rows, now);
+        let mut screen =
+            ResumePickerScreen::new(FrameRequester::test_dummy(), sample_rows(now), now);
         screen.set_view_rows(5);
         screen.selected = 1;
 

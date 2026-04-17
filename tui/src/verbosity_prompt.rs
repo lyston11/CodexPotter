@@ -339,22 +339,24 @@ mod tests {
     use ratatui::Terminal;
     use tokio::sync::mpsc::unbounded_channel;
 
-    #[test]
-    fn startup_verbosity_prompt_initial_vt100() {
-        let width: u16 = 100;
-        let setup_step = Some(StartupSetupStep::new(2, 2));
-
+    fn render_prompt_vt100(
+        width: u16,
+        height: Option<u16>,
+        setup_step: Option<StartupSetupStep>,
+    ) -> String {
         let (app_event_tx, _app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         let prompt_view = build_startup_prompt_view(app_event_tx);
 
-        let height = desired_height(
-            width,
-            &prompt_view.view,
-            prompt_view.side_content_width,
-            prompt_view.side_content_min_width,
-            setup_step,
-        );
+        let height = height.unwrap_or_else(|| {
+            desired_height(
+                width,
+                &prompt_view.view,
+                prompt_view.side_content_width,
+                prompt_view.side_content_min_width,
+                setup_step,
+            )
+        });
         let backend = VT100Backend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("create terminal");
 
@@ -372,56 +374,24 @@ mod tests {
             })
             .expect("draw");
 
-        assert_snapshot!(
-            "startup_verbosity_prompt_initial_vt100",
-            terminal.backend().vt100().screen().contents()
-        );
+        terminal.backend().vt100().screen().contents()
     }
 
     #[test]
-    fn startup_verbosity_prompt_narrow_vt100() {
-        let width: u16 = 80;
+    fn startup_verbosity_prompt_vt100_snapshots_cover_wide_and_narrow_layouts() {
         let setup_step = Some(StartupSetupStep::new(2, 2));
-
-        let (app_event_tx, _app_event_rx) = unbounded_channel();
-        let app_event_tx = AppEventSender::new(app_event_tx);
-        let prompt_view = build_startup_prompt_view(app_event_tx);
-
-        let height = desired_height(
-            width,
-            &prompt_view.view,
-            prompt_view.side_content_width,
-            prompt_view.side_content_min_width,
-            setup_step,
-        );
-        let backend = VT100Backend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
-
-        terminal
-            .draw(|frame| {
-                render_startup_prompt(
-                    frame.area(),
-                    frame.buffer_mut(),
-                    &prompt_view.view,
-                    &prompt_view.selected_for_preview,
-                    prompt_view.side_content_width,
-                    prompt_view.side_content_min_width,
-                    setup_step,
-                );
-            })
-            .expect("draw");
-
-        assert_snapshot!(
-            "startup_verbosity_prompt_narrow_vt100",
-            terminal.backend().vt100().screen().contents()
-        );
+        for (snapshot, width) in [
+            ("startup_verbosity_prompt_initial_vt100", 100),
+            ("startup_verbosity_prompt_narrow_vt100", 80),
+        ] {
+            assert_snapshot!(snapshot, render_prompt_vt100(width, None, setup_step));
+        }
     }
 
     #[test]
     fn startup_verbosity_prompt_narrow_truncated_height_vt100() {
         let width: u16 = 80;
         let setup_step = Some(StartupSetupStep::new(2, 2));
-
         let (app_event_tx, _app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         let prompt_view = build_startup_prompt_view(app_event_tx);
@@ -438,27 +408,9 @@ mod tests {
             full_height > height,
             "expected the startup verbosity prompt to exceed the truncated height"
         );
-
-        let backend = VT100Backend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
-
-        terminal
-            .draw(|frame| {
-                render_startup_prompt(
-                    frame.area(),
-                    frame.buffer_mut(),
-                    &prompt_view.view,
-                    &prompt_view.selected_for_preview,
-                    prompt_view.side_content_width,
-                    prompt_view.side_content_min_width,
-                    setup_step,
-                );
-            })
-            .expect("draw");
-
         assert_snapshot!(
             "startup_verbosity_prompt_narrow_truncated_height_vt100",
-            terminal.backend().vt100().screen().contents()
+            render_prompt_vt100(width, Some(height), setup_step)
         );
     }
 }
