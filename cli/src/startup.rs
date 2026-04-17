@@ -215,37 +215,39 @@ mod tests {
     }
 
     #[test]
-    fn not_found_error_snapshot_includes_link_and_styles() {
-        let err = CodexBinError::NotFoundInPath {
+    fn render_ansi_codex_bin_errors_keep_variant_specific_details() {
+        let not_found = CodexBinError::NotFoundInPath {
             command: "codex".to_string(),
         };
-        let rendered = err.render_ansi();
+        let rendered = not_found.render_ansi();
 
         assert!(rendered.contains("https://developers.openai.com/codex/quickstart?setup=cli"));
         assert!(rendered.contains("\u{1b}[31m"), "should include red ANSI");
         assert!(rendered.contains("\u{1b}[4m"), "should underline link");
+        insta::assert_snapshot!(
+            "not_found_error_snapshot_includes_link_and_styles",
+            ansi_to_vt100_contents(&rendered)
+        );
 
-        insta::assert_snapshot!(ansi_to_vt100_contents(&rendered));
-    }
-
-    #[test]
-    fn invalid_path_error_snapshot_has_no_quickstart_link() {
-        let err = CodexBinError::InvalidPath {
+        let invalid_path = CodexBinError::InvalidPath {
             path: PathBuf::from("/nope/codex"),
             reason: "does not exist".to_string(),
         };
-        let rendered = err.render_ansi();
+        let rendered = invalid_path.render_ansi();
 
         assert!(!rendered.contains("quickstart?setup=cli"));
-        insta::assert_snapshot!(ansi_to_vt100_contents(&rendered));
+        insta::assert_snapshot!(
+            "invalid_path_error_snapshot_has_no_quickstart_link",
+            ansi_to_vt100_contents(&rendered)
+        );
     }
 
     #[test]
-    fn display_not_found_error_is_plain_text() {
-        let err = CodexBinError::NotFoundInPath {
+    fn display_codex_bin_errors_are_plain_text_and_include_variant_details() {
+        let not_found = CodexBinError::NotFoundInPath {
             command: "codex".to_string(),
         };
-        let rendered = err.to_string();
+        let rendered = not_found.to_string();
 
         assert!(rendered.contains("Failed to find `codex` binary"));
         assert!(rendered.contains("quickstart?setup=cli"));
@@ -253,15 +255,12 @@ mod tests {
             !rendered.contains("\u{1b}"),
             "should not include ANSI sequences"
         );
-    }
 
-    #[test]
-    fn display_invalid_path_includes_reason() {
-        let err = CodexBinError::InvalidPath {
+        let invalid_path = CodexBinError::InvalidPath {
             path: PathBuf::from("/nope/codex"),
             reason: "does not exist".to_string(),
         };
-        let rendered = err.to_string();
+        let rendered = invalid_path.to_string();
 
         assert!(rendered.contains("--codex-bin"));
         assert!(rendered.contains("/nope/codex"));
@@ -289,7 +288,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn resolve_codex_bin_expands_windows_style_home_relative_paths() {
+    fn resolve_codex_bin_supports_windows_home_relative_paths_and_cmd_shims() {
         let home = dirs::home_dir().expect("home dir");
         let temp = tempfile::Builder::new()
             .prefix("codex-potter-startup-")
@@ -308,15 +307,11 @@ mod tests {
         let resolved = resolve_codex_bin(&input).expect("resolve codex bin");
 
         assert_eq!(resolved.command_for_spawn, executable.display().to_string());
-    }
 
-    #[test]
-    #[cfg(windows)]
-    fn resolve_codex_bin_finds_windows_cmd_shim_on_path() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let shim = temp.path().join("codex.cmd");
+        let shim_dir = tempfile::tempdir().expect("tempdir");
+        let shim = shim_dir.path().join("codex.cmd");
         std::fs::write(&shim, "@echo off\r\n").expect("write cmd shim");
-        let _path_guard = PathEnvGuard::set(temp.path().as_os_str().to_os_string());
+        let _path_guard = PathEnvGuard::set(shim_dir.path().as_os_str().to_os_string());
 
         let resolved = resolve_codex_bin("codex").expect("resolve codex shim");
 

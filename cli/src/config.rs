@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preserves_comments_and_sets_notice_flag() {
+    fn notice_flag_preserves_comments_when_written_and_reads_from_invalid_toml() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -272,12 +272,7 @@ key = 1
         assert!(updated.contains("[other]"));
         assert!(updated.contains("hide_gitignore_prompt = true"));
         assert!(store.notice_hide_gitignore_prompt().expect("read flag"));
-    }
 
-    #[test]
-    fn reads_notice_flag_when_toml_is_invalid() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
             r#"# broken table header makes this TOML invalid
@@ -295,17 +290,11 @@ hide_gitignore_prompt = true # keep me
     }
 
     #[test]
-    fn update_checks_default_to_true() {
+    fn update_checks_default_to_true_and_read_invalid_toml_override() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
-        let store = ConfigStore::new(path);
+        let store = ConfigStore::new(path.clone());
         assert!(store.check_for_update_on_startup().expect("read flag"));
-    }
-
-    #[test]
-    fn reads_update_flag_when_toml_is_invalid() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
             r#"# broken table header makes this TOML invalid
