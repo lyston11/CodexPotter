@@ -1380,13 +1380,15 @@ mod tests {
             })
             .expect("emit summary");
         assert_eq!(blocks.len(), 1);
-        let block = &blocks[0];
-        assert!(block.contains("CodexPotter summary: 5 rounds in 2h 02m 08s (Budget exhausted)"));
-        assert!(block.contains("View changes:"));
-        assert!(block.contains("git diff 96ca8c6...0919e7b"));
-        assert!(block.contains("Task history:"));
-        assert!(!block.contains("Loop more rounds:"));
-        assert!(!block.contains("──"));
+        assert_eq!(
+            blocks[0],
+            concat!(
+                "CodexPotter summary: 5 rounds in 2h 02m 08s (Budget exhausted)\n",
+                "\n",
+                "  View changes:      git diff 96ca8c6...0919e7b\n",
+                "  Task history:      .codexpotter/projects/2026/03/26/3/MAIN.md",
+            )
+        );
     }
 
     #[test]
