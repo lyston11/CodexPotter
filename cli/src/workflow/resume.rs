@@ -1428,218 +1428,219 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_interrupted_project_prompts_and_can_continue_iterating() {
+    async fn resume_interrupted_project_prompts_and_resolves_continue_or_stop() {
         use std::time::Duration;
 
-        let temp = tempfile::tempdir().expect("tempdir");
-        let base = Instant::now();
-        let replay_started_at = base + Duration::from_secs(10);
-        let continue_started_at = base + Duration::from_secs(20);
-        let clock = FixedResumeClock::new(vec![replay_started_at, continue_started_at]);
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let base = Instant::now();
+            let replay_started_at = base + Duration::from_secs(10);
+            let continue_started_at = base + Duration::from_secs(20);
+            let clock = FixedResumeClock::new(vec![replay_started_at, continue_started_at]);
 
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md");
-        let project_id = String::from("project_1");
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md");
+            let project_id = String::from("project_1");
 
-        let resume = crate::app_server::potter::ProjectResumeResponse {
-            project_id: project_id.clone(),
-            working_dir: temp.path().to_path_buf(),
-            project_dir: temp.path().join("project"),
-            progress_file_rel: progress_file_rel.clone(),
-            progress_file: temp.path().join(&progress_file_rel),
-            git_branch: None,
-            replay: crate::app_server::potter::ProjectResumeReplay {
-                completed_rounds: Vec::new(),
-            },
-            unfinished_round: None,
-        };
+            let resume = crate::app_server::potter::ProjectResumeResponse {
+                project_id: project_id.clone(),
+                working_dir: temp.path().to_path_buf(),
+                project_dir: temp.path().join("project"),
+                progress_file_rel: progress_file_rel.clone(),
+                progress_file: temp.path().join(&progress_file_rel),
+                git_branch: None,
+                replay: crate::app_server::potter::ProjectResumeReplay {
+                    completed_rounds: Vec::new(),
+                },
+                unfinished_round: None,
+            };
 
-        let mut app_server = InterruptHandlingAppServer {
-            start_rounds_buffered_events: vec![
-                Event {
-                    id: String::new(),
-                    msg: EventMsg::PotterRoundStarted {
-                        current: 1,
-                        total: 1,
+            let mut app_server = InterruptHandlingAppServer {
+                start_rounds_buffered_events: vec![
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterRoundStarted {
+                            current: 1,
+                            total: 1,
+                        },
                     },
-                },
-                Event {
-                    id: String::new(),
-                    msg: EventMsg::PotterRoundFinished {
-                        outcome: PotterRoundOutcome::Interrupted,
-                    },
-                },
-                Event {
-                    id: String::new(),
-                    msg: EventMsg::PotterProjectInterrupted {
-                        project_id: project_id.clone(),
-                        user_prompt_file: progress_file_rel.clone(),
-                    },
-                },
-            ],
-            resolve_interrupt_responses: std::collections::VecDeque::from([(
-                crate::app_server::potter::ProjectResolveInterruptResponse { summary: None },
-                vec![
                     Event {
                         id: String::new(),
                         msg: EventMsg::PotterRoundFinished {
-                            outcome: PotterRoundOutcome::Completed,
+                            outcome: PotterRoundOutcome::Interrupted,
                         },
                     },
                     Event {
                         id: String::new(),
-                        msg: EventMsg::PotterProjectCompleted {
-                            outcome: PotterProjectOutcome::BudgetExhausted,
+                        msg: EventMsg::PotterProjectInterrupted {
+                            project_id: project_id.clone(),
+                            user_prompt_file: progress_file_rel.clone(),
                         },
                     },
                 ],
-            )]),
-            ..Default::default()
-        };
-        let mut ui = MockResumeUi {
-            interrupted_action: Some(InterruptedProjectAction::ContinueIterate),
-            ..Default::default()
-        };
+                resolve_interrupt_responses: std::collections::VecDeque::from([(
+                    crate::app_server::potter::ProjectResolveInterruptResponse { summary: None },
+                    vec![
+                        Event {
+                            id: String::new(),
+                            msg: EventMsg::PotterRoundFinished {
+                                outcome: PotterRoundOutcome::Completed,
+                            },
+                        },
+                        Event {
+                            id: String::new(),
+                            msg: EventMsg::PotterProjectCompleted {
+                                outcome: PotterProjectOutcome::BudgetExhausted,
+                            },
+                        },
+                    ],
+                )]),
+                ..Default::default()
+            };
+            let mut ui = MockResumeUi {
+                interrupted_action: Some(InterruptedProjectAction::ContinueIterate),
+                ..Default::default()
+            };
 
-        let exit = run_resume_with_deps(
-            &mut ui,
-            &mut app_server,
-            resume,
-            NonZeroUsize::new(1).expect("iterate rounds"),
-            false,
-            &clock,
-        )
-        .await
-        .expect("run resume");
-        assert_eq!(exit, ResumeExit::Completed);
+            let exit = run_resume_with_deps(
+                &mut ui,
+                &mut app_server,
+                resume,
+                NonZeroUsize::new(1).expect("iterate rounds"),
+                false,
+                &clock,
+            )
+            .await
+            .expect("run resume");
+            assert_eq!(exit, ResumeExit::Completed);
 
-        assert_eq!(
-            app_server.resolve_interrupt_calls,
-            vec![crate::app_server::potter::ProjectResolveInterruptParams {
-                project_id,
-                action: crate::app_server::potter::ResolveInterruptAction::Continue,
-                turn_prompt_override: Some(PROGRESS_FILE_CHANGED_TURN_PROMPT_OVERRIDE.to_string()),
-            }]
-        );
-        assert_eq!(app_server.interrupt_calls, Vec::<String>::new());
+            assert_eq!(
+                app_server.resolve_interrupt_calls,
+                vec![crate::app_server::potter::ProjectResolveInterruptParams {
+                    project_id,
+                    action: crate::app_server::potter::ResolveInterruptAction::Continue,
+                    turn_prompt_override: Some(
+                        PROGRESS_FILE_CHANGED_TURN_PROMPT_OVERRIDE.to_string()
+                    ),
+                }]
+            );
+            assert_eq!(app_server.interrupt_calls, Vec::<String>::new());
 
-        assert_eq!(
-            ui.ops,
-            vec![
-                MockUiOp::Clear,
-                MockUiOp::SetProjectStartedAt(replay_started_at),
-                MockUiOp::PromptActionPicker(vec![String::from("Iterate 1 more round")]),
-                MockUiOp::SetProjectStartedAt(continue_started_at),
-                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
-                MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
-                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
-            ]
-        );
-    }
+            assert_eq!(
+                ui.ops,
+                vec![
+                    MockUiOp::Clear,
+                    MockUiOp::SetProjectStartedAt(replay_started_at),
+                    MockUiOp::PromptActionPicker(vec![String::from("Iterate 1 more round")]),
+                    MockUiOp::SetProjectStartedAt(continue_started_at),
+                    MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
+                    MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
+                    MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
+                ]
+            );
+        }
 
-    #[tokio::test]
-    async fn resume_interrupted_project_stop_inserts_summary_block() {
-        use std::time::Duration;
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let base = Instant::now();
+            let replay_started_at = base + Duration::from_secs(10);
+            let continue_started_at = base + Duration::from_secs(20);
+            let clock = FixedResumeClock::new(vec![replay_started_at, continue_started_at]);
 
-        let temp = tempfile::tempdir().expect("tempdir");
-        let base = Instant::now();
-        let replay_started_at = base + Duration::from_secs(10);
-        let continue_started_at = base + Duration::from_secs(20);
-        let clock = FixedResumeClock::new(vec![replay_started_at, continue_started_at]);
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md");
+            let project_id = String::from("project_1");
 
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md");
-        let project_id = String::from("project_1");
+            let resume = crate::app_server::potter::ProjectResumeResponse {
+                project_id: project_id.clone(),
+                working_dir: temp.path().to_path_buf(),
+                project_dir: temp.path().join("project"),
+                progress_file_rel: progress_file_rel.clone(),
+                progress_file: temp.path().join(&progress_file_rel),
+                git_branch: None,
+                replay: crate::app_server::potter::ProjectResumeReplay {
+                    completed_rounds: Vec::new(),
+                },
+                unfinished_round: None,
+            };
 
-        let resume = crate::app_server::potter::ProjectResumeResponse {
-            project_id: project_id.clone(),
-            working_dir: temp.path().to_path_buf(),
-            project_dir: temp.path().join("project"),
-            progress_file_rel: progress_file_rel.clone(),
-            progress_file: temp.path().join(&progress_file_rel),
-            git_branch: None,
-            replay: crate::app_server::potter::ProjectResumeReplay {
-                completed_rounds: Vec::new(),
-            },
-            unfinished_round: None,
-        };
+            let summary = crate::app_server::potter::InterruptedProjectSummary {
+                rounds: 1,
+                duration: Duration::from_secs(1),
+                user_prompt_file: progress_file_rel.clone(),
+                git_commit_start: String::from("a"),
+                git_commit_end: String::from("b"),
+            };
 
-        let summary = crate::app_server::potter::InterruptedProjectSummary {
-            rounds: 1,
-            duration: Duration::from_secs(1),
-            user_prompt_file: progress_file_rel.clone(),
-            git_commit_start: String::from("a"),
-            git_commit_end: String::from("b"),
-        };
-
-        let mut app_server = InterruptHandlingAppServer {
-            start_rounds_buffered_events: vec![
-                Event {
-                    id: String::new(),
-                    msg: EventMsg::PotterRoundStarted {
-                        current: 1,
-                        total: 1,
+            let mut app_server = InterruptHandlingAppServer {
+                start_rounds_buffered_events: vec![
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterRoundStarted {
+                            current: 1,
+                            total: 1,
+                        },
                     },
-                },
-                Event {
-                    id: String::new(),
-                    msg: EventMsg::PotterRoundFinished {
-                        outcome: PotterRoundOutcome::Interrupted,
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterRoundFinished {
+                            outcome: PotterRoundOutcome::Interrupted,
+                        },
                     },
-                },
-                Event {
-                    id: String::new(),
-                    msg: EventMsg::PotterProjectInterrupted {
-                        project_id: project_id.clone(),
-                        user_prompt_file: progress_file_rel.clone(),
+                    Event {
+                        id: String::new(),
+                        msg: EventMsg::PotterProjectInterrupted {
+                            project_id: project_id.clone(),
+                            user_prompt_file: progress_file_rel.clone(),
+                        },
                     },
-                },
-            ],
-            resolve_interrupt_responses: std::collections::VecDeque::from([(
-                crate::app_server::potter::ProjectResolveInterruptResponse {
-                    summary: Some(summary.clone()),
-                },
-                Vec::new(),
-            )]),
-            ..Default::default()
-        };
-        let mut ui = MockResumeUi {
-            interrupted_action: Some(InterruptedProjectAction::StopIterate),
-            ..Default::default()
-        };
+                ],
+                resolve_interrupt_responses: std::collections::VecDeque::from([(
+                    crate::app_server::potter::ProjectResolveInterruptResponse {
+                        summary: Some(summary.clone()),
+                    },
+                    Vec::new(),
+                )]),
+                ..Default::default()
+            };
+            let mut ui = MockResumeUi {
+                interrupted_action: Some(InterruptedProjectAction::StopIterate),
+                ..Default::default()
+            };
 
-        let exit = run_resume_with_deps(
-            &mut ui,
-            &mut app_server,
-            resume,
-            NonZeroUsize::new(1).expect("iterate rounds"),
-            false,
-            &clock,
-        )
-        .await
-        .expect("run resume");
-        assert_eq!(exit, ResumeExit::Completed);
+            let exit = run_resume_with_deps(
+                &mut ui,
+                &mut app_server,
+                resume,
+                NonZeroUsize::new(1).expect("iterate rounds"),
+                false,
+                &clock,
+            )
+            .await
+            .expect("run resume");
+            assert_eq!(exit, ResumeExit::Completed);
 
-        assert_eq!(
-            app_server.resolve_interrupt_calls,
-            vec![crate::app_server::potter::ProjectResolveInterruptParams {
-                project_id,
-                action: crate::app_server::potter::ResolveInterruptAction::Stop,
-                turn_prompt_override: None,
-            }]
-        );
-        assert_eq!(app_server.interrupt_calls, Vec::<String>::new());
+            assert_eq!(
+                app_server.resolve_interrupt_calls,
+                vec![crate::app_server::potter::ProjectResolveInterruptParams {
+                    project_id,
+                    action: crate::app_server::potter::ResolveInterruptAction::Stop,
+                    turn_prompt_override: None,
+                }]
+            );
+            assert_eq!(app_server.interrupt_calls, Vec::<String>::new());
 
-        assert_eq!(
-            ui.ops,
-            vec![
-                MockUiOp::Clear,
-                MockUiOp::SetProjectStartedAt(replay_started_at),
-                MockUiOp::PromptActionPicker(vec![String::from("Iterate 1 more round")]),
-                MockUiOp::SetProjectStartedAt(continue_started_at),
-                MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
-                MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
-                MockUiOp::InsertInterruptedProjectSummary(summary),
-            ]
-        );
+            assert_eq!(
+                ui.ops,
+                vec![
+                    MockUiOp::Clear,
+                    MockUiOp::SetProjectStartedAt(replay_started_at),
+                    MockUiOp::PromptActionPicker(vec![String::from("Iterate 1 more round")]),
+                    MockUiOp::SetProjectStartedAt(continue_started_at),
+                    MockUiOp::RenderRound(Some(String::from("Round 1/1"))),
+                    MockUiOp::PromptInterruptedProjectAction(progress_file_rel),
+                    MockUiOp::InsertInterruptedProjectSummary(summary),
+                ]
+            );
+        }
     }
 
     #[tokio::test]
@@ -1812,86 +1813,68 @@ mod tests {
     }
 
     #[test]
-    fn read_upstream_rollout_event_msgs_extracts_event_msg_items() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let rollout_path = temp.path().join("rollout.jsonl");
-        std::fs::write(
-            &rollout_path,
-            r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"hello"}}
+    fn read_upstream_rollout_event_msgs_filters_non_event_lines_and_resolved_prompts() {
+        fn read_rollout(contents: &str) -> Vec<EventMsg> {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let rollout_path = temp.path().join("rollout.jsonl");
+            std::fs::write(&rollout_path, contents).expect("write rollout");
+            read_upstream_rollout_event_msgs(&rollout_path).expect("read events")
+        }
+
+        {
+            let events = read_rollout(
+                r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"hello"}}
 {"timestamp":"2026-02-28T00:00:00.000Z","type":"turn_context","payload":{"cwd":"project","approval_policy":"never","sandbox_policy":{"type":"read_only"},"model":"test-model","summary":{"type":"auto"},"output_schema":null}}
 "#,
-        )
-        .expect("write rollout");
+            );
+            assert_eq!(events.len(), 1);
+            let EventMsg::AgentMessage(ev) = &events[0] else {
+                panic!("expected agent_message, got: {:?}", events[0]);
+            };
+            assert_eq!(ev.message, "hello");
+        }
 
-        let events = read_upstream_rollout_event_msgs(&rollout_path).expect("read events");
-        assert_eq!(events.len(), 1);
-        let EventMsg::AgentMessage(ev) = &events[0] else {
-            panic!("expected agent_message, got: {:?}", events[0]);
-        };
-        assert_eq!(ev.message, "hello");
-    }
-
-    #[test]
-    fn read_upstream_rollout_event_msgs_filters_resolved_exec_approval_prompt() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let rollout_path = temp.path().join("rollout.jsonl");
-        std::fs::write(
-            &rollout_path,
-            r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"exec_approval_request","call_id":"call-1","turn_id":"turn-1","command":["echo","hi"],"cwd":"/tmp","parsed_cmd":[]}}
+        {
+            let events = read_rollout(
+                r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"exec_approval_request","call_id":"call-1","turn_id":"turn-1","command":["echo","hi"],"cwd":"/tmp","parsed_cmd":[]}}
 {"timestamp":"2026-02-28T00:00:01.000Z","type":"event_msg","payload":{"type":"exec_command_begin","call_id":"call-1","turn_id":"turn-1","command":["echo","hi"],"cwd":"/tmp","parsed_cmd":[]}}
 "#,
-        )
-        .expect("write rollout");
+            );
+            assert_eq!(events.len(), 1);
+            assert!(
+                matches!(&events[0], EventMsg::ExecCommandBegin(ev) if ev.call_id == "call-1"),
+                "unexpected events: {events:?}"
+            );
+        }
 
-        let events = read_upstream_rollout_event_msgs(&rollout_path).expect("read events");
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], EventMsg::ExecCommandBegin(ev) if ev.call_id == "call-1"),
-            "unexpected events: {events:?}"
-        );
-    }
-
-    #[test]
-    fn read_upstream_rollout_event_msgs_keeps_pending_request_user_input() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let rollout_path = temp.path().join("rollout.jsonl");
-        std::fs::write(
-            &rollout_path,
-            r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"request_user_input","call_id":"call-1","turn_id":"turn-1","questions":[]}}
+        {
+            let events = read_rollout(
+                r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"request_user_input","call_id":"call-1","turn_id":"turn-1","questions":[]}}
 "#,
-        )
-        .expect("write rollout");
+            );
+            assert_eq!(events.len(), 1);
+            assert!(
+                matches!(&events[0], EventMsg::RequestUserInput(ev) if ev.call_id == "call-1"),
+                "unexpected events: {events:?}"
+            );
+        }
 
-        let events = read_upstream_rollout_event_msgs(&rollout_path).expect("read events");
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], EventMsg::RequestUserInput(ev) if ev.call_id == "call-1"),
-            "unexpected events: {events:?}"
-        );
-    }
-
-    #[test]
-    fn read_upstream_rollout_event_msgs_drops_resolved_request_user_input_after_turn_complete() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let rollout_path = temp.path().join("rollout.jsonl");
-        std::fs::write(
-            &rollout_path,
-            r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"request_user_input","call_id":"call-1","turn_id":"turn-1","questions":[]}}
+        {
+            let events = read_rollout(
+                r#"{"timestamp":"2026-02-28T00:00:00.000Z","type":"event_msg","payload":{"type":"request_user_input","call_id":"call-1","turn_id":"turn-1","questions":[]}}
 {"timestamp":"2026-02-28T00:00:01.000Z","type":"event_msg","payload":{"type":"turn_complete","turn_id":"turn-1","last_agent_message":null}}
 "#,
-        )
-        .expect("write rollout");
-
-        let events = read_upstream_rollout_event_msgs(&rollout_path).expect("read events");
-        assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], EventMsg::TurnComplete(ev) if ev.turn_id == "turn-1"),
-            "unexpected events: {events:?}"
-        );
+            );
+            assert_eq!(events.len(), 1);
+            assert!(
+                matches!(&events[0], EventMsg::TurnComplete(ev) if ev.turn_id == "turn-1"),
+                "unexpected events: {events:?}"
+            );
+        }
     }
 
     #[test]
-    fn replay_round_exit_decision_allows_historical_fatal_outcome() {
+    fn replay_round_exit_decision_handles_fatal_outcomes_consistently() {
         let decision = replay_round_exit_decision(
             &ExitReason::Fatal("boom".to_string()),
             &PotterRoundOutcome::Fatal {
@@ -1899,10 +1882,7 @@ mod tests {
             },
         );
         assert_eq!(decision, ReplayRoundExitDecision::Continue);
-    }
 
-    #[test]
-    fn replay_round_exit_decision_treats_unexpected_fatal_as_fatal_exit() {
         let decision = replay_round_exit_decision(
             &ExitReason::Fatal("backend disconnected".to_string()),
             &PotterRoundOutcome::Completed,
@@ -2139,7 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn build_unfinished_round_pre_action_events_replays_project_started_once() {
+    fn build_unfinished_round_pre_action_events_handles_project_started_marker() {
         let temp = tempfile::tempdir().expect("tempdir");
         let _main = write_main(temp.path(), ".codexpotter/projects/2026/02/01/1");
         let resolved =
@@ -2148,83 +2128,76 @@ mod tests {
         let thread_id =
             codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
                 .expect("thread id");
-        let mut unfinished = UnfinishedRoundPlan {
-            round_current: 1,
-            round_total: 10,
-            thread_id,
-            rollout_path: resolved.workdir.join("rollout.jsonl"),
-            service_tier: Some(ServiceTier::Fast),
-            project_started: Some((
-                Some("hello".to_string()),
-                PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md"),
-            )),
-        };
+        {
+            let mut unfinished = UnfinishedRoundPlan {
+                round_current: 1,
+                round_total: 10,
+                thread_id,
+                rollout_path: resolved.workdir.join("rollout.jsonl"),
+                service_tier: Some(ServiceTier::Fast),
+                project_started: Some((
+                    Some("hello".to_string()),
+                    PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md"),
+                )),
+            };
 
-        let events = build_unfinished_round_pre_action_events(&resolved, &mut unfinished);
+            let events = build_unfinished_round_pre_action_events(&resolved, &mut unfinished);
 
-        assert_eq!(unfinished.project_started, None);
-        assert_eq!(events.len(), 3);
-        let EventMsg::PotterProjectStarted {
-            user_message,
-            working_dir,
-            project_dir,
-            user_prompt_file,
-        } = &events[0]
-        else {
-            panic!("expected PotterProjectStarted, got: {:?}", events[0]);
-        };
-        assert_eq!(user_message.as_deref(), Some("hello"));
-        assert_eq!(working_dir, &resolved.workdir);
-        assert_eq!(project_dir, &resolved.project_dir);
-        assert_eq!(
-            user_prompt_file,
-            &PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md")
-        );
-        let EventMsg::PotterRoundStarted { current, total } = &events[1] else {
-            panic!("expected PotterRoundStarted, got: {:?}", events[1]);
-        };
-        assert_eq!(*current, 1);
-        assert_eq!(*total, 10);
+            assert_eq!(unfinished.project_started, None);
+            assert_eq!(events.len(), 3);
+            let EventMsg::PotterProjectStarted {
+                user_message,
+                working_dir,
+                project_dir,
+                user_prompt_file,
+            } = &events[0]
+            else {
+                panic!("expected PotterProjectStarted, got: {:?}", events[0]);
+            };
+            assert_eq!(user_message.as_deref(), Some("hello"));
+            assert_eq!(working_dir, &resolved.workdir);
+            assert_eq!(project_dir, &resolved.project_dir);
+            assert_eq!(
+                user_prompt_file,
+                &PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md")
+            );
+            let EventMsg::PotterRoundStarted { current, total } = &events[1] else {
+                panic!("expected PotterRoundStarted, got: {:?}", events[1]);
+            };
+            assert_eq!(*current, 1);
+            assert_eq!(*total, 10);
 
-        let EventMsg::PotterRoundFinished { outcome } = &events[2] else {
-            panic!("expected PotterRoundFinished, got: {:?}", events[2]);
-        };
-        assert_eq!(*outcome, PotterRoundOutcome::Completed);
-    }
+            let EventMsg::PotterRoundFinished { outcome } = &events[2] else {
+                panic!("expected PotterRoundFinished, got: {:?}", events[2]);
+            };
+            assert_eq!(*outcome, PotterRoundOutcome::Completed);
+        }
 
-    #[test]
-    fn build_unfinished_round_pre_action_events_skips_when_project_started_already_consumed() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let _main = write_main(temp.path(), ".codexpotter/projects/2026/02/01/1");
-        let resolved =
-            resolve_project_paths(temp.path(), Path::new("2026/02/01/1")).expect("resolve");
+        {
+            let mut unfinished = UnfinishedRoundPlan {
+                round_current: 2,
+                round_total: 10,
+                thread_id,
+                rollout_path: resolved.workdir.join("rollout.jsonl"),
+                service_tier: None,
+                project_started: None,
+            };
 
-        let thread_id =
-            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
-                .expect("thread id");
-        let mut unfinished = UnfinishedRoundPlan {
-            round_current: 2,
-            round_total: 10,
-            thread_id,
-            rollout_path: resolved.workdir.join("rollout.jsonl"),
-            service_tier: None,
-            project_started: None,
-        };
+            let events = build_unfinished_round_pre_action_events(&resolved, &mut unfinished);
 
-        let events = build_unfinished_round_pre_action_events(&resolved, &mut unfinished);
+            assert_eq!(unfinished.project_started, None);
+            assert_eq!(events.len(), 2);
 
-        assert_eq!(unfinished.project_started, None);
-        assert_eq!(events.len(), 2);
+            let EventMsg::PotterRoundStarted { current, total } = &events[0] else {
+                panic!("expected PotterRoundStarted, got: {:?}", events[0]);
+            };
+            assert_eq!(*current, 2);
+            assert_eq!(*total, 10);
 
-        let EventMsg::PotterRoundStarted { current, total } = &events[0] else {
-            panic!("expected PotterRoundStarted, got: {:?}", events[0]);
-        };
-        assert_eq!(*current, 2);
-        assert_eq!(*total, 10);
-
-        let EventMsg::PotterRoundFinished { outcome } = &events[1] else {
-            panic!("expected PotterRoundFinished, got: {:?}", events[1]);
-        };
-        assert_eq!(*outcome, PotterRoundOutcome::Completed);
+            let EventMsg::PotterRoundFinished { outcome } = &events[1] else {
+                panic!("expected PotterRoundFinished, got: {:?}", events[1]);
+            };
+            assert_eq!(*outcome, PotterRoundOutcome::Completed);
+        }
     }
 }
