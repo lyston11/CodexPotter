@@ -2538,6 +2538,40 @@ mod stream_recovery_tests {
     use codex_protocol::protocol::TurnCompleteEvent;
     use pretty_assertions::assert_eq;
 
+    struct RecoveryHarness {
+        recovery: StreamRecoveryContext,
+        event_tx: UnboundedSender<Event>,
+        event_rx: UnboundedReceiver<Event>,
+        action_rx: UnboundedReceiver<RecoveryAction>,
+    }
+
+    fn recovery_harness(
+        event_mode: AppServerEventMode,
+        has_sent_turn_start: bool,
+    ) -> RecoveryHarness {
+        let (event_tx, event_rx) = unbounded_channel::<Event>();
+        let (action_tx, action_rx) = unbounded_channel::<RecoveryAction>();
+        let recovery = StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx: action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode,
+            server_request_policy: ServerRequestPolicy::default(),
+        };
+
+        RecoveryHarness {
+            recovery,
+            event_tx,
+            event_rx,
+            action_rx,
+        }
+    }
+
     fn retryable_error_event() -> ErrorEvent {
         ErrorEvent {
             message: "stream disconnected before completion: error sending request for url (...)"
@@ -2557,31 +2591,21 @@ mod stream_recovery_tests {
 
     #[test]
     fn stream_recovery_translates_retryable_error_to_potter_events() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, true);
 
         handle_codex_event(
             Event {
                 id: "err".into(),
                 msg: EventMsg::Error(retryable_error_event()),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let event = event_rx.try_recv().expect("expected injected event");
+        let event = harness
+            .event_rx
+            .try_recv()
+            .expect("expected injected event");
         let EventMsg::PotterStreamRecoveryUpdate {
             attempt,
             max_attempts,
@@ -2598,12 +2622,12 @@ mod stream_recovery_tests {
         );
 
         assert!(
-            event_rx.try_recv().is_err(),
+            harness.event_rx.try_recv().is_err(),
             "expected retryable Error to be suppressed"
         );
 
         assert!(
-            action_rx.try_recv().is_err(),
+            harness.action_rx.try_recv().is_err(),
             "expected no immediate retry action"
         );
 
@@ -2615,16 +2639,19 @@ mod stream_recovery_tests {
                     last_agent_message: None,
                 }),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
         assert!(
-            event_rx.try_recv().is_err(),
+            harness.event_rx.try_recv().is_err(),
             "expected empty TurnComplete to be suppressed during retry streak"
         );
         assert_eq!(
-            action_rx.try_recv().expect("expected RetryContinue action"),
+            harness
+                .action_rx
+                .try_recv()
+                .expect("expected RetryContinue action"),
             RecoveryAction::RetryContinue { attempt: 1 }
         );
 
@@ -2635,17 +2662,21 @@ mod stream_recovery_tests {
                     delta: "hello".to_string(),
                 }),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let recovered = event_rx.try_recv().expect("expected recovered event");
+        let recovered = harness
+            .event_rx
+            .try_recv()
+            .expect("expected recovered event");
         assert!(matches!(
             recovered.msg,
             EventMsg::PotterStreamRecoveryRecovered
         ));
 
-        let forwarded = event_rx
+        let forwarded = harness
+            .event_rx
             .try_recv()
             .expect("expected forwarded activity event");
         assert!(matches!(forwarded.msg, EventMsg::AgentMessageDelta(_)));
@@ -2653,70 +2684,54 @@ mod stream_recovery_tests {
 
     #[test]
     fn stream_recovery_ignores_retryable_error_before_first_turn_start() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: false,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, false);
 
         handle_codex_event(
             Event {
                 id: "err".into(),
                 msg: EventMsg::Error(retryable_error_event()),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let event = event_rx.try_recv().expect("expected forwarded error");
+        let event = harness
+            .event_rx
+            .try_recv()
+            .expect("expected forwarded error");
         assert!(matches!(event.msg, EventMsg::Error(_)));
 
-        let round_finished = event_rx.try_recv().expect("expected round finished marker");
+        let round_finished = harness
+            .event_rx
+            .try_recv()
+            .expect("expected round finished marker");
         assert!(matches!(
             round_finished.msg,
             EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Fatal { .. }
             }
         ));
-        assert!(action_rx.try_recv().is_err(), "expected no continue action");
+        assert!(
+            harness.action_rx.try_recv().is_err(),
+            "expected no continue action"
+        );
     }
 
     #[test]
     fn stream_recovery_retries_sign_in_again_error_within_round() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, true);
 
         handle_codex_event(
             Event {
                 id: "err".into(),
                 msg: EventMsg::Error(retryable_sign_in_again_error_event()),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let update = event_rx
+        let update = harness
+            .event_rx
             .try_recv()
             .expect("expected recovery update for auth refresh noise");
         let EventMsg::PotterStreamRecoveryUpdate {
@@ -2730,7 +2745,7 @@ mod stream_recovery_tests {
         assert_eq!((attempt, max_attempts), (1, 10));
         assert!(error_message.contains("Please sign in again."));
         assert!(
-            event_rx.try_recv().is_err(),
+            harness.event_rx.try_recv().is_err(),
             "expected auth retry error to be suppressed"
         );
 
@@ -2742,44 +2757,35 @@ mod stream_recovery_tests {
                     last_agent_message: None,
                 }),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
         assert!(
-            event_rx.try_recv().is_err(),
+            harness.event_rx.try_recv().is_err(),
             "expected empty TurnComplete to be suppressed during auth retry"
         );
         assert_eq!(
-            action_rx.try_recv().expect("expected RetryContinue action"),
+            harness
+                .action_rx
+                .try_recv()
+                .expect("expected RetryContinue action"),
             RecoveryAction::RetryContinue { attempt: 1 }
         );
         assert!(
-            !recovery.has_finished_round,
+            !harness.recovery.has_finished_round,
             "round should stay alive for automatic Continue"
         );
     }
 
     #[test]
     fn stream_recovery_gives_up_after_retry_cap() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, true);
 
         let err = retryable_error_event();
         for _ in 0..10 {
-            let Some(ContinueRetryDecision::Retry(_)) = recovery.stream_recovery.plan_retry(&err)
+            let Some(ContinueRetryDecision::Retry(_)) =
+                harness.recovery.stream_recovery.plan_retry(&err)
             else {
                 panic!("expected retry plan while warming retry streak");
             };
@@ -2790,11 +2796,14 @@ mod stream_recovery_tests {
                 id: "err".into(),
                 msg: EventMsg::Error(err),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let event = event_rx.try_recv().expect("expected injected event");
+        let event = harness
+            .event_rx
+            .try_recv()
+            .expect("expected injected event");
         let EventMsg::PotterStreamRecoveryGaveUp {
             error_message,
             attempts,
@@ -2806,7 +2815,10 @@ mod stream_recovery_tests {
         assert!(error_message.contains("stream disconnected before completion"));
         assert_eq!((attempts, max_attempts), (10, 10));
 
-        let round_finished = event_rx.try_recv().expect("expected round finished marker");
+        let round_finished = harness
+            .event_rx
+            .try_recv()
+            .expect("expected round finished marker");
         assert!(matches!(
             round_finished.msg,
             EventMsg::PotterRoundFinished {
@@ -2815,31 +2827,18 @@ mod stream_recovery_tests {
         ));
 
         assert!(
-            event_rx.try_recv().is_err(),
+            harness.event_rx.try_recv().is_err(),
             "expected Error to be suppressed after giving up"
         );
         assert!(
-            action_rx.try_recv().is_err(),
+            harness.action_rx.try_recv().is_err(),
             "expected no continue action after giving up"
         );
     }
 
     #[test]
     fn thread_rollback_failed_error_is_forwarded_and_ends_round() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, true);
 
         handle_codex_event(
             Event {
@@ -2849,14 +2848,20 @@ mod stream_recovery_tests {
                     codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
                 }),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let forwarded = event_rx.try_recv().expect("expected forwarded error");
+        let forwarded = harness
+            .event_rx
+            .try_recv()
+            .expect("expected forwarded error");
         assert!(matches!(forwarded.msg, EventMsg::Error(_)));
 
-        let round_finished = event_rx.try_recv().expect("expected round finished marker");
+        let round_finished = harness
+            .event_rx
+            .try_recv()
+            .expect("expected round finished marker");
         assert!(matches!(
             round_finished.msg,
             EventMsg::PotterRoundFinished {
@@ -2864,120 +2869,94 @@ mod stream_recovery_tests {
             }
         ));
         assert!(
-            action_rx.try_recv().is_err(),
+            harness.action_rx.try_recv().is_err(),
             "expected no recovery action from ThreadRollbackFailed"
         );
-        assert!(recovery.has_finished_round, "round should end as fatal");
+        assert!(
+            harness.recovery.has_finished_round,
+            "round should end as fatal"
+        );
     }
 
     #[test]
-    fn thread_rolled_back_event_is_suppressed() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+    fn thread_rolled_back_event_is_forwarded_only_in_exec_json_mode() {
+        {
+            let mut harness = recovery_harness(AppServerEventMode::Interactive, true);
+            handle_codex_event(
+                Event {
+                    id: "rolled-back".into(),
+                    msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+                },
+                &mut harness.recovery,
+                &harness.event_tx,
+            );
 
-        handle_codex_event(
-            Event {
-                id: "rolled-back".into(),
-                msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
-            },
-            &mut recovery,
-            &event_tx,
-        );
+            assert!(
+                harness.event_rx.try_recv().is_err(),
+                "expected ThreadRolledBack to be suppressed"
+            );
+            assert!(
+                harness.action_rx.try_recv().is_err(),
+                "expected no recovery action from ThreadRolledBack"
+            );
+            assert!(
+                !harness.recovery.has_finished_round,
+                "round should continue"
+            );
+        }
 
-        assert!(
-            event_rx.try_recv().is_err(),
-            "expected ThreadRolledBack to be suppressed"
-        );
-        assert!(
-            action_rx.try_recv().is_err(),
-            "expected no recovery action from ThreadRolledBack"
-        );
-        assert!(!recovery.has_finished_round, "round should continue");
-    }
+        {
+            let mut harness = recovery_harness(AppServerEventMode::ExecJson, true);
+            handle_codex_event(
+                Event {
+                    id: "rolled-back".into(),
+                    msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+                },
+                &mut harness.recovery,
+                &harness.event_tx,
+            );
 
-    #[test]
-    fn exec_json_forwards_thread_rolled_back_event() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::ExecJson,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
-
-        handle_codex_event(
-            Event {
-                id: "rolled-back".into(),
-                msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
-            },
-            &mut recovery,
-            &event_tx,
-        );
-
-        let forwarded = event_rx
-            .try_recv()
-            .expect("expected forwarded rollback event");
-        assert!(matches!(forwarded.msg, EventMsg::ThreadRolledBack(_)));
-        assert!(
-            event_rx.try_recv().is_err(),
-            "expected no additional events"
-        );
-        assert!(
-            action_rx.try_recv().is_err(),
-            "expected no recovery action from ThreadRolledBack"
-        );
-        assert!(!recovery.has_finished_round, "round should continue");
+            let forwarded = harness
+                .event_rx
+                .try_recv()
+                .expect("expected forwarded rollback event");
+            assert!(matches!(forwarded.msg, EventMsg::ThreadRolledBack(_)));
+            assert!(
+                harness.event_rx.try_recv().is_err(),
+                "expected no additional events"
+            );
+            assert!(
+                harness.action_rx.try_recv().is_err(),
+                "expected no recovery action from ThreadRolledBack"
+            );
+            assert!(
+                !harness.recovery.has_finished_round,
+                "round should continue"
+            );
+        }
     }
 
     #[test]
     fn exec_json_forwards_recovery_error_and_empty_turn_complete_without_finishing_round() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx: action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::ExecJson,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut harness = recovery_harness(AppServerEventMode::ExecJson, true);
 
         handle_codex_event(
             Event {
                 id: "err".into(),
                 msg: EventMsg::Error(retryable_error_event()),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let forwarded_error = event_rx.try_recv().expect("expected forwarded Error");
+        let forwarded_error = harness
+            .event_rx
+            .try_recv()
+            .expect("expected forwarded Error");
         assert!(matches!(forwarded_error.msg, EventMsg::Error(_)));
 
-        let update = event_rx
+        let update = harness
+            .event_rx
             .try_recv()
             .expect("expected PotterStreamRecoveryUpdate");
         assert!(matches!(
@@ -2993,11 +2972,12 @@ mod stream_recovery_tests {
                     last_agent_message: None,
                 }),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let forwarded_turn_complete = event_rx
+        let forwarded_turn_complete = harness
+            .event_rx
             .try_recv()
             .expect("expected forwarded TurnComplete");
         assert!(matches!(
@@ -3005,18 +2985,21 @@ mod stream_recovery_tests {
             EventMsg::TurnComplete(_)
         ));
         assert!(
-            event_rx.try_recv().is_err(),
+            harness.event_rx.try_recv().is_err(),
             "expected empty TurnComplete not to finish the round"
         );
         assert!(
             matches!(
-                action_rx.try_recv().expect("expected RetryContinue action"),
+                harness
+                    .action_rx
+                    .try_recv()
+                    .expect("expected RetryContinue action"),
                 RecoveryAction::RetryContinue { attempt: 1 }
             ),
             "expected retry attempt 1"
         );
         assert!(
-            !recovery.has_finished_round,
+            !harness.recovery.has_finished_round,
             "round should still be running"
         );
 
@@ -3027,14 +3010,20 @@ mod stream_recovery_tests {
                     delta: "hello".to_string(),
                 }),
             },
-            &mut recovery,
-            &event_tx,
+            &mut harness.recovery,
+            &harness.event_tx,
         );
 
-        let activity = event_rx.try_recv().expect("expected forwarded activity");
+        let activity = harness
+            .event_rx
+            .try_recv()
+            .expect("expected forwarded activity");
         assert!(matches!(activity.msg, EventMsg::AgentMessageDelta(_)));
 
-        let recovered = event_rx.try_recv().expect("expected recovered marker");
+        let recovered = harness
+            .event_rx
+            .try_recv()
+            .expect("expected recovered marker");
         assert!(matches!(
             recovered.msg,
             EventMsg::PotterStreamRecoveryRecovered
@@ -3059,6 +3048,22 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::Duration;
     use tokio::time::timeout;
+
+    fn recovery_context(event_mode: AppServerEventMode) -> StreamRecoveryContext {
+        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
+        StreamRecoveryContext {
+            stream_recovery: PotterStreamRecovery::new(),
+            recovery_action_tx,
+            pending_continue_retry: None,
+            active_turn_id: None,
+            last_context_compaction_turn_id: None,
+            has_sent_turn_start: true,
+            has_finished_round: false,
+            last_turn_start_was_recovery_continue: false,
+            event_mode,
+            server_request_policy: ServerRequestPolicy::default(),
+        }
+    }
 
     #[test]
     fn thread_start_settings_into_params_preserves_model_override() {
@@ -3127,19 +3132,7 @@ mod tests {
     #[test]
     fn typed_agent_message_item_completed_emits_agent_message_event() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
 
         handle_typed_item_completed(
             UpstreamItemCompletedNotification {
@@ -3173,19 +3166,7 @@ mod tests {
     #[test]
     fn typed_reasoning_item_completed_emits_legacy_reasoning_events() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
 
         handle_typed_item_completed(
             UpstreamItemCompletedNotification {
@@ -3248,19 +3229,7 @@ mod tests {
     #[test]
     fn typed_reasoning_summary_part_added_emits_section_break_event() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
 
         handle_typed_notification(
             JSONRPCNotification {
@@ -3291,112 +3260,77 @@ mod tests {
     }
 
     #[test]
-    fn typed_context_compaction_item_completed_emits_context_compacted_event() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+    fn typed_context_compaction_events_update_last_context_compaction_turn_id() {
+        {
+            let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+            let mut recovery = recovery_context(AppServerEventMode::Interactive);
 
-        handle_typed_item_completed(
-            UpstreamItemCompletedNotification {
-                thread_id: "thread-1".to_string(),
-                turn_id: "turn-1".to_string(),
-                item: serde_json::json!({
-                    "type": "contextCompaction",
-                    "id": "compaction-1"
-                }),
-            },
-            &mut recovery,
-            &event_tx,
-        )
-        .expect("bridge context compaction item");
+            handle_typed_item_completed(
+                UpstreamItemCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item: serde_json::json!({
+                        "type": "contextCompaction",
+                        "id": "compaction-1"
+                    }),
+                },
+                &mut recovery,
+                &event_tx,
+            )
+            .expect("bridge context compaction item");
 
-        let event = event_rx
-            .try_recv()
-            .expect("expected bridged context compaction");
-        assert_eq!(event.id, "compaction-1");
-        assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
-        assert_eq!(
-            recovery.last_context_compaction_turn_id.as_deref(),
-            Some("turn-1")
-        );
-        assert!(
-            event_rx.try_recv().is_err(),
-            "expected no extra events for completed context compaction"
-        );
-    }
+            let event = event_rx
+                .try_recv()
+                .expect("expected bridged context compaction");
+            assert_eq!(event.id, "compaction-1");
+            assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
+            assert_eq!(
+                recovery.last_context_compaction_turn_id.as_deref(),
+                Some("turn-1")
+            );
+            assert!(
+                event_rx.try_recv().is_err(),
+                "expected no extra events for completed context compaction"
+            );
+        }
 
-    #[test]
-    fn typed_thread_compacted_notification_emits_context_compacted_event() {
-        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        {
+            let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+            let mut recovery = recovery_context(AppServerEventMode::Interactive);
 
-        handle_typed_notification(
-            JSONRPCNotification {
-                method: "thread/compacted".to_string(),
-                params: Some(serde_json::json!({
-                    "threadId": "thread-1",
-                    "turnId": "turn-1"
-                })),
-            },
-            &mut recovery,
-            &event_tx,
-        )
-        .expect("bridge deprecated thread/compacted");
+            handle_typed_notification(
+                JSONRPCNotification {
+                    method: "thread/compacted".to_string(),
+                    params: Some(serde_json::json!({
+                        "threadId": "thread-1",
+                        "turnId": "turn-1"
+                    })),
+                },
+                &mut recovery,
+                &event_tx,
+            )
+            .expect("bridge deprecated thread/compacted");
 
-        let event = event_rx
-            .try_recv()
-            .expect("expected bridged deprecated compaction notification");
-        assert_eq!(event.id, "turn-1");
-        assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
-        assert_eq!(
-            recovery.last_context_compaction_turn_id.as_deref(),
-            Some("turn-1")
-        );
-        assert!(
-            event_rx.try_recv().is_err(),
-            "expected no extra events for deprecated compaction notification"
-        );
+            let event = event_rx
+                .try_recv()
+                .expect("expected bridged deprecated compaction notification");
+            assert_eq!(event.id, "turn-1");
+            assert!(matches!(event.msg, EventMsg::ContextCompacted(_)));
+            assert_eq!(
+                recovery.last_context_compaction_turn_id.as_deref(),
+                Some("turn-1")
+            );
+            assert!(
+                event_rx.try_recv().is_err(),
+                "expected no extra events for deprecated compaction notification"
+            );
+        }
     }
 
     #[test]
     fn typed_context_compaction_item_dedupes_deprecated_thread_compacted_notification() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: None,
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
 
         handle_typed_item_completed(
             UpstreamItemCompletedNotification {
@@ -3439,19 +3373,8 @@ mod tests {
     #[test]
     fn typed_turn_plan_updated_notification_emits_plan_update_event() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: Some("turn-1".to_string()),
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+        recovery.active_turn_id = Some("turn-1".to_string());
 
         handle_typed_notification(
             JSONRPCNotification {
@@ -3495,22 +3418,10 @@ mod tests {
     }
 
     #[test]
-    fn active_turn_id_is_not_cleared_by_unrelated_turn_complete() {
+    fn turn_complete_clears_active_turn_id_only_when_matching() {
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: Some("turn-new".to_string()),
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+        recovery.active_turn_id = Some("turn-new".to_string());
 
         handle_codex_event(
             Event {
@@ -3525,31 +3436,12 @@ mod tests {
         );
 
         assert_eq!(recovery.active_turn_id.as_deref(), Some("turn-new"));
-    }
-
-    #[test]
-    fn active_turn_id_is_cleared_by_matching_turn_complete() {
-        let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: Some("turn-1".to_string()),
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
 
         handle_codex_event(
             Event {
-                id: "tc-1".to_string(),
+                id: "tc-2".to_string(),
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                    turn_id: "turn-1".to_string(),
+                    turn_id: "turn-new".to_string(),
                     last_agent_message: None,
                 }),
             },
@@ -3561,22 +3453,10 @@ mod tests {
     }
 
     #[test]
-    fn active_turn_id_is_not_cleared_by_unrelated_turn_aborted() {
+    fn turn_aborted_clears_active_turn_id_only_when_matching() {
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: Some("turn-new".to_string()),
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+        recovery.active_turn_id = Some("turn-new".to_string());
 
         handle_codex_event(
             Event {
@@ -3591,31 +3471,12 @@ mod tests {
         );
 
         assert_eq!(recovery.active_turn_id.as_deref(), Some("turn-new"));
-    }
-
-    #[test]
-    fn active_turn_id_is_cleared_by_matching_turn_aborted() {
-        let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: Some("turn-1".to_string()),
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
 
         handle_codex_event(
             Event {
-                id: "ta-1".to_string(),
+                id: "ta-2".to_string(),
                 msg: EventMsg::TurnAborted(TurnAbortedEvent {
-                    turn_id: Some("turn-1".to_string()),
+                    turn_id: Some("turn-new".to_string()),
                     reason: TurnAbortReason::Interrupted,
                 }),
             },
@@ -3629,20 +3490,8 @@ mod tests {
     #[test]
     fn active_turn_id_is_preserved_by_replaced_without_turn_id() {
         let (event_tx, _event_rx) = unbounded_channel::<Event>();
-        let (recovery_action_tx, _recovery_action_rx) = unbounded_channel::<RecoveryAction>();
-
-        let mut recovery = StreamRecoveryContext {
-            stream_recovery: PotterStreamRecovery::new(),
-            recovery_action_tx,
-            pending_continue_retry: None,
-            active_turn_id: Some("turn-1".to_string()),
-            last_context_compaction_turn_id: None,
-            has_sent_turn_start: true,
-            has_finished_round: false,
-            last_turn_start_was_recovery_continue: false,
-            event_mode: AppServerEventMode::Interactive,
-            server_request_policy: ServerRequestPolicy::default(),
-        };
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+        recovery.active_turn_id = Some("turn-1".to_string());
 
         handle_codex_event(
             Event {
