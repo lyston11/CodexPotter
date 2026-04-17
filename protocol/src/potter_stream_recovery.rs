@@ -123,21 +123,22 @@ mod tests {
     }
 
     #[test]
-    fn retryable_stream_error_accepts_sign_in_again_message() {
-        let event = ErrorEvent {
-            message: "unexpected status 401: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.".to_string(),
-            codex_error_info: Some(CodexErrorInfo::Unauthorized),
-        };
-        assert!(is_retryable_stream_error(&event));
-    }
+    fn retryable_stream_error_accepts_sign_in_again_messages() {
+        {
+            let event = ErrorEvent {
+                message: "unexpected status 401: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.".to_string(),
+                codex_error_info: Some(CodexErrorInfo::Unauthorized),
+            };
+            assert!(is_retryable_stream_error(&event));
+        }
 
-    #[test]
-    fn retryable_stream_error_accepts_log_out_and_sign_in_again_message() {
-        let event = ErrorEvent {
-            message: "unexpected status 401: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.".to_string(),
-            codex_error_info: Some(CodexErrorInfo::Unauthorized),
-        };
-        assert!(is_retryable_stream_error(&event));
+        {
+            let event = ErrorEvent {
+                message: "unexpected status 401: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.".to_string(),
+                codex_error_info: Some(CodexErrorInfo::Unauthorized),
+            };
+            assert!(is_retryable_stream_error(&event));
+        }
     }
 
     #[test]
