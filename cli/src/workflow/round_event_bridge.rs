@@ -353,78 +353,103 @@ potter.xmodel: {potter_xmodel}
     }
 
     #[test]
-    fn observe_backend_event_injects_project_succeeded_before_round_finished_when_finite() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
-        write_progress_file(workdir, &progress_file_rel, true);
+    fn observe_backend_event_project_succeeded_injection_respects_finite_incantatem() {
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workdir = dir.path();
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+            write_progress_file(workdir, &progress_file_rel, true);
 
-        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
-        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
-            record_round_configured: false,
-            workdir: workdir.to_path_buf(),
-            progress_file_rel: progress_file_rel.clone(),
-            potter_xmodel_runtime: false,
-            user_prompt_file: progress_file_rel.clone(),
-            git_commit_start: "start".to_string(),
-            potter_rollout_path: potter_rollout_path.clone(),
-            project_started_at: Instant::now(),
-            round_current: 3,
-            round_total: 10,
-            project_rounds_run: 3,
-        });
+            let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+            let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+                record_round_configured: false,
+                workdir: workdir.to_path_buf(),
+                progress_file_rel: progress_file_rel.clone(),
+                potter_xmodel_runtime: false,
+                user_prompt_file: progress_file_rel.clone(),
+                git_commit_start: "start".to_string(),
+                potter_rollout_path: potter_rollout_path.clone(),
+                project_started_at: Instant::now(),
+                round_current: 3,
+                round_total: 10,
+                project_rounds_run: 3,
+            });
 
-        let finished = Event {
-            id: "event_2".to_string(),
-            msg: EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::Completed,
-            },
-        };
+            let finished = Event {
+                id: "event_2".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                },
+            };
 
-        let injected = bridge
-            .observe_backend_event(&finished)
-            .expect("observe finished");
-        assert!(matches!(
-            injected.as_ref().map(|event| &event.msg),
-            Some(EventMsg::PotterProjectSucceeded { rounds: 3, .. })
-        ));
+            let injected = bridge
+                .observe_backend_event(&finished)
+                .expect("observe finished");
+            assert!(matches!(
+                injected.as_ref().map(|event| &event.msg),
+                Some(EventMsg::PotterProjectSucceeded { rounds: 3, .. })
+            ));
 
-        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
-        assert_eq!(lines.len(), 2);
-        assert!(matches!(
-            &lines[0],
-            crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded { rounds: 3, .. }
-        ));
-        assert!(matches!(
-            &lines[1],
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Completed
-            }
-        ));
+            let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+            assert_eq!(lines.len(), 2);
+            assert!(matches!(
+                &lines[0],
+                crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded { rounds: 3, .. }
+            ));
+            assert!(matches!(
+                &lines[1],
+                crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                    outcome: PotterRoundOutcome::Completed
+                }
+            ));
+        }
+
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workdir = dir.path();
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+            write_progress_file(workdir, &progress_file_rel, false);
+
+            let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+            let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+                record_round_configured: false,
+                workdir: workdir.to_path_buf(),
+                progress_file_rel: progress_file_rel.clone(),
+                potter_xmodel_runtime: false,
+                user_prompt_file: progress_file_rel.clone(),
+                git_commit_start: "start".to_string(),
+                potter_rollout_path: potter_rollout_path.clone(),
+                project_started_at: Instant::now(),
+                round_current: 3,
+                round_total: 10,
+                project_rounds_run: 3,
+            });
+
+            let finished = Event {
+                id: "event_2".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                },
+            };
+
+            let injected = bridge
+                .observe_backend_event(&finished)
+                .expect("observe finished");
+            assert!(injected.is_none());
+
+            let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+            assert_eq!(lines.len(), 1);
+            assert!(matches!(
+                &lines[0],
+                crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                    outcome: PotterRoundOutcome::Completed
+                }
+            ));
+        }
     }
 
     #[test]
-    fn observe_backend_event_does_not_inject_project_succeeded_when_not_finite() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
-        write_progress_file(workdir, &progress_file_rel, false);
-
-        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
-        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
-            record_round_configured: false,
-            workdir: workdir.to_path_buf(),
-            progress_file_rel: progress_file_rel.clone(),
-            potter_xmodel_runtime: false,
-            user_prompt_file: progress_file_rel.clone(),
-            git_commit_start: "start".to_string(),
-            potter_rollout_path: potter_rollout_path.clone(),
-            project_started_at: Instant::now(),
-            round_current: 3,
-            round_total: 10,
-            project_rounds_run: 3,
-        });
-
+    fn observe_backend_event_xmodel_gates_project_succeeded_until_gpt_5_4() {
         let finished = Event {
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
@@ -432,125 +457,95 @@ potter.xmodel: {potter_xmodel}
             },
         };
 
-        let injected = bridge
-            .observe_backend_event(&finished)
-            .expect("observe finished");
-        assert!(injected.is_none());
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workdir = dir.path();
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+            write_progress_file_with_potter_xmodel(workdir, &progress_file_rel, true, true);
 
-        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
-        assert_eq!(lines.len(), 1);
-        assert!(matches!(
-            &lines[0],
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Completed
-            }
-        ));
-    }
+            let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+            let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+                record_round_configured: false,
+                workdir: workdir.to_path_buf(),
+                progress_file_rel: progress_file_rel.clone(),
+                potter_xmodel_runtime: false,
+                user_prompt_file: progress_file_rel.clone(),
+                git_commit_start: "start".to_string(),
+                potter_rollout_path: potter_rollout_path.clone(),
+                project_started_at: Instant::now(),
+                round_current: 1,
+                round_total: 10,
+                project_rounds_run: 1,
+            });
 
-    #[test]
-    fn observe_backend_event_does_not_inject_project_succeeded_for_xmodel_before_gpt_5_4() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
-        write_progress_file_with_potter_xmodel(workdir, &progress_file_rel, true, true);
+            bridge
+                .observe_backend_event(&session_configured_event(
+                    workdir,
+                    PathBuf::from("upstream.jsonl"),
+                    None,
+                    "gpt-5.2",
+                ))
+                .expect("observe session configured");
 
-        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
-        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
-            record_round_configured: false,
-            workdir: workdir.to_path_buf(),
-            progress_file_rel: progress_file_rel.clone(),
-            potter_xmodel_runtime: false,
-            user_prompt_file: progress_file_rel.clone(),
-            git_commit_start: "start".to_string(),
-            potter_rollout_path: potter_rollout_path.clone(),
-            project_started_at: Instant::now(),
-            round_current: 1,
-            round_total: 10,
-            project_rounds_run: 1,
-        });
+            let injected = bridge
+                .observe_backend_event(&finished)
+                .expect("observe finished");
+            assert!(injected.is_none());
 
-        bridge
-            .observe_backend_event(&session_configured_event(
-                workdir,
-                PathBuf::from("upstream.jsonl"),
-                None,
-                "gpt-5.2",
-            ))
-            .expect("observe session configured");
+            let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+            assert_eq!(lines.len(), 1);
+            assert!(matches!(
+                &lines[0],
+                crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                    outcome: PotterRoundOutcome::Completed
+                }
+            ));
+        }
 
-        let finished = Event {
-            id: "event_2".to_string(),
-            msg: EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::Completed,
-            },
-        };
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workdir = dir.path();
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+            write_progress_file(workdir, &progress_file_rel, true);
 
-        let injected = bridge
-            .observe_backend_event(&finished)
-            .expect("observe finished");
-        assert!(injected.is_none());
+            let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+            let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+                record_round_configured: false,
+                workdir: workdir.to_path_buf(),
+                progress_file_rel: progress_file_rel.clone(),
+                potter_xmodel_runtime: true,
+                user_prompt_file: progress_file_rel.clone(),
+                git_commit_start: "start".to_string(),
+                potter_rollout_path: potter_rollout_path.clone(),
+                project_started_at: Instant::now(),
+                round_current: 1,
+                round_total: 10,
+                project_rounds_run: 1,
+            });
 
-        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
-        assert_eq!(lines.len(), 1);
-        assert!(matches!(
-            &lines[0],
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Completed
-            }
-        ));
-    }
+            bridge
+                .observe_backend_event(&session_configured_event(
+                    workdir,
+                    PathBuf::from("upstream.jsonl"),
+                    None,
+                    "gpt-5.2",
+                ))
+                .expect("observe session configured");
 
-    #[test]
-    fn observe_backend_event_does_not_inject_project_succeeded_for_runtime_xmodel_before_gpt_5_4() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workdir = dir.path();
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
-        write_progress_file(workdir, &progress_file_rel, true);
+            let injected = bridge
+                .observe_backend_event(&finished)
+                .expect("observe finished");
+            assert!(injected.is_none());
 
-        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
-        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
-            record_round_configured: false,
-            workdir: workdir.to_path_buf(),
-            progress_file_rel: progress_file_rel.clone(),
-            potter_xmodel_runtime: true,
-            user_prompt_file: progress_file_rel.clone(),
-            git_commit_start: "start".to_string(),
-            potter_rollout_path: potter_rollout_path.clone(),
-            project_started_at: Instant::now(),
-            round_current: 1,
-            round_total: 10,
-            project_rounds_run: 1,
-        });
-
-        bridge
-            .observe_backend_event(&session_configured_event(
-                workdir,
-                PathBuf::from("upstream.jsonl"),
-                None,
-                "gpt-5.2",
-            ))
-            .expect("observe session configured");
-
-        let finished = Event {
-            id: "event_2".to_string(),
-            msg: EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::Completed,
-            },
-        };
-
-        let injected = bridge
-            .observe_backend_event(&finished)
-            .expect("observe finished");
-        assert!(injected.is_none());
-
-        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
-        assert_eq!(lines.len(), 1);
-        assert!(matches!(
-            &lines[0],
-            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Completed
-            }
-        ));
+            let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+            assert_eq!(lines.len(), 1);
+            assert!(matches!(
+                &lines[0],
+                crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                    outcome: PotterRoundOutcome::Completed
+                }
+            ));
+        }
     }
 
     #[test]
