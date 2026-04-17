@@ -737,13 +737,14 @@ fast_mode = true
 
     #[test]
     #[serial]
-    fn runtime_overrides_replace_model_reasoning_and_fast_state() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+    fn runtime_overrides_respect_profile_precedence_and_explicit_overrides() {
+        {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
-        write_config(
-            &codex_home.path().join("config.toml"),
-            r#"
+            write_config(
+                &codex_home.path().join("config.toml"),
+                r#"
 model = "gpt-5.2"
 model_reasoning_effort = "low"
 service_tier = "flex"
@@ -751,40 +752,38 @@ service_tier = "flex"
 [features]
 fast_mode = false
 "#,
-        );
+            );
 
-        let cwd = tempfile::tempdir().expect("cwd");
-        let resolved = resolve_codex_model_config_with_runtime_overrides(
-            cwd.path(),
-            Some("gpt-5.4"),
-            &[
-                "model_reasoning_effort=high".to_string(),
-                "service_tier=fast".to_string(),
-                "features.fast_mode=true".to_string(),
-            ],
-            None,
-        )
-        .expect("resolve");
+            let cwd = tempfile::tempdir().expect("cwd");
+            let resolved = resolve_codex_model_config_with_runtime_overrides(
+                cwd.path(),
+                Some("gpt-5.4"),
+                &[
+                    "model_reasoning_effort=high".to_string(),
+                    "service_tier=fast".to_string(),
+                    "features.fast_mode=true".to_string(),
+                ],
+                None,
+            )
+            .expect("resolve");
 
-        assert_eq!(
-            resolved,
-            ResolvedCodexModelConfig {
-                model: "gpt-5.4".to_string(),
-                reasoning_effort: Some(ReasoningEffort::High),
-                is_fast: true,
-            }
-        );
-    }
+            assert_eq!(
+                resolved,
+                ResolvedCodexModelConfig {
+                    model: "gpt-5.4".to_string(),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    is_fast: true,
+                }
+            );
+        }
 
-    #[test]
-    #[serial]
-    fn runtime_profile_override_combines_with_explicit_model_override() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+        {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
-        write_config(
-            &codex_home.path().join("config.toml"),
-            r#"
+            write_config(
+                &codex_home.path().join("config.toml"),
+                r#"
 model = "gpt-5.2"
 profile = "default"
 
@@ -804,36 +803,34 @@ service_tier = "fast"
 [profiles.fast.features]
 fast_mode = true
 "#,
-        );
+            );
 
-        let cwd = tempfile::tempdir().expect("cwd");
-        let resolved = resolve_codex_model_config_with_runtime_overrides(
-            cwd.path(),
-            Some("gpt-5.4"),
-            &["profile=\"fast\"".to_string()],
-            None,
-        )
-        .expect("resolve");
+            let cwd = tempfile::tempdir().expect("cwd");
+            let resolved = resolve_codex_model_config_with_runtime_overrides(
+                cwd.path(),
+                Some("gpt-5.4"),
+                &["profile=\"fast\"".to_string()],
+                None,
+            )
+            .expect("resolve");
 
-        assert_eq!(
-            resolved,
-            ResolvedCodexModelConfig {
-                model: "gpt-5.4".to_string(),
-                reasoning_effort: Some(ReasoningEffort::High),
-                is_fast: true,
-            }
-        );
-    }
+            assert_eq!(
+                resolved,
+                ResolvedCodexModelConfig {
+                    model: "gpt-5.4".to_string(),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    is_fast: true,
+                }
+            );
+        }
 
-    #[test]
-    #[serial]
-    fn runtime_top_level_model_and_reasoning_overrides_still_yield_to_selected_profile() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+        {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
-        write_config(
-            &codex_home.path().join("config.toml"),
-            r#"
+            write_config(
+                &codex_home.path().join("config.toml"),
+                r#"
 model = "gpt-5.2"
 model_reasoning_effort = "low"
 service_tier = "flex"
@@ -849,68 +846,147 @@ service_tier = "fast"
 [profiles.fast.features]
 fast_mode = true
 "#,
-        );
+            );
 
-        let cwd = tempfile::tempdir().expect("cwd");
-        let resolved = resolve_codex_model_config_with_runtime_overrides(
-            cwd.path(),
-            None,
-            &[
-                "profile=\"fast\"".to_string(),
-                "model=\"gpt-5.4\"".to_string(),
-                "model_reasoning_effort=\"minimal\"".to_string(),
-                "service_tier=\"flex\"".to_string(),
-                "features.fast_mode=false".to_string(),
-            ],
-            None,
-        )
-        .expect("resolve");
+            let cwd = tempfile::tempdir().expect("cwd");
+            let resolved = resolve_codex_model_config_with_runtime_overrides(
+                cwd.path(),
+                None,
+                &[
+                    "profile=\"fast\"".to_string(),
+                    "model=\"gpt-5.4\"".to_string(),
+                    "model_reasoning_effort=\"minimal\"".to_string(),
+                    "service_tier=\"flex\"".to_string(),
+                    "features.fast_mode=false".to_string(),
+                ],
+                None,
+            )
+            .expect("resolve");
 
-        assert_eq!(
-            resolved,
-            ResolvedCodexModelConfig {
-                model: "gpt-5.3".to_string(),
-                reasoning_effort: Some(ReasoningEffort::High),
-                is_fast: true,
-            }
-        );
+            assert_eq!(
+                resolved,
+                ResolvedCodexModelConfig {
+                    model: "gpt-5.3".to_string(),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    is_fast: true,
+                }
+            );
+        }
     }
 
     #[test]
     #[serial]
-    fn runtime_project_root_markers_override_affects_layer_discovery() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+    fn project_root_markers_affect_layer_discovery_from_user_runtime_and_system() {
+        {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
-        write_config(
-            &codex_home.path().join("config.toml"),
-            r#"
+            write_config(
+                &codex_home.path().join(CONFIG_TOML_FILENAME),
+                r#"
+model = "gpt-5.2"
+project_root_markers = ["MARKER"]
+"#,
+            );
+
+            let repo = tempfile::tempdir().expect("repo");
+            std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
+            std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
+            write_config(
+                &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
+                r#"
+model = "gpt-5.2-codex"
+"#,
+            );
+
+            let cwd = repo.path().join("subdir");
+            std::fs::create_dir_all(&cwd).expect("mkdir subdir");
+
+            let resolved = resolve_codex_model_config(&cwd).expect("resolve");
+            assert_eq!(resolved.model, "gpt-5.2-codex");
+        }
+
+        {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+            write_config(
+                &codex_home.path().join(CONFIG_TOML_FILENAME),
+                r#"
 model = "gpt-5.2"
 "#,
-        );
+            );
 
-        let repo = tempfile::tempdir().expect("repo");
-        std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
-        std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
-        write_config(
-            &repo.path().join(".codex").join("config.toml"),
-            r#"
+            let repo = tempfile::tempdir().expect("repo");
+            std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
+            std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
+            write_config(
+                &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
+                r#"
 model = "gpt-5.4"
 "#,
-        );
+            );
 
-        let cwd = repo.path().join("subdir");
-        std::fs::create_dir_all(&cwd).expect("mkdir subdir");
+            let cwd = repo.path().join("subdir");
+            std::fs::create_dir_all(&cwd).expect("mkdir subdir");
 
-        let resolved = resolve_codex_model_config_with_runtime_overrides(
-            &cwd,
-            None,
-            &["project_root_markers=[\"MARKER\"]".to_string()],
-            None,
-        )
-        .expect("resolve");
+            let resolved = resolve_codex_model_config_with_runtime_overrides(
+                &cwd,
+                None,
+                &["project_root_markers=[\"MARKER\"]".to_string()],
+                None,
+            )
+            .expect("resolve");
 
-        assert_eq!(resolved.model, "gpt-5.4");
+            assert_eq!(resolved.model, "gpt-5.4");
+        }
+
+        {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+
+            write_config(
+                &codex_home.path().join(CONFIG_TOML_FILENAME),
+                r#"
+model = "gpt-5.2"
+"#,
+            );
+
+            let system_root = tempfile::tempdir().expect("system root");
+            let system_config = system_root.path().join(CONFIG_TOML_FILENAME);
+            write_config(
+                &system_config,
+                r#"
+project_root_markers = ["MARKER"]
+"#,
+            );
+
+            let repo = tempfile::tempdir().expect("repo");
+            std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
+            std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
+            write_config(
+                &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
+                r#"
+model = "gpt-5.4"
+"#,
+            );
+
+            let cwd = repo.path().join("subdir");
+            std::fs::create_dir_all(&cwd).expect("mkdir subdir");
+
+            let resolved =
+                load_codex_config_with_system_config_path(&cwd, &[], Some(system_config.as_path()))
+                    .expect("resolve");
+
+            assert_eq!(
+                resolved,
+                CodexConfig {
+                    model: Some("gpt-5.4".to_string()),
+                    project_root_markers: Some(vec!["MARKER".to_string()]),
+                    ..CodexConfig::default()
+                }
+            );
+        }
     }
 
     #[test]
@@ -987,37 +1063,6 @@ profile = "missing"
 
     #[test]
     #[serial]
-    fn project_root_markers_can_change_project_root_discovery() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
-
-        write_config(
-            &codex_home.path().join(CONFIG_TOML_FILENAME),
-            r#"
-model = "gpt-5.2"
-project_root_markers = ["MARKER"]
-"#,
-        );
-
-        let repo = tempfile::tempdir().expect("repo");
-        std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
-        std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
-        write_config(
-            &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
-            r#"
-model = "gpt-5.2-codex"
-"#,
-        );
-
-        let cwd = repo.path().join("subdir");
-        std::fs::create_dir_all(&cwd).expect("mkdir subdir");
-
-        let resolved = resolve_codex_model_config(&cwd).expect("resolve");
-        assert_eq!(resolved.model, "gpt-5.2-codex");
-    }
-
-    #[test]
-    #[serial]
     fn injected_system_config_theme_is_applied() {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
@@ -1044,55 +1089,6 @@ theme = "github"
             resolved,
             CodexConfig {
                 tui_theme: Some("github".to_string()),
-                ..CodexConfig::default()
-            }
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn injected_system_project_root_markers_affect_layer_discovery() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
-
-        write_config(
-            &codex_home.path().join(CONFIG_TOML_FILENAME),
-            r#"
-model = "gpt-5.2"
-"#,
-        );
-
-        let system_root = tempfile::tempdir().expect("system root");
-        let system_config = system_root.path().join(CONFIG_TOML_FILENAME);
-        write_config(
-            &system_config,
-            r#"
-project_root_markers = ["MARKER"]
-"#,
-        );
-
-        let repo = tempfile::tempdir().expect("repo");
-        std::fs::write(repo.path().join("MARKER"), "").expect("write marker");
-        std::fs::create_dir_all(repo.path().join(".codex")).expect("mkdir .codex");
-        write_config(
-            &repo.path().join(".codex").join(CONFIG_TOML_FILENAME),
-            r#"
-model = "gpt-5.4"
-"#,
-        );
-
-        let cwd = repo.path().join("subdir");
-        std::fs::create_dir_all(&cwd).expect("mkdir subdir");
-
-        let resolved =
-            load_codex_config_with_system_config_path(&cwd, &[], Some(system_config.as_path()))
-                .expect("resolve");
-
-        assert_eq!(
-            resolved,
-            CodexConfig {
-                model: Some("gpt-5.4".to_string()),
-                project_root_markers: Some(vec!["MARKER".to_string()]),
                 ..CodexConfig::default()
             }
         );
@@ -1143,46 +1139,44 @@ theme = "catppuccin-mocha"
 
     #[test]
     #[serial]
-    fn find_codex_home_env_missing_path_is_fatal() {
-        let temp_home = tempfile::tempdir().expect("temp home");
-        let missing = temp_home.path().join("missing-codex-home");
-        let _env = EnvVarGuard::set("CODEX_HOME", &missing);
+    fn find_codex_home_env_validates_and_canonicalizes_paths() {
+        {
+            let temp_home = tempfile::tempdir().expect("temp home");
+            let missing = temp_home.path().join("missing-codex-home");
+            let _env = EnvVarGuard::set("CODEX_HOME", &missing);
 
-        let err = find_codex_home().expect_err("missing CODEX_HOME");
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
-        assert!(
-            err.to_string().contains("CODEX_HOME"),
-            "unexpected error: {err}"
-        );
-    }
+            let err = find_codex_home().expect_err("missing CODEX_HOME");
+            assert_eq!(err.kind(), io::ErrorKind::NotFound);
+            assert!(
+                err.to_string().contains("CODEX_HOME"),
+                "unexpected error: {err}"
+            );
+        }
 
-    #[test]
-    #[serial]
-    fn find_codex_home_env_file_path_is_fatal() {
-        let temp_home = tempfile::tempdir().expect("temp home");
-        let file_path = temp_home.path().join("codex-home.txt");
-        std::fs::write(&file_path, "not a directory").expect("write temp file");
-        let _env = EnvVarGuard::set("CODEX_HOME", &file_path);
+        {
+            let temp_home = tempfile::tempdir().expect("temp home");
+            let file_path = temp_home.path().join("codex-home.txt");
+            std::fs::write(&file_path, "not a directory").expect("write temp file");
+            let _env = EnvVarGuard::set("CODEX_HOME", &file_path);
 
-        let err = find_codex_home().expect_err("file CODEX_HOME");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(
-            err.to_string().contains("not a directory"),
-            "unexpected error: {err}"
-        );
-    }
+            let err = find_codex_home().expect_err("file CODEX_HOME");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(
+                err.to_string().contains("not a directory"),
+                "unexpected error: {err}"
+            );
+        }
 
-    #[test]
-    #[serial]
-    fn find_codex_home_env_valid_directory_canonicalizes() {
-        let codex_home = tempfile::tempdir().expect("temp codex home");
-        let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
+        {
+            let codex_home = tempfile::tempdir().expect("temp codex home");
+            let _env = EnvVarGuard::set("CODEX_HOME", codex_home.path());
 
-        let resolved = find_codex_home().expect("valid CODEX_HOME");
-        let expected = codex_home
-            .path()
-            .canonicalize()
-            .expect("canonicalize temp home");
-        assert_eq!(resolved, expected);
+            let resolved = find_codex_home().expect("valid CODEX_HOME");
+            let expected = codex_home
+                .path()
+                .canonicalize()
+                .expect("canonicalize temp home");
+            assert_eq!(resolved, expected);
+        }
     }
 }
