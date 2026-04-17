@@ -362,212 +362,217 @@ mod tests {
     }
 
     #[test]
-    fn serialize_thread_start_includes_null_option_fields() {
-        let request = ClientRequest::ThreadStart {
-            request_id: RequestId::Integer(1),
-            params: ThreadStartParams {
-                model: None,
-                model_provider: None,
-                service_tier: None,
-                cwd: None,
-                approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
-                approvals_reviewer: None,
-                sandbox: None,
-                config: None,
-                service_name: None,
-                base_instructions: None,
-                developer_instructions: None,
-                personality: None,
-                ephemeral: None,
-                dynamic_tools: None,
-                mock_experimental_field: None,
-                experimental_raw_events: false,
-                persist_extended_history: false,
-            },
-        };
+    fn serialize_thread_requests_include_expected_keys() {
+        {
+            let request = ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(1),
+                params: ThreadStartParams {
+                    model: None,
+                    model_provider: None,
+                    service_tier: None,
+                    cwd: None,
+                    approval_policy: Some(
+                        crate::app_server::upstream_protocol::AskForApproval::Never,
+                    ),
+                    approvals_reviewer: None,
+                    sandbox: None,
+                    config: None,
+                    service_name: None,
+                    base_instructions: None,
+                    developer_instructions: None,
+                    personality: None,
+                    ephemeral: None,
+                    dynamic_tools: None,
+                    mock_experimental_field: None,
+                    experimental_raw_events: false,
+                    persist_extended_history: false,
+                },
+            };
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "thread/start");
-        assert_eq!(value["id"], 1);
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "thread/start");
+            assert_eq!(value["id"], 1);
 
-        let params = value["params"].as_object().expect("params object");
-        for key in [
-            "model",
-            "modelProvider",
-            "serviceTier",
-            "cwd",
-            "approvalPolicy",
-            "approvalsReviewer",
-            "sandbox",
-            "config",
-            "serviceName",
-            "baseInstructions",
-            "developerInstructions",
-            "personality",
-            "ephemeral",
-            "dynamicTools",
-            "mockExperimentalField",
-        ] {
-            assert!(
-                params.contains_key(key),
-                "thread/start params must contain key {key}"
-            );
+            let params = value["params"].as_object().expect("params object");
+            for key in [
+                "model",
+                "modelProvider",
+                "serviceTier",
+                "cwd",
+                "approvalPolicy",
+                "approvalsReviewer",
+                "sandbox",
+                "config",
+                "serviceName",
+                "baseInstructions",
+                "developerInstructions",
+                "personality",
+                "ephemeral",
+                "dynamicTools",
+                "mockExperimentalField",
+            ] {
+                assert!(
+                    params.contains_key(key),
+                    "thread/start params must contain key {key}"
+                );
+            }
+            assert_eq!(value["params"]["approvalPolicy"], "never");
+            assert_eq!(value["params"]["experimentalRawEvents"], false);
+            assert_eq!(value["params"]["persistExtendedHistory"], false);
         }
-        assert_eq!(value["params"]["approvalPolicy"], "never");
-        assert_eq!(value["params"]["experimentalRawEvents"], false);
-        assert_eq!(value["params"]["persistExtendedHistory"], false);
-    }
 
-    #[test]
-    fn serialize_thread_resume_includes_null_option_fields() {
-        let request = ClientRequest::ThreadResume {
-            request_id: RequestId::Integer(2),
-            params: ThreadResumeParams {
-                thread_id: "thread-1".to_string(),
-                history: None,
-                path: None,
-                model: None,
-                model_provider: None,
-                service_tier: None,
-                cwd: None,
-                approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
-                approvals_reviewer: None,
-                sandbox: None,
-                config: None,
-                base_instructions: None,
-                developer_instructions: None,
-                personality: None,
-                persist_extended_history: false,
-            },
-        };
+        {
+            let request = ClientRequest::ThreadResume {
+                request_id: RequestId::Integer(2),
+                params: ThreadResumeParams {
+                    thread_id: "thread-1".to_string(),
+                    history: None,
+                    path: None,
+                    model: None,
+                    model_provider: None,
+                    service_tier: None,
+                    cwd: None,
+                    approval_policy: Some(
+                        crate::app_server::upstream_protocol::AskForApproval::Never,
+                    ),
+                    approvals_reviewer: None,
+                    sandbox: None,
+                    config: None,
+                    base_instructions: None,
+                    developer_instructions: None,
+                    personality: None,
+                    persist_extended_history: false,
+                },
+            };
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "thread/resume");
-        assert_eq!(value["id"], 2);
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "thread/resume");
+            assert_eq!(value["id"], 2);
 
-        let params = value["params"].as_object().expect("params object");
-        for key in [
-            "threadId",
-            "history",
-            "path",
-            "model",
-            "modelProvider",
-            "serviceTier",
-            "cwd",
-            "approvalPolicy",
-            "approvalsReviewer",
-            "sandbox",
-            "config",
-            "baseInstructions",
-            "developerInstructions",
-            "personality",
-        ] {
-            assert!(
-                params.contains_key(key),
-                "thread/resume params must contain key {key}"
-            );
+            let params = value["params"].as_object().expect("params object");
+            for key in [
+                "threadId",
+                "history",
+                "path",
+                "model",
+                "modelProvider",
+                "serviceTier",
+                "cwd",
+                "approvalPolicy",
+                "approvalsReviewer",
+                "sandbox",
+                "config",
+                "baseInstructions",
+                "developerInstructions",
+                "personality",
+            ] {
+                assert!(
+                    params.contains_key(key),
+                    "thread/resume params must contain key {key}"
+                );
+            }
+            assert_eq!(value["params"]["threadId"], "thread-1");
+            assert_eq!(value["params"]["approvalPolicy"], "never");
+            assert_eq!(value["params"]["persistExtendedHistory"], false);
         }
-        assert_eq!(value["params"]["threadId"], "thread-1");
-        assert_eq!(value["params"]["approvalPolicy"], "never");
-        assert_eq!(value["params"]["persistExtendedHistory"], false);
-    }
 
-    #[test]
-    fn serialize_turn_start_includes_output_schema_key() {
-        let request = ClientRequest::TurnStart {
-            request_id: RequestId::Integer(3),
-            params: TurnStartParams {
-                thread_id: "thread-1".to_string(),
-                input: Vec::new(),
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                model: None,
-                service_tier: None,
-                effort: None,
-                summary: None,
-                personality: None,
-                output_schema: None,
-                collaboration_mode: None,
-            },
-        };
+        {
+            let request = ClientRequest::ThreadRollback {
+                request_id: RequestId::Integer(4),
+                params: ThreadRollbackParams {
+                    thread_id: "thread-1".to_string(),
+                    num_turns: 1,
+                },
+            };
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "turn/start");
-        assert_eq!(value["id"], 3);
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "thread/rollback");
+            assert_eq!(value["id"], 4);
 
-        let params = value["params"].as_object().expect("params object");
-        for key in [
-            "threadId",
-            "input",
-            "cwd",
-            "approvalPolicy",
-            "approvalsReviewer",
-            "sandboxPolicy",
-            "model",
-            "serviceTier",
-            "effort",
-            "summary",
-            "personality",
-            "outputSchema",
-            "collaborationMode",
-        ] {
-            assert!(
-                params.contains_key(key),
-                "turn/start params must contain key {key}"
-            );
+            let params = value["params"].as_object().expect("params object");
+            for key in ["threadId", "numTurns"] {
+                assert!(
+                    params.contains_key(key),
+                    "thread/rollback params must contain key {key}"
+                );
+            }
+            assert_eq!(value["params"]["numTurns"], 1);
         }
     }
 
     #[test]
-    fn serialize_turn_interrupt_includes_thread_and_turn_id() {
-        let request = ClientRequest::TurnInterrupt {
-            request_id: RequestId::Integer(5),
-            params: TurnInterruptParams {
-                thread_id: "thread-1".to_string(),
-                turn_id: "turn-1".to_string(),
-            },
-        };
+    fn serialize_turn_requests_include_expected_keys() {
+        {
+            let request = ClientRequest::TurnStart {
+                request_id: RequestId::Integer(3),
+                params: TurnStartParams {
+                    thread_id: "thread-1".to_string(),
+                    input: Vec::new(),
+                    cwd: None,
+                    approval_policy: None,
+                    approvals_reviewer: None,
+                    sandbox_policy: None,
+                    model: None,
+                    service_tier: None,
+                    effort: None,
+                    summary: None,
+                    personality: None,
+                    output_schema: None,
+                    collaboration_mode: None,
+                },
+            };
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "turn/interrupt");
-        assert_eq!(value["id"], 5);
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "turn/start");
+            assert_eq!(value["id"], 3);
 
-        let params = value["params"].as_object().expect("params object");
-        for key in ["threadId", "turnId"] {
-            assert!(
-                params.contains_key(key),
-                "turn/interrupt params must contain key {key}"
-            );
+            let params = value["params"].as_object().expect("params object");
+            for key in [
+                "threadId",
+                "input",
+                "cwd",
+                "approvalPolicy",
+                "approvalsReviewer",
+                "sandboxPolicy",
+                "model",
+                "serviceTier",
+                "effort",
+                "summary",
+                "personality",
+                "outputSchema",
+                "collaborationMode",
+            ] {
+                assert!(
+                    params.contains_key(key),
+                    "turn/start params must contain key {key}"
+                );
+            }
         }
 
-        assert_eq!(value["params"]["threadId"], "thread-1");
-        assert_eq!(value["params"]["turnId"], "turn-1");
-    }
+        {
+            let request = ClientRequest::TurnInterrupt {
+                request_id: RequestId::Integer(5),
+                params: TurnInterruptParams {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                },
+            };
 
-    #[test]
-    fn serialize_thread_rollback_includes_num_turns() {
-        let request = ClientRequest::ThreadRollback {
-            request_id: RequestId::Integer(4),
-            params: ThreadRollbackParams {
-                thread_id: "thread-1".to_string(),
-                num_turns: 1,
-            },
-        };
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "turn/interrupt");
+            assert_eq!(value["id"], 5);
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "thread/rollback");
-        assert_eq!(value["id"], 4);
+            let params = value["params"].as_object().expect("params object");
+            for key in ["threadId", "turnId"] {
+                assert!(
+                    params.contains_key(key),
+                    "turn/interrupt params must contain key {key}"
+                );
+            }
 
-        let params = value["params"].as_object().expect("params object");
-        for key in ["threadId", "numTurns"] {
-            assert!(
-                params.contains_key(key),
-                "thread/rollback params must contain key {key}"
-            );
+            assert_eq!(value["params"]["threadId"], "thread-1");
+            assert_eq!(value["params"]["turnId"], "turn-1");
         }
-        assert_eq!(value["params"]["numTurns"], 1);
     }
 
     #[test]
@@ -611,34 +616,35 @@ mod tests {
     }
 
     #[test]
-    fn serialize_login_account_api_key_request() {
-        let request = ClientRequest::LoginAccount {
-            request_id: RequestId::Integer(7),
-            params: v2::LoginAccountParams::ApiKey {
-                api_key: "secret".to_string(),
-            },
-        };
+    fn serialize_account_requests_include_expected_keys() {
+        {
+            let request = ClientRequest::LoginAccount {
+                request_id: RequestId::Integer(7),
+                params: v2::LoginAccountParams::ApiKey {
+                    api_key: "secret".to_string(),
+                },
+            };
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "account/login/start");
-        assert_eq!(value["id"], 7);
-        assert_eq!(value["params"]["type"], "apiKey");
-        assert_eq!(value["params"]["apiKey"], "secret");
-    }
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "account/login/start");
+            assert_eq!(value["id"], 7);
+            assert_eq!(value["params"]["type"], "apiKey");
+            assert_eq!(value["params"]["apiKey"], "secret");
+        }
 
-    #[test]
-    fn serialize_get_account_request() {
-        let request = ClientRequest::GetAccount {
-            request_id: RequestId::Integer(8),
-            params: v2::GetAccountParams {
-                refresh_token: false,
-            },
-        };
+        {
+            let request = ClientRequest::GetAccount {
+                request_id: RequestId::Integer(8),
+                params: v2::GetAccountParams {
+                    refresh_token: false,
+                },
+            };
 
-        let value = serde_json::to_value(&request).expect("serialize request");
-        assert_eq!(value["method"], "account/read");
-        assert_eq!(value["id"], 8);
-        assert_eq!(value["params"]["refreshToken"], false);
+            let value = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(value["method"], "account/read");
+            assert_eq!(value["id"], 8);
+            assert_eq!(value["params"]["refreshToken"], false);
+        }
     }
 
     #[test]
