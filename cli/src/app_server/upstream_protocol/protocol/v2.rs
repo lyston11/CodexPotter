@@ -1411,53 +1411,49 @@ mod tests {
     use super::TurnStatus;
 
     #[test]
-    fn turn_error_deserializes_known_camel_case_codex_error_info() {
-        let error: TurnError = serde_json::from_value(json!({
-            "message": "exceeded retry limit, last status: 429 Too Many Requests",
-            "codexErrorInfo": {
-                "responseTooManyFailedAttempts": {
-                    "httpStatusCode": 429
-                }
-            }
-        }))
-        .expect("deserialize turn error");
+    fn turn_error_handles_supported_and_unknown_upstream_codex_error_info_shapes() {
+        struct Case {
+            message: &'static str,
+            codex_error_info: serde_json::Value,
+            expected_info: Option<CodexErrorInfo>,
+        }
 
-        assert_eq!(
-            error.codex_error_info,
-            Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
-                http_status_code: Some(429),
-            })
-        );
-    }
+        for case in [
+            Case {
+                message: "exceeded retry limit, last status: 429 Too Many Requests",
+                codex_error_info: json!({
+                    "responseTooManyFailedAttempts": {
+                        "httpStatusCode": 429
+                    }
+                }),
+                expected_info: Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+                    http_status_code: Some(429),
+                }),
+            },
+            Case {
+                message: "server overloaded",
+                codex_error_info: json!("serverOverloaded"),
+                expected_info: Some(CodexErrorInfo::ServerOverloaded),
+            },
+            Case {
+                message: "fatal error",
+                codex_error_info: json!({
+                    "brandNewProblem": {
+                        "httpStatusCode": 503
+                    }
+                }),
+                expected_info: None,
+            },
+        ] {
+            let error: TurnError = serde_json::from_value(json!({
+                "message": case.message,
+                "codexErrorInfo": case.codex_error_info,
+            }))
+            .expect("deserialize turn error");
 
-    #[test]
-    fn turn_error_deserializes_server_overloaded_codex_error_info() {
-        let error: TurnError = serde_json::from_value(json!({
-            "message": "server overloaded",
-            "codexErrorInfo": "serverOverloaded"
-        }))
-        .expect("deserialize turn error");
-
-        assert_eq!(
-            error.codex_error_info,
-            Some(CodexErrorInfo::ServerOverloaded)
-        );
-    }
-
-    #[test]
-    fn turn_error_ignores_unknown_codex_error_info_variant() {
-        let error: TurnError = serde_json::from_value(json!({
-            "message": "fatal error",
-            "codexErrorInfo": {
-                "brandNewProblem": {
-                    "httpStatusCode": 503
-                }
-            }
-        }))
-        .expect("deserialize turn error");
-
-        assert_eq!(error.message, "fatal error");
-        assert_eq!(error.codex_error_info, None);
+            assert_eq!(error.message, case.message);
+            assert_eq!(error.codex_error_info, case.expected_info);
+        }
     }
 
     #[test]

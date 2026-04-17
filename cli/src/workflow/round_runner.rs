@@ -481,59 +481,64 @@ mod tests {
     }
 
     #[test]
-    fn potter_xmodel_overrides_rounds_1_to_3_to_gpt_5_2_xhigh() {
-        let mut args = crate::app_server::UpstreamCodexCliArgs {
-            model: Some("user-model".to_string()),
-            config_overrides: vec!["model_reasoning_effort=\"low\"".to_string()],
-            ..Default::default()
-        };
+    fn potter_xmodel_overrides_model_and_effort_by_round_policy() {
+        struct Case {
+            round_current: u32,
+            force_gpt_5_4: bool,
+            initial_config_overrides: Vec<&'static str>,
+            expected_model: &'static str,
+            expected_config_overrides: Vec<&'static str>,
+        }
 
-        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(&mut args, 3, false);
-        assert_eq!(
-            args.model.as_deref(),
-            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL)
-        );
-        assert_eq!(
-            args.config_overrides.last().map(String::as_str),
-            Some("model_reasoning_effort=\"xhigh\"")
-        );
-    }
+        for case in [
+            Case {
+                round_current: 3,
+                force_gpt_5_4: false,
+                initial_config_overrides: vec!["model_reasoning_effort=\"low\""],
+                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL,
+                expected_config_overrides: vec![
+                    "model_reasoning_effort=\"low\"",
+                    "model_reasoning_effort=\"xhigh\"",
+                ],
+            },
+            Case {
+                round_current: 4,
+                force_gpt_5_4: false,
+                initial_config_overrides: Vec::new(),
+                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL,
+                expected_config_overrides: vec!["model_reasoning_effort=\"xhigh\""],
+            },
+            Case {
+                round_current: 2,
+                force_gpt_5_4: true,
+                initial_config_overrides: Vec::new(),
+                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL,
+                expected_config_overrides: vec!["model_reasoning_effort=\"xhigh\""],
+            },
+        ] {
+            let mut args = crate::app_server::UpstreamCodexCliArgs {
+                model: Some("user-model".to_string()),
+                config_overrides: case
+                    .initial_config_overrides
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                ..Default::default()
+            };
 
-    #[test]
-    fn potter_xmodel_overrides_round_4_plus_to_gpt_5_4_xhigh() {
-        let mut args = crate::app_server::UpstreamCodexCliArgs {
-            model: Some("user-model".to_string()),
-            config_overrides: Vec::new(),
-            ..Default::default()
-        };
-
-        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(&mut args, 4, false);
-        assert_eq!(
-            args.model.as_deref(),
-            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL)
-        );
-        assert_eq!(
-            args.config_overrides,
-            vec!["model_reasoning_effort=\"xhigh\"".to_string()]
-        );
-    }
-
-    #[test]
-    fn potter_xmodel_force_gpt_5_4_overrides_round_2_to_gpt_5_4_xhigh() {
-        let mut args = crate::app_server::UpstreamCodexCliArgs {
-            model: Some("user-model".to_string()),
-            config_overrides: Vec::new(),
-            ..Default::default()
-        };
-
-        crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(&mut args, 2, true);
-        assert_eq!(
-            args.model.as_deref(),
-            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL)
-        );
-        assert_eq!(
-            args.config_overrides,
-            vec!["model_reasoning_effort=\"xhigh\"".to_string()]
-        );
+            crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(
+                &mut args,
+                case.round_current,
+                case.force_gpt_5_4,
+            );
+            assert_eq!(args.model.as_deref(), Some(case.expected_model));
+            assert_eq!(
+                args.config_overrides,
+                case.expected_config_overrides
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 }
