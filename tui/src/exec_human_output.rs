@@ -55,6 +55,7 @@ use crate::history_cell_potter::PotterStreamRecoveryRetryCell;
 use crate::history_cell_potter::PotterStreamRecoveryUnrecoverableCell;
 use crate::markdown;
 use crate::multi_agents;
+use crate::potter_project_summary::build_potter_project_summary_detail_lines;
 use crate::reasoning_status::ReasoningStatusTracker;
 use crate::status_indicator_widget::fmt_elapsed_compact;
 use crate::streaming::controller::PlanStreamController;
@@ -902,31 +903,13 @@ impl ExecHumanRenderer {
             }
         }
 
-        let loop_label = "Loop more rounds:";
-        let label_width = loop_label.len();
-
         let mut lines = vec![Line::from(header_spans), Line::from("")];
-        if !git_commit_start.is_empty() && !git_commit_end.is_empty() {
-            let view_changes_label = "View changes:";
-            lines.push(Line::from(vec![
-                "  ".into(),
-                format!("{view_changes_label:<label_width$}").into(),
-                "  ".into(),
-                format!(
-                    "git diff {}...{}",
-                    short_git_commit(&git_commit_start),
-                    short_git_commit(&git_commit_end)
-                )
-                .cyan(),
-            ]));
-        }
-        let task_history_label = "Task history:";
-        lines.push(Line::from(vec![
-            "  ".into(),
-            format!("{task_history_label:<label_width$}").into(),
-            "  ".into(),
-            user_prompt_file.to_string_lossy().to_string().cyan(),
-        ]));
+        lines.extend(build_potter_project_summary_detail_lines(
+            &user_prompt_file,
+            &git_commit_start,
+            &git_commit_end,
+            None,
+        ));
 
         self.render_lines(lines)
     }
@@ -1064,14 +1047,6 @@ fn replace_prefix(mut line: Line<'static>, from: &str, to: &str) -> Line<'static
     spans.extend(line.spans.into_iter().skip(1));
     line.spans = spans;
     line
-}
-
-fn short_git_commit(commit: &str) -> String {
-    const SHORT_SHA_LEN: usize = 7;
-    if commit.len() <= SHORT_SHA_LEN {
-        return commit.to_string();
-    }
-    commit[..SHORT_SHA_LEN].to_string()
 }
 
 fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {

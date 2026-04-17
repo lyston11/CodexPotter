@@ -25,6 +25,7 @@ use codex_protocol::protocol::ServiceTier;
 
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PrefixedWrappedHistoryCell;
+use crate::potter_project_summary::build_potter_project_summary_detail_lines;
 use crate::text_formatting::capitalize_first;
 use crate::ui_colors::secondary_color;
 use crate::wrapping::RtOptions;
@@ -200,51 +201,16 @@ impl HistoryCell for PotterProjectSummaryCell {
             header_spans.push(Span::styled("─".repeat(filler_width), separator_style));
         }
 
-        let loop_label = "Loop more rounds:";
-        let label_width = loop_label.len();
-
         let mut lines: Vec<Line<'static>> = vec![Line::from(header_spans), Line::from("")];
-
-        if !self.git_commit_start.is_empty() && !self.git_commit_end.is_empty() {
-            let view_changes_label = "View changes:";
-            lines.push(Line::from(vec![
-                "  ".into(),
-                format!("{view_changes_label:<label_width$}").into(),
-                "  ".into(),
-                format!(
-                    "git diff {}...{}",
-                    short_git_commit(&self.git_commit_start),
-                    short_git_commit(&self.git_commit_end)
-                )
-                .cyan(),
-            ]));
-        }
-
-        let task_history_label = "Task history:";
-        lines.push(Line::from(vec![
-            "  ".into(),
-            format!("{task_history_label:<label_width$}").into(),
-            "  ".into(),
-            self.user_prompt_file.to_string_lossy().to_string().cyan(),
-        ]));
-
-        lines.push(Line::from(vec![
-            "  ".into(),
-            format!("{loop_label:<label_width$}").into(),
-            "  ".into(),
-            resume_command.cyan(),
-        ]));
+        lines.extend(build_potter_project_summary_detail_lines(
+            &self.user_prompt_file,
+            &self.git_commit_start,
+            &self.git_commit_end,
+            Some(&resume_command),
+        ));
 
         lines
     }
-}
-
-fn short_git_commit(commit: &str) -> String {
-    const SHORT_SHA_LEN: usize = 7;
-    if commit.len() <= SHORT_SHA_LEN {
-        return commit.to_string();
-    }
-    commit[..SHORT_SHA_LEN].to_string()
 }
 
 fn derive_resume_project_path(progress_file: &Path) -> Option<String> {

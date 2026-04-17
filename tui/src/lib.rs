@@ -36,6 +36,7 @@ mod mention_codec;
 mod multi_agents;
 mod path_utils;
 mod potter_config;
+mod potter_project_summary;
 mod potter_tui;
 mod prompt_history_store;
 mod reasoning_status;
