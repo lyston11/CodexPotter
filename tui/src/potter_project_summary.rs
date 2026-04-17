@@ -15,6 +15,12 @@ const VIEW_CHANGES_LABEL: &str = "View changes:";
 const TASK_HISTORY_LABEL: &str = "Task history:";
 const LOOP_MORE_ROUNDS_LABEL: &str = "Loop more rounds:";
 
+/// Build the shared detail rows for a CodexPotter project summary.
+///
+/// The returned lines keep the `View changes:`, `Task history:`, and optional
+/// `Loop more rounds:` labels aligned from the interactive transcript through
+/// `codex-potter exec`, so the command-oriented summary copy cannot drift across
+/// renderers.
 pub fn build_potter_project_summary_detail_lines(
     user_prompt_file: &Path,
     git_commit_start: &str,
