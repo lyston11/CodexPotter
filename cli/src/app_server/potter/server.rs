@@ -2205,16 +2205,13 @@ git_branch: "main"
     }
 
     #[test]
-    fn decode_jsonrpc_message_line_errors_on_invalid_json() {
+    fn decode_jsonrpc_message_line_rejects_invalid_json_and_ignores_empty_lines() {
         let err = decode_jsonrpc_message_line("{not json").expect_err("should fail");
         assert!(
             err.to_string()
                 .contains("decode potter app-server JSON-RPC")
         );
-    }
 
-    #[test]
-    fn decode_jsonrpc_message_line_ignores_empty_lines() {
         assert!(
             decode_jsonrpc_message_line(" \t ")
                 .expect("decode")
@@ -2223,7 +2220,7 @@ git_branch: "main"
     }
 
     #[test]
-    fn apply_yolo_default_to_launch_enables_yolo_when_configured() {
+    fn apply_yolo_default_to_launch_applies_default_without_overriding_cli_flags() {
         let base = crate::app_server::AppServerLaunchConfig {
             spawn_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
             thread_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
@@ -2240,10 +2237,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: true,
             }
         );
-    }
 
-    #[test]
-    fn apply_yolo_default_to_launch_preserves_cli_override() {
         let base = crate::app_server::AppServerLaunchConfig {
             spawn_sandbox: None,
             thread_sandbox: Some(
@@ -2251,60 +2245,60 @@ git_branch: "main"
             ),
             bypass_approvals_and_sandbox: true,
         };
-
         assert_eq!(apply_yolo_default_to_launch(base, false), base);
     }
 
     #[test]
-    fn prepare_xmodel_follow_up_round_resets_finite_incantatem_before_gpt_5_4() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workdir = temp.path();
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
-        write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
+    fn prepare_xmodel_follow_up_round_clears_finite_incantatem_until_gpt_5_4() {
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
+            write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
 
-        let should_continue = prepare_xmodel_follow_up_round(
-            workdir,
-            &progress_file_rel,
-            true,
-            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL),
-        )
-        .expect("prepare xmodel follow-up");
-
-        assert!(should_continue);
-        assert!(
-            !crate::workflow::project::progress_file_has_finite_incantatem_true(
+            let should_continue = prepare_xmodel_follow_up_round(
                 workdir,
                 &progress_file_rel,
+                true,
+                Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL),
             )
-            .expect("read finite_incantatem"),
-            "expected helper to clear finite_incantatem for the required GPT-5.4 follow-up round"
-        );
-    }
+            .expect("prepare xmodel follow-up");
 
-    #[test]
-    fn prepare_xmodel_follow_up_round_keeps_finite_incantatem_on_gpt_5_4() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workdir = temp.path();
-        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
-        write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
+            assert!(should_continue);
+            assert!(
+                !crate::workflow::project::progress_file_has_finite_incantatem_true(
+                    workdir,
+                    &progress_file_rel,
+                )
+                .expect("read finite_incantatem"),
+                "expected helper to clear finite_incantatem for the required GPT-5.4 follow-up round"
+            );
+        }
 
-        let should_continue = prepare_xmodel_follow_up_round(
-            workdir,
-            &progress_file_rel,
-            true,
-            Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL),
-        )
-        .expect("prepare xmodel follow-up");
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path();
+            let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
+            write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
 
-        assert!(!should_continue);
-        assert!(
-            crate::workflow::project::progress_file_has_finite_incantatem_true(
+            let should_continue = prepare_xmodel_follow_up_round(
                 workdir,
                 &progress_file_rel,
+                true,
+                Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL),
             )
-            .expect("read finite_incantatem"),
-            "expected GPT-5.4 completion to keep the success marker intact"
-        );
+            .expect("prepare xmodel follow-up");
+
+            assert!(!should_continue);
+            assert!(
+                crate::workflow::project::progress_file_has_finite_incantatem_true(
+                    workdir,
+                    &progress_file_rel,
+                )
+                .expect("read finite_incantatem"),
+                "expected GPT-5.4 completion to keep the success marker intact"
+            );
+        }
     }
 
     #[test]
@@ -3716,71 +3710,72 @@ git_branch: "main"
     }
 
     #[test]
-    fn fresh_project_plan_continuation_after_interrupt_retries_same_round() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workdir = temp.path().to_path_buf();
+    fn fresh_project_plan_continuation_after_interrupt_resets_initial_continue_and_allows_retry() {
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path().to_path_buf();
 
-        let plan = FreshProjectPlan {
-            workdir: workdir.clone(),
-            user_message: "hello".to_string(),
-            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
-            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
-            git_commit_start: String::from("start"),
-            potter_rollout_path: workdir.join("potter-rollout.jsonl"),
-            rounds_total: 3,
-            potter_xmodel_force_gpt_5_4: false,
-            event_mode: PotterEventMode::Interactive,
-            project_started_at: Instant::now(),
-            round_start_index: 0,
-            emit_project_started_event: true,
-            initial_continue_round: Some(ContinueRoundPlan {
-                round_current: 1,
-                round_total: 3,
-                project_rounds_run: 1,
-                resume_thread_id: ThreadId::default(),
-                replay_event_msgs: Vec::new(),
-            }),
-            initial_continue_prompt: Some(String::from("override")),
-        };
+            let plan = FreshProjectPlan {
+                workdir: workdir.clone(),
+                user_message: "hello".to_string(),
+                project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
+                progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
+                git_commit_start: String::from("start"),
+                potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+                rounds_total: 3,
+                potter_xmodel_force_gpt_5_4: false,
+                event_mode: PotterEventMode::Interactive,
+                project_started_at: Instant::now(),
+                round_start_index: 0,
+                emit_project_started_event: true,
+                initial_continue_round: Some(ContinueRoundPlan {
+                    round_current: 1,
+                    round_total: 3,
+                    project_rounds_run: 1,
+                    resume_thread_id: ThreadId::default(),
+                    replay_event_msgs: Vec::new(),
+                }),
+                initial_continue_prompt: Some(String::from("override")),
+            };
 
-        let continuation = plan.continuation_after_interrupt(0);
-        assert_eq!(continuation.round_start_index, 0);
-        assert!(!continuation.emit_project_started_event);
-        assert!(continuation.initial_continue_round.is_none());
-        assert!(continuation.initial_continue_prompt.is_none());
-        assert_eq!(continuation.rounds_total, 3);
-        assert_eq!(continuation.workdir, plan.workdir);
-        assert_eq!(continuation.progress_file_rel, plan.progress_file_rel);
-    }
+            let continuation = plan.continuation_after_interrupt(0);
+            assert_eq!(continuation.round_start_index, 0);
+            assert!(!continuation.emit_project_started_event);
+            assert!(continuation.initial_continue_round.is_none());
+            assert!(continuation.initial_continue_prompt.is_none());
+            assert_eq!(continuation.rounds_total, 3);
+            assert_eq!(continuation.workdir, plan.workdir);
+            assert_eq!(continuation.progress_file_rel, plan.progress_file_rel);
+        }
 
-    #[test]
-    fn fresh_project_plan_continuation_after_interrupt_allows_retry_on_last_round() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workdir = temp.path().to_path_buf();
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let workdir = temp.path().to_path_buf();
 
-        let plan = FreshProjectPlan {
-            workdir: workdir.clone(),
-            user_message: "hello".to_string(),
-            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
-            progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
-            git_commit_start: String::from("start"),
-            potter_rollout_path: workdir.join("potter-rollout.jsonl"),
-            rounds_total: 1,
-            potter_xmodel_force_gpt_5_4: false,
-            event_mode: PotterEventMode::Interactive,
-            project_started_at: Instant::now(),
-            round_start_index: 0,
-            emit_project_started_event: true,
-            initial_continue_round: None,
-            initial_continue_prompt: None,
-        };
+            let plan = FreshProjectPlan {
+                workdir: workdir.clone(),
+                user_message: "hello".to_string(),
+                project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1"),
+                progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
+                git_commit_start: String::from("start"),
+                potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+                rounds_total: 1,
+                potter_xmodel_force_gpt_5_4: false,
+                event_mode: PotterEventMode::Interactive,
+                project_started_at: Instant::now(),
+                round_start_index: 0,
+                emit_project_started_event: true,
+                initial_continue_round: None,
+                initial_continue_prompt: None,
+            };
 
-        let continuation = plan.continuation_after_interrupt(0);
-        assert_eq!(continuation.round_start_index, 0);
-        assert!(
-            continuation.round_start_index < continuation.rounds_total,
-            "expected continuation to retry the last round instead of exhausting the budget"
-        );
+            let continuation = plan.continuation_after_interrupt(0);
+            assert_eq!(continuation.round_start_index, 0);
+            assert!(
+                continuation.round_start_index < continuation.rounds_total,
+                "expected continuation to retry the last round instead of exhausting the budget"
+            );
+        }
     }
 
     #[test]
