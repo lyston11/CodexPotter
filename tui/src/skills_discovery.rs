@@ -616,6 +616,31 @@ mod tests {
         std::fs::write(dir.join(".git"), "gitdir: fake\n").expect("write .git marker");
     }
 
+    fn write_skill(parent: &Path, name: &str, description: &str) {
+        let skill_dir = parent.join(name);
+        std::fs::create_dir_all(&skill_dir).expect("mkdir skill");
+        std::fs::write(
+            skill_dir.join(SKILL_FILENAME),
+            format!(
+                r#"---
+name: {name}
+description: {description}
+---
+
+# Body
+"#
+            ),
+        )
+        .expect("write skill");
+    }
+
+    fn discovered_skill_scope(skills: &[SkillMetadata], name: &str) -> Option<SkillScope> {
+        skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .map(|skill| skill.scope)
+    }
+
     #[test]
     fn parses_frontmatter_name_description_and_short_description() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -644,231 +669,150 @@ metadata:
     }
 
     #[test]
-    fn discovers_user_skills_from_home_agents_dir() {
+    fn discovers_skills_from_repo_home_and_admin_roots() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let repo_root = tmp.path().join("repo");
         std::fs::create_dir_all(&repo_root).expect("mkdir repo");
         mark_as_git_repo(&repo_root);
-        let cwd = repo_root.join("cwd");
+        let cwd = repo_root.join("dir_a").join("dir_b");
         std::fs::create_dir_all(&cwd).expect("mkdir cwd");
 
         let home = tmp.path().join("home");
-        let skill_dir = home
-            .join(AGENTS_DIR_NAME)
-            .join(SKILLS_DIR_NAME)
-            .join("home-skill");
-        std::fs::create_dir_all(&skill_dir).expect("mkdir home skill");
-        let skill_path = skill_dir.join(SKILL_FILENAME);
-        std::fs::write(
-            &skill_path,
-            r#"---
-name: home-skill
-description: Installed under $HOME/.agents/skills.
----
+        write_skill(
+            &home.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
+            "home-skill",
+            "Installed under $HOME/.agents/skills.",
+        );
+        write_skill(
+            &repo_root
+                .join("dir_a")
+                .join(AGENTS_DIR_NAME)
+                .join(SKILLS_DIR_NAME),
+            "repo-skill",
+            "Installed under dir/.agents/skills.",
+        );
 
-# Body
-"#,
-        )
-        .expect("write skill");
+        let admin_root = tmp.path().join("admin-skills");
+        write_skill(
+            &admin_root,
+            "admin-skill",
+            "Installed under the admin config root.",
+        );
 
-        let roots = skill_roots_with_dirs(
+        let mut roots = skill_roots_with_dirs(
             &cwd,
             /*codex_home*/ None,
             Some(&home),
             &default_project_root_markers(),
         );
+        roots.push(SkillRoot {
+            path: admin_root,
+            scope: SkillScope::Admin,
+            follow_symlinks: true,
+        });
+
         let skills = load_skills_from_roots(roots);
 
-        let home_skill = skills
-            .iter()
-            .find(|skill| skill.name == "home-skill")
-            .expect("home-skill should be discovered");
-        assert_eq!(home_skill.scope, SkillScope::User);
-    }
-
-    #[test]
-    fn discovers_repo_skills_from_repo_agents_dir() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let repo_root = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
-        mark_as_git_repo(&repo_root);
-
-        let cwd = repo_root.join("dir_a").join("dir_b");
-        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
-
-        let skill_dir = repo_root
-            .join("dir_a")
-            .join(AGENTS_DIR_NAME)
-            .join(SKILLS_DIR_NAME)
-            .join("repo-skill");
-        std::fs::create_dir_all(&skill_dir).expect("mkdir repo skill");
-        let skill_path = skill_dir.join(SKILL_FILENAME);
-        std::fs::write(
-            &skill_path,
-            r#"---
-name: repo-skill
-description: Installed under dir/.agents/skills.
----
-
-# Body
-"#,
-        )
-        .expect("write skill");
-
-        let roots = skill_roots_with_dirs(
-            &cwd,
-            /*codex_home*/ None,
-            /*home_dir*/ None,
-            &default_project_root_markers(),
+        assert_eq!(
+            discovered_skill_scope(&skills, "home-skill"),
+            Some(SkillScope::User)
         );
-        let skills = load_skills_from_roots(roots);
-
-        let repo_skill = skills
-            .iter()
-            .find(|skill| skill.name == "repo-skill")
-            .expect("repo-skill should be discovered");
-        assert_eq!(repo_skill.scope, SkillScope::Repo);
+        assert_eq!(
+            discovered_skill_scope(&skills, "repo-skill"),
+            Some(SkillScope::Repo)
+        );
+        assert_eq!(
+            discovered_skill_scope(&skills, "admin-skill"),
+            Some(SkillScope::Admin)
+        );
     }
 
     #[test]
-    fn does_not_scan_ancestors_for_repo_skills_outside_git_repo() {
+    fn repo_skill_discovery_respects_project_root_markers() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let parent = tmp.path().join("parent");
         let cwd = parent.join("child");
         std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+        write_skill(
+            &parent.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
+            "parent-skill",
+            "Should not be treated as a repo skill when cwd is outside a git repo.",
+        );
 
-        let parent_skill_dir = parent
-            .join(AGENTS_DIR_NAME)
-            .join(SKILLS_DIR_NAME)
-            .join("parent-skill");
-        std::fs::create_dir_all(&parent_skill_dir).expect("mkdir parent skill");
-        std::fs::write(
-            parent_skill_dir.join(SKILL_FILENAME),
-            r#"---
-name: parent-skill
-description: Should not be treated as a repo skill when cwd is outside a git repo.
----
-
-# Body
-"#,
-        )
-        .expect("write skill");
-
-        let roots = skill_roots_with_dirs(
+        let skills = load_skills_from_roots(skill_roots_with_dirs(
             &cwd,
             /*codex_home*/ None,
             /*home_dir*/ None,
             &default_project_root_markers(),
-        );
-        let skills = load_skills_from_roots(roots);
-
+        ));
         assert_eq!(
-            skills.iter().any(|skill| skill.name == "parent-skill"),
-            false,
+            discovered_skill_scope(&skills, "parent-skill"),
+            None,
             "repo skills discovery should not walk past cwd when no .git is present"
         );
-    }
-
-    #[test]
-    fn configured_project_root_markers_allow_repo_agent_roots_without_git() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_root = tmp.path().join("project");
-        let cwd = project_root.join("child");
-        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
-
-        std::fs::write(project_root.join("MARKER"), "ok\n").expect("write marker");
-
-        let skill_dir = project_root
-            .join(AGENTS_DIR_NAME)
-            .join(SKILLS_DIR_NAME)
-            .join("repo-skill");
-        std::fs::create_dir_all(&skill_dir).expect("mkdir repo skill");
-        std::fs::write(
-            skill_dir.join(SKILL_FILENAME),
-            r#"---
-name: repo-skill
-description: Installed under dir/.agents/skills.
----
-
-# Body
-"#,
-        )
-        .expect("write skill");
-
-        let roots = skill_roots_with_dirs(
-            &cwd,
-            /*codex_home*/ None,
-            /*home_dir*/ None,
-            &["MARKER".to_string()],
-        );
-        let skills = load_skills_from_roots(roots);
 
         assert_eq!(
-            skills.iter().any(|skill| skill.name == "repo-skill"),
-            true,
+            {
+                let tmp = tempfile::tempdir().expect("tempdir");
+                let project_root = tmp.path().join("project");
+                let cwd = project_root.join("child");
+                std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+                std::fs::write(project_root.join("MARKER"), "ok\n").expect("write marker");
+                write_skill(
+                    &project_root.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
+                    "repo-skill",
+                    "Installed under dir/.agents/skills.",
+                );
+
+                let markers = ["MARKER".to_string()];
+                let skills = load_skills_from_roots(skill_roots_with_dirs(
+                    &cwd, /*codex_home*/ None, /*home_dir*/ None, &markers,
+                ));
+                discovered_skill_scope(&skills, "repo-skill")
+            },
+            Some(SkillScope::Repo),
             "repo skills discovery should honor configured project root markers"
         );
-    }
-
-    #[test]
-    fn empty_project_root_markers_disable_repo_root_traversal() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let repo_root = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
-        mark_as_git_repo(&repo_root);
-        let cwd = repo_root.join("child");
-        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
-
-        let parent_skill_dir = repo_root
-            .join(AGENTS_DIR_NAME)
-            .join(SKILLS_DIR_NAME)
-            .join("parent-skill");
-        std::fs::create_dir_all(&parent_skill_dir).expect("mkdir parent skill");
-        std::fs::write(
-            parent_skill_dir.join(SKILL_FILENAME),
-            r#"---
-name: parent-skill
-description: Should not be treated as a repo skill when root traversal is disabled.
----
-
-# Body
-"#,
-        )
-        .expect("write skill");
-
-        let roots = skill_roots_with_dirs(
-            &cwd,
-            /*codex_home*/ None,
-            /*home_dir*/ None,
-            &Vec::new(),
-        );
-        let skills = load_skills_from_roots(roots);
 
         assert_eq!(
-            skills.iter().any(|skill| skill.name == "parent-skill"),
-            false,
+            {
+                let tmp = tempfile::tempdir().expect("tempdir");
+                let repo_root = tmp.path().join("repo");
+                std::fs::create_dir_all(&repo_root).expect("mkdir repo");
+                mark_as_git_repo(&repo_root);
+                let cwd = repo_root.join("child");
+                std::fs::create_dir_all(&cwd).expect("mkdir cwd");
+                write_skill(
+                    &repo_root.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
+                    "parent-skill",
+                    "Should not be treated as a repo skill when root traversal is disabled.",
+                );
+
+                let no_markers = Vec::new();
+                let skills = load_skills_from_roots(skill_roots_with_dirs(
+                    &cwd,
+                    /*codex_home*/ None,
+                    /*home_dir*/ None,
+                    &no_markers,
+                ));
+                discovered_skill_scope(&skills, "parent-skill")
+            },
+            None,
             "repo skills discovery should treat cwd as the project root when root markers are empty"
         );
     }
 
     #[test]
-    fn system_project_root_markers_are_used_when_present() {
+    fn project_root_markers_config_layers_use_system_then_user_override() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let system_config = tmp.path().join("system-config.toml");
         std::fs::write(&system_config, "project_root_markers = [\"SYSTEM\"]\n")
             .expect("write system config");
 
-        let markers = project_root_markers_from_config_paths(Some(&system_config), None);
-
-        assert_eq!(markers, vec!["SYSTEM".to_string()]);
-    }
-
-    #[test]
-    fn user_project_root_markers_override_system_config() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let system_config = tmp.path().join("system-config.toml");
-        std::fs::write(&system_config, "project_root_markers = [\"SYSTEM\"]\n")
-            .expect("write system config");
+        assert_eq!(
+            project_root_markers_from_config_paths(Some(&system_config), None),
+            vec!["SYSTEM".to_string()]
+        );
 
         let codex_home = tmp.path().join("codex-home");
         std::fs::create_dir_all(&codex_home).expect("create codex home");
@@ -882,52 +826,6 @@ description: Should not be treated as a repo skill when root traversal is disabl
             project_root_markers_from_config_paths(Some(&system_config), Some(&codex_home));
 
         assert_eq!(markers, vec!["USER".to_string()]);
-    }
-
-    #[test]
-    fn discovers_admin_skills_from_injected_admin_root() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let repo_root = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo_root).expect("mkdir repo");
-        mark_as_git_repo(&repo_root);
-
-        let cwd = repo_root.join("cwd");
-        std::fs::create_dir_all(&cwd).expect("mkdir cwd");
-
-        let admin_root = tmp.path().join("admin-skills");
-        let skill_dir = admin_root.join("admin-skill");
-        std::fs::create_dir_all(&skill_dir).expect("mkdir admin skill");
-        std::fs::write(
-            skill_dir.join(SKILL_FILENAME),
-            r#"---
-name: admin-skill
-description: Installed under the admin config root.
----
-
-# Body
-"#,
-        )
-        .expect("write admin skill");
-
-        let mut roots = skill_roots_with_dirs(
-            &cwd,
-            /*codex_home*/ None,
-            /*home_dir*/ None,
-            &default_project_root_markers(),
-        );
-        roots.push(SkillRoot {
-            path: admin_root,
-            scope: SkillScope::Admin,
-            follow_symlinks: true,
-        });
-
-        let skills = load_skills_from_roots(roots);
-        let admin_skill = skills
-            .iter()
-            .find(|skill| skill.name == "admin-skill")
-            .expect("admin skill should be discovered");
-
-        assert_eq!(admin_skill.scope, SkillScope::Admin);
     }
 
     #[cfg(windows)]
