@@ -205,7 +205,7 @@ impl HistoryCell for PotterProjectSummaryCell {
 
         let mut lines: Vec<Line<'static>> = vec![Line::from(header_spans), Line::from("")];
 
-        if !(self.git_commit_start.is_empty() && self.git_commit_end.is_empty()) {
+        if !self.git_commit_start.is_empty() && !self.git_commit_end.is_empty() {
             let view_changes_label = "View changes:";
             lines.push(Line::from(vec![
                 "  ".into(),

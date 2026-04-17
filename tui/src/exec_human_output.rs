@@ -902,10 +902,16 @@ impl ExecHumanRenderer {
             }
         }
 
+        let loop_label = "Loop more rounds:";
+        let label_width = loop_label.len();
+
         let mut lines = vec![Line::from(header_spans), Line::from("")];
-        if !(git_commit_start.is_empty() && git_commit_end.is_empty()) {
+        if !git_commit_start.is_empty() && !git_commit_end.is_empty() {
+            let view_changes_label = "View changes:";
             lines.push(Line::from(vec![
-                "  View changes:      ".into(),
+                "  ".into(),
+                format!("{view_changes_label:<label_width$}").into(),
+                "  ".into(),
                 format!(
                     "git diff {}...{}",
                     short_git_commit(&git_commit_start),
@@ -914,8 +920,11 @@ impl ExecHumanRenderer {
                 .cyan(),
             ]));
         }
+        let task_history_label = "Task history:";
         lines.push(Line::from(vec![
-            "  Task history:      ".into(),
+            "  ".into(),
+            format!("{task_history_label:<label_width$}").into(),
+            "  ".into(),
             user_prompt_file.to_string_lossy().to_string().cyan(),
         ]));
 
@@ -1378,6 +1387,59 @@ mod tests {
         assert!(block.contains("Task history:"));
         assert!(!block.contains("Loop more rounds:"));
         assert!(!block.contains("──"));
+    }
+
+    #[test]
+    fn summary_omits_view_changes_when_git_commits_are_missing() {
+        let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/03/26/3/MAIN.md");
+
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+            let blocks = renderer
+                .handle_event(&EventMsg::PotterProjectBudgetExhausted {
+                    rounds: 1,
+                    duration: Duration::from_secs(1),
+                    user_prompt_file: user_prompt_file.clone(),
+                    git_commit_start: String::new(),
+                    git_commit_end: "0919e7bdef".to_string(),
+                })
+                .expect("store summary");
+            assert!(blocks.is_empty());
+
+            let blocks = renderer
+                .handle_event(&EventMsg::PotterRoundFinished {
+                    outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                })
+                .expect("emit summary");
+            assert_eq!(blocks.len(), 1);
+            let block = &blocks[0];
+            assert!(!block.contains("View changes:"));
+            assert!(block.contains("Task history:"));
+        }
+
+        {
+            let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+            let blocks = renderer
+                .handle_event(&EventMsg::PotterProjectBudgetExhausted {
+                    rounds: 1,
+                    duration: Duration::from_secs(1),
+                    user_prompt_file,
+                    git_commit_start: "96ca8c6abc".to_string(),
+                    git_commit_end: String::new(),
+                })
+                .expect("store summary");
+            assert!(blocks.is_empty());
+
+            let blocks = renderer
+                .handle_event(&EventMsg::PotterRoundFinished {
+                    outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                })
+                .expect("emit summary");
+            assert_eq!(blocks.len(), 1);
+            let block = &blocks[0];
+            assert!(!block.contains("View changes:"));
+            assert!(block.contains("Task history:"));
+        }
     }
 
     #[test]
