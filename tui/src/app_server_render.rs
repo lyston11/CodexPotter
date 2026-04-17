@@ -3505,231 +3505,232 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_context_window_percent_uses_baseline_and_last_token_usage() {
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+    fn round_renderer_context_window_percent_and_fallbacks() {
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let mut bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
-            PathBuf::from("project"),
-            Some("main".to_string()),
-        ));
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let mut bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
+                PathBuf::from("project"),
+                Some("main".to_string()),
+            ));
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
 
-        app.processor.handle_codex_event(Event {
-            id: "token-count".into(),
-            msg: EventMsg::TokenCount(TokenCountEvent {
-                info: Some(TokenUsageInfo {
-                    // Simulate cumulative billing usage (should not drive the context window percent).
-                    total_token_usage: TokenUsage {
-                        total_tokens: 100_000,
-                        ..TokenUsage::default()
-                    },
-                    // Simulate Codex's estimated tokens currently in the context window.
-                    last_token_usage: TokenUsage {
-                        total_tokens: 20_000,
-                        ..TokenUsage::default()
-                    },
-                    model_context_window: Some(128_000),
+            app.processor.handle_codex_event(Event {
+                id: "token-count".into(),
+                msg: EventMsg::TokenCount(TokenCountEvent {
+                    info: Some(TokenUsageInfo {
+                        // Simulate cumulative billing usage (should not drive the context window percent).
+                        total_token_usage: TokenUsage {
+                            total_tokens: 100_000,
+                            ..TokenUsage::default()
+                        },
+                        // Simulate Codex's estimated tokens currently in the context window.
+                        last_token_usage: TokenUsage {
+                            total_tokens: 20_000,
+                            ..TokenUsage::default()
+                        },
+                        model_context_window: Some(128_000),
+                    }),
+                    rate_limits: None,
                 }),
-                rate_limits: None,
-            }),
-        });
+            });
 
-        app.update_bottom_pane_context_window();
+            app.update_bottom_pane_context_window();
 
-        assert_eq!(app.bottom_pane.context_window_percent(), Some(93));
-        assert_eq!(app.bottom_pane.context_window_used_tokens(), None);
-        assert_eq!(app.processor.token_usage.total_tokens, 100_000);
+            assert_eq!(app.bottom_pane.context_window_percent(), Some(93));
+            assert_eq!(app.bottom_pane.context_window_used_tokens(), None);
+            assert_eq!(app.processor.token_usage.total_tokens, 100_000);
+        }
+
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
+
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
+
+            app.processor.token_usage = TokenUsage {
+                total_tokens: 123_456,
+                ..TokenUsage::default()
+            };
+            app.processor.model_context_window = None;
+
+            app.update_bottom_pane_context_window();
+
+            assert_eq!(app.bottom_pane.context_window_percent(), None);
+            assert_eq!(app.bottom_pane.context_window_used_tokens(), Some(123_456));
+        }
+
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
+
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
+
+            app.processor.token_usage = TokenUsage::default();
+            app.processor.model_context_window = None;
+
+            app.update_bottom_pane_context_window();
+
+            assert_eq!(app.bottom_pane.context_window_percent(), None);
+            assert_eq!(app.bottom_pane.context_window_used_tokens(), None);
+        }
     }
 
     #[test]
-    fn round_renderer_context_window_fallback_shows_used_tokens() {
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
-
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
-
-        app.processor.token_usage = TokenUsage {
-            total_tokens: 123_456,
-            ..TokenUsage::default()
-        };
-        app.processor.model_context_window = None;
-
-        app.update_bottom_pane_context_window();
-
-        assert_eq!(app.bottom_pane.context_window_percent(), None);
-        assert_eq!(app.bottom_pane.context_window_used_tokens(), Some(123_456));
-    }
-
-    #[test]
-    fn round_renderer_context_window_fallback_does_not_render_zero_used_tokens() {
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
-
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
-
-        app.processor.token_usage = TokenUsage::default();
-        app.processor.model_context_window = None;
-
-        app.update_bottom_pane_context_window();
-
-        assert_eq!(app.bottom_pane.context_window_percent(), None);
-        assert_eq!(app.bottom_pane.context_window_used_tokens(), None);
-    }
-
-    #[test]
-    fn round_renderer_composer_processes_repeat_cursor_movement() {
+    fn round_renderer_composer_processes_repeat_key_events() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyEventKind;
         use crossterm::event::KeyModifiers;
 
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
 
-        app.bottom_pane
-            .composer_mut()
-            .set_text_content("hello".to_string());
-        let area = Rect::new(0, 0, 80, 10);
-        let before =
-            crate::render::renderable::Renderable::cursor_pos(&app.bottom_pane, area).unwrap();
+            app.bottom_pane
+                .composer_mut()
+                .set_text_content("hello".to_string());
+            let area = Rect::new(0, 0, 80, 10);
+            let before =
+                crate::render::renderable::Renderable::cursor_pos(&app.bottom_pane, area).unwrap();
 
-        let mut right_repeat = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
-        right_repeat.kind = KeyEventKind::Repeat;
-        app.handle_key_event(right_repeat, crate::tui::FrameRequester::test_dummy(), 80);
+            let mut right_repeat = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+            right_repeat.kind = KeyEventKind::Repeat;
+            app.handle_key_event(right_repeat, crate::tui::FrameRequester::test_dummy(), 80);
 
-        let after =
-            crate::render::renderable::Renderable::cursor_pos(&app.bottom_pane, area).unwrap();
-        assert!(
-            after.0 > before.0,
-            "expected cursor to move right on Repeat (before={before:?}, after={after:?})",
-        );
-    }
-
-    #[test]
-    fn round_renderer_composer_processes_repeat_ctrl_w() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyEventKind;
-        use crossterm::event::KeyModifiers;
-
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
-
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
-
-        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
-        for ch in "hello world".chars() {
-            app.handle_key_event(
-                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                crate::tui::FrameRequester::test_dummy(),
-                80,
+            let after =
+                crate::render::renderable::Renderable::cursor_pos(&app.bottom_pane, area).unwrap();
+            assert!(
+                after.0 > before.0,
+                "expected cursor to move right on Repeat (before={before:?}, after={after:?})",
             );
         }
-        assert_eq!(app.bottom_pane.composer().current_text(), "hello world");
 
-        let mut ctrl_w_repeat = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
-        ctrl_w_repeat.kind = KeyEventKind::Repeat;
-        app.handle_key_event(ctrl_w_repeat, crate::tui::FrameRequester::test_dummy(), 80);
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        assert_eq!(app.bottom_pane.composer().current_text(), "hello ");
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
+
+            app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+            for ch in "hello world".chars() {
+                app.handle_key_event(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    crate::tui::FrameRequester::test_dummy(),
+                    80,
+                );
+            }
+            assert_eq!(app.bottom_pane.composer().current_text(), "hello world");
+
+            let mut ctrl_w_repeat = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+            ctrl_w_repeat.kind = KeyEventKind::Repeat;
+            app.handle_key_event(ctrl_w_repeat, crate::tui::FrameRequester::test_dummy(), 80);
+
+            assert_eq!(app.bottom_pane.composer().current_text(), "hello ");
+        }
     }
 
     #[test]
@@ -3798,92 +3799,91 @@ mod tests {
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
 
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
 
-        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
-        for ch in "/compact-kb".chars() {
+            app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+            for ch in "/compact-kb".chars() {
+                app.handle_key_event(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    crate::tui::FrameRequester::test_dummy(),
+                    80,
+                );
+            }
             app.handle_key_event(
-                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 crate::tui::FrameRequester::test_dummy(),
                 80,
             );
+
+            assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
         }
-        app.handle_key_event(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            crate::tui::FrameRequester::test_dummy(),
-            80,
-        );
 
-        assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
-    }
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-    #[test]
-    fn round_renderer_slash_popup_compact_kb_inserts_prompt_text() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
 
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
-
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
-
-        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
-        for ch in "/c".chars() {
+            app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+            for ch in "/c".chars() {
+                app.handle_key_event(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    crate::tui::FrameRequester::test_dummy(),
+                    80,
+                );
+            }
             app.handle_key_event(
-                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 crate::tui::FrameRequester::test_dummy(),
                 80,
             );
-        }
-        app.handle_key_event(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            crate::tui::FrameRequester::test_dummy(),
-            80,
-        );
 
-        assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
+            assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
+        }
     }
 
     #[test]
@@ -3948,103 +3948,102 @@ mod tests {
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
 
-        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+        {
+            let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
 
-        app.handle_key_event(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            crate::tui::FrameRequester::test_dummy(),
-            80,
-        );
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
 
-        assert!(app.exit_after_next_draw, "expected Ctrl+D to request exit");
+            assert!(app.exit_after_next_draw, "expected Ctrl+D to request exit");
 
-        let mut saw_interrupt = false;
-        while let Ok(ev) = rx_app.try_recv() {
-            if let AppEvent::CodexOp(Op::Interrupt) = ev {
-                saw_interrupt = true;
-                break;
+            let mut saw_interrupt = false;
+            while let Ok(ev) = rx_app.try_recv() {
+                if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                    saw_interrupt = true;
+                    break;
+                }
             }
+            assert!(saw_interrupt, "expected Ctrl+D to request Op::Interrupt");
         }
-        assert!(saw_interrupt, "expected Ctrl+D to request Op::Interrupt");
-    }
 
-    #[test]
-    fn round_renderer_uppercase_ctrl_d_requests_interrupt_and_exit() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
+        {
+            let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+            let processor =
+                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+            let (op_tx, _op_rx) = unbounded_channel::<Op>();
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new(
+                processor,
+                app_event_tx,
+                Some(op_tx),
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                VecDeque::new(),
+            );
 
-        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-        let (op_tx, _op_rx) = unbounded_channel::<Op>();
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new(
-            processor,
-            app_event_tx,
-            Some(op_tx),
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            VecDeque::new(),
-        );
+            app.handle_key_event(
+                KeyEvent::new(
+                    KeyCode::Char('D'),
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                ),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
 
-        app.handle_key_event(
-            KeyEvent::new(
-                KeyCode::Char('D'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-            crate::tui::FrameRequester::test_dummy(),
-            80,
-        );
+            assert!(
+                app.exit_after_next_draw,
+                "expected uppercase Ctrl+D to request exit"
+            );
 
-        assert!(
-            app.exit_after_next_draw,
-            "expected uppercase Ctrl+D to request exit"
-        );
-
-        let mut saw_interrupt = false;
-        while let Ok(ev) = rx_app.try_recv() {
-            if let AppEvent::CodexOp(Op::Interrupt) = ev {
-                saw_interrupt = true;
-                break;
+            let mut saw_interrupt = false;
+            while let Ok(ev) = rx_app.try_recv() {
+                if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                    saw_interrupt = true;
+                    break;
+                }
             }
+            assert!(
+                saw_interrupt,
+                "expected uppercase Ctrl+D to request Op::Interrupt"
+            );
         }
-        assert!(
-            saw_interrupt,
-            "expected uppercase Ctrl+D to request Op::Interrupt"
-        );
     }
 
     #[test]
@@ -4540,99 +4539,96 @@ mod tests {
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
 
-        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+        {
+            let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new_prompt_screen(
-            app_event_tx,
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            true,
-            Verbosity::default(),
-        );
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new_prompt_screen(
+                app_event_tx,
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                true,
+                Verbosity::default(),
+            );
 
-        app.bottom_pane.set_task_running(false);
-        app.handle_key_event(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            crate::tui::FrameRequester::test_dummy(),
-            80,
-        );
+            app.bottom_pane.set_task_running(false);
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
 
-        assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
+            assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
 
-        let mut saw_interrupt = false;
-        while let Ok(ev) = rx_app.try_recv() {
-            if let AppEvent::CodexOp(Op::Interrupt) = ev {
-                saw_interrupt = true;
-                break;
+            let mut saw_interrupt = false;
+            while let Ok(ev) = rx_app.try_recv() {
+                if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                    saw_interrupt = true;
+                    break;
+                }
             }
+            assert!(
+                !saw_interrupt,
+                "did not expect Op::Interrupt in prompt screen"
+            );
         }
-        assert!(
-            !saw_interrupt,
-            "did not expect Op::Interrupt in prompt screen"
-        );
-    }
 
-    #[test]
-    fn prompt_uppercase_ctrl_c_empty_cancels_without_interrupt() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
+        {
+            let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+            let bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new_prompt_screen(
+                app_event_tx,
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                true,
+                Verbosity::default(),
+            );
 
-        let bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new_prompt_screen(
-            app_event_tx,
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            true,
-            Verbosity::default(),
-        );
+            app.bottom_pane.set_task_running(false);
+            app.handle_key_event(
+                KeyEvent::new(
+                    KeyCode::Char('C'),
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                ),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
 
-        app.bottom_pane.set_task_running(false);
-        app.handle_key_event(
-            KeyEvent::new(
-                KeyCode::Char('C'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-            crate::tui::FrameRequester::test_dummy(),
-            80,
-        );
+            assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
 
-        assert_eq!(app.prompt_action, Some(PromptScreenAction::CancelledByUser));
-
-        let mut saw_interrupt = false;
-        while let Ok(ev) = rx_app.try_recv() {
-            if let AppEvent::CodexOp(Op::Interrupt) = ev {
-                saw_interrupt = true;
-                break;
+            let mut saw_interrupt = false;
+            while let Ok(ev) = rx_app.try_recv() {
+                if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                    saw_interrupt = true;
+                    break;
+                }
             }
+            assert!(
+                !saw_interrupt,
+                "did not expect Op::Interrupt in prompt screen"
+            );
         }
-        assert!(
-            !saw_interrupt,
-            "did not expect Op::Interrupt in prompt screen"
-        );
     }
 
     #[test]
@@ -4686,89 +4682,85 @@ mod tests {
 
     #[test]
     fn prompt_screen_yolo_selection_updates_footer_indicator() {
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
 
-        let mut bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
-            PathBuf::from("project"),
-            Some("main".to_string()),
-        ));
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new_prompt_screen(
-            app_event_tx,
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            true,
-            Verbosity::default(),
-        );
+            let mut bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            bottom_pane.set_prompt_footer_context(PromptFooterContext::new(
+                PathBuf::from("project"),
+                Some("main".to_string()),
+            ));
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new_prompt_screen(
+                app_event_tx,
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                true,
+                Verbosity::default(),
+            );
 
-        assert!(!app.bottom_pane.prompt_footer_context().yolo_active);
+            assert!(!app.bottom_pane.prompt_footer_context().yolo_active);
 
-        app.apply_persisted_yolo_to_prompt_footer(true);
-        assert!(app.bottom_pane.prompt_footer_context().yolo_active);
+            app.apply_persisted_yolo_to_prompt_footer(true);
+            assert!(app.bottom_pane.prompt_footer_context().yolo_active);
 
-        app.apply_persisted_yolo_to_prompt_footer(false);
-        assert!(!app.bottom_pane.prompt_footer_context().yolo_active);
+            app.apply_persisted_yolo_to_prompt_footer(false);
+            assert!(!app.bottom_pane.prompt_footer_context().yolo_active);
+        }
+
+        {
+            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+            let app_event_tx = AppEventSender::new(tx_raw);
+
+            let mut bottom_pane = BottomPane::new(BottomPaneParams {
+                frame_requester: crate::tui::FrameRequester::test_dummy(),
+                enhanced_keys_supported: false,
+                app_event_tx: app_event_tx.clone(),
+                animations_enabled: false,
+                placeholder_text: "Assign new task to CodexPotter".to_string(),
+                disable_paste_burst: false,
+            });
+            bottom_pane.set_prompt_footer_context(
+                PromptFooterContext::new(PathBuf::from("project"), Some("main".to_string()))
+                    .with_yolo_cli_override(true)
+                    .with_yolo_active(true),
+            );
+            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+            let mut app = RenderAppState::new_prompt_screen(
+                app_event_tx,
+                bottom_pane,
+                crate::prompt_history_store::PromptHistoryStore::new(),
+                file_search,
+                true,
+                Verbosity::default(),
+            );
+
+            app.apply_persisted_yolo_to_prompt_footer(false);
+
+            assert!(app.bottom_pane.prompt_footer_context().yolo_active);
+        }
     }
 
     #[test]
-    fn prompt_screen_yolo_selection_preserves_cli_override_indicator() {
-        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
-
-        let mut bottom_pane = BottomPane::new(BottomPaneParams {
-            frame_requester: crate::tui::FrameRequester::test_dummy(),
-            enhanced_keys_supported: false,
-            app_event_tx: app_event_tx.clone(),
-            animations_enabled: false,
-            placeholder_text: "Assign new task to CodexPotter".to_string(),
-            disable_paste_burst: false,
-        });
-        bottom_pane.set_prompt_footer_context(
-            PromptFooterContext::new(PathBuf::from("project"), Some("main".to_string()))
-                .with_yolo_cli_override(true)
-                .with_yolo_active(true),
-        );
-        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-        let mut app = RenderAppState::new_prompt_screen(
-            app_event_tx,
-            bottom_pane,
-            crate::prompt_history_store::PromptHistoryStore::new(),
-            file_search,
-            true,
-            Verbosity::default(),
-        );
-
-        app.apply_persisted_yolo_to_prompt_footer(false);
-
-        assert!(app.bottom_pane.prompt_footer_context().yolo_active);
-    }
-
-    #[test]
-    fn yolo_enabled_notice_mentions_persisted_future_sessions() {
-        let cell = RenderAppState::yolo_default_notice(true);
-
+    fn yolo_default_notice_messages() {
+        let enabled = RenderAppState::yolo_default_notice(true);
         assert_eq!(
-            lines_to_plain_text(&cell.display_lines(u16::MAX)),
+            lines_to_plain_text(&enabled.display_lines(u16::MAX)),
             "⚠ YOLO is now persisted in config and will apply to all subsequent sessions.\n"
         );
-    }
 
-    #[test]
-    fn yolo_disabled_notice_mentions_default_disabled() {
-        let cell = RenderAppState::yolo_default_notice(false);
-
+        let disabled = RenderAppState::yolo_default_notice(false);
         assert_eq!(
-            lines_to_plain_text(&cell.display_lines(u16::MAX)),
+            lines_to_plain_text(&disabled.display_lines(u16::MAX)),
             "• YOLO is disabled by default.\n"
         );
     }
@@ -5260,222 +5252,209 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_renders_request_permissions() {
+    fn round_renderer_renders_history_cells() {
         let width: u16 = 80;
 
-        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+        {
+            let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
-        let write_root = synthetic_absolute_path_buf(&["Users", "me", "project"]);
-        proc.handle_codex_event(Event {
-            id: "request-permissions".into(),
-            msg: EventMsg::RequestPermissions(RequestPermissionsEvent {
-                call_id: "call-1".to_string(),
-                turn_id: "turn-1".to_string(),
-                reason: Some("Select a workspace root".to_string()),
-                permissions: RequestPermissionProfile {
-                    network: Some(NetworkPermissions {
-                        enabled: Some(true),
-                    }),
-                    file_system: Some(FileSystemPermissions {
-                        read: None,
-                        write: Some(vec![write_root.clone()]),
-                    }),
-                },
-            }),
-        });
-
-        let cell = recv_inserted_history_cell(&mut rx);
-        assert_eq!(
-            lines_to_plain_text(&cell.display_lines(width)),
-            format!(
-                "• Requested permissions\n  └ Reason: Select a workspace root\n    Network: enabled\n    FileSystem write: {}\n",
-                write_root.as_path().display()
-            )
-        );
-    }
-
-    #[test]
-    fn round_renderer_renders_hook_started() {
-        let width: u16 = 80;
-
-        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
-
-        proc.handle_codex_event(Event {
-            id: "hook-started".into(),
-            msg: EventMsg::HookStarted(HookStartedEvent {
-                turn_id: Some("turn-1".to_string()),
-                run: HookRunSummary {
-                    id: "hook-run-1".to_string(),
-                    event_name: HookEventName::SessionStart,
-                    handler_type: HookHandlerType::Command,
-                    execution_mode: HookExecutionMode::Sync,
-                    scope: HookScope::Thread,
-                    source_path: PathBuf::from("hooks/session_start.sh"),
-                    display_order: 0,
-                    status: HookRunStatus::Running,
-                    status_message: Some("Setting up environment".to_string()),
-                    started_at: 0,
-                    completed_at: None,
-                    duration_ms: None,
-                    entries: Vec::new(),
-                },
-            }),
-        });
-
-        let cell = recv_inserted_history_cell(&mut rx);
-        assert_snapshot!(
-            "round_renderer_hook_started",
-            lines_to_plain_text(&cell.display_lines(width))
-        );
-    }
-
-    #[test]
-    fn round_renderer_renders_hook_completed() {
-        let width: u16 = 80;
-
-        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
-
-        proc.handle_codex_event(Event {
-            id: "hook-completed".into(),
-            msg: EventMsg::HookCompleted(HookCompletedEvent {
-                turn_id: None,
-                run: HookRunSummary {
-                    id: "hook-run-1".to_string(),
-                    event_name: HookEventName::SessionStart,
-                    handler_type: HookHandlerType::Command,
-                    execution_mode: HookExecutionMode::Sync,
-                    scope: HookScope::Thread,
-                    source_path: PathBuf::from("hooks/session_start.sh"),
-                    display_order: 0,
-                    status: HookRunStatus::Completed,
-                    status_message: None,
-                    started_at: 0,
-                    completed_at: Some(5),
-                    duration_ms: Some(5),
-                    entries: vec![
-                        HookOutputEntry {
-                            kind: HookOutputEntryKind::Warning,
-                            text: "fallback value used".to_string(),
-                        },
-                        HookOutputEntry {
-                            kind: HookOutputEntryKind::Feedback,
-                            text: "consider adding more logging".to_string(),
-                        },
-                        HookOutputEntry {
-                            kind: HookOutputEntryKind::Context,
-                            text: "exported CODEX_HOME".to_string(),
-                        },
-                        HookOutputEntry {
-                            kind: HookOutputEntryKind::Error,
-                            text: "failed to warm cache".to_string(),
-                        },
-                        HookOutputEntry {
-                            kind: HookOutputEntryKind::Stop,
-                            text: "hook requested stop".to_string(),
-                        },
-                    ],
-                },
-            }),
-        });
-
-        let cell = recv_inserted_history_cell(&mut rx);
-        assert_snapshot!(
-            "round_renderer_hook_completed",
-            lines_to_plain_text(&cell.display_lines(width))
-        );
-    }
-
-    #[test]
-    fn round_renderer_renders_request_user_input() {
-        let width: u16 = 80;
-
-        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
-
-        proc.handle_codex_event(Event {
-            id: "request-user-input".into(),
-            msg: EventMsg::RequestUserInput(RequestUserInputEvent {
-                call_id: "call-1".to_string(),
-                turn_id: "turn-1".to_string(),
-                questions: vec![RequestUserInputQuestion {
-                    id: "confirm_path".to_string(),
-                    header: "Confirm".to_string(),
-                    question: "Proceed with the plan?".to_string(),
-                    is_other: true,
-                    is_secret: false,
-                    options: Some(vec![
-                        RequestUserInputQuestionOption {
-                            label: "Yes (Recommended)".to_string(),
-                            description: "Continue the current plan.".to_string(),
-                        },
-                        RequestUserInputQuestionOption {
-                            label: "No".to_string(),
-                            description: "Stop and revisit the approach.".to_string(),
-                        },
-                    ]),
-                }],
-            }),
-        });
-
-        let cell = recv_inserted_history_cell(&mut rx);
-        assert_snapshot!(
-            "round_renderer_request_user_input",
-            lines_to_plain_text(&cell.display_lines(width))
-        );
-    }
-
-    #[test]
-    fn round_renderer_renders_elicitation_request() {
-        let width: u16 = 80;
-
-        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
-
-        proc.handle_codex_event(Event {
-            id: "elicitation".into(),
-            msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
-                turn_id: Some("turn-1".to_string()),
-                server_name: "mcp-server".to_string(),
-                id: McpRequestId::String("req-1".to_string()),
-                request: Some(ElicitationRequest::Url {
-                    meta: None,
-                    message: "Please log in.".to_string(),
-                    url: "https://example.com/auth".to_string(),
-                    elicitation_id: "elicitation-1".to_string(),
+            let write_root = synthetic_absolute_path_buf(&["Users", "me", "project"]);
+            proc.handle_codex_event(Event {
+                id: "request-permissions".into(),
+                msg: EventMsg::RequestPermissions(RequestPermissionsEvent {
+                    call_id: "call-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    reason: Some("Select a workspace root".to_string()),
+                    permissions: RequestPermissionProfile {
+                        network: Some(NetworkPermissions {
+                            enabled: Some(true),
+                        }),
+                        file_system: Some(FileSystemPermissions {
+                            read: None,
+                            write: Some(vec![write_root.clone()]),
+                        }),
+                    },
                 }),
-                message: None,
-            }),
-        });
+            });
 
-        let cell = recv_inserted_history_cell(&mut rx);
-        assert_snapshot!(
-            "round_renderer_elicitation_request",
-            lines_to_plain_text(&cell.display_lines(width))
-        );
-    }
+            let cell = recv_inserted_history_cell(&mut rx);
+            assert_eq!(
+                lines_to_plain_text(&cell.display_lines(width)),
+                format!(
+                    "• Requested permissions\n  └ Reason: Select a workspace root\n    Network: enabled\n    FileSystem write: {}\n",
+                    write_root.as_path().display()
+                )
+            );
+        }
 
-    #[test]
-    fn round_renderer_renders_guardian_assessment() {
-        let width: u16 = 80;
+        {
+            let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
 
-        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+            proc.handle_codex_event(Event {
+                id: "hook-started".into(),
+                msg: EventMsg::HookStarted(HookStartedEvent {
+                    turn_id: Some("turn-1".to_string()),
+                    run: HookRunSummary {
+                        id: "hook-run-1".to_string(),
+                        event_name: HookEventName::SessionStart,
+                        handler_type: HookHandlerType::Command,
+                        execution_mode: HookExecutionMode::Sync,
+                        scope: HookScope::Thread,
+                        source_path: PathBuf::from("hooks/session_start.sh"),
+                        display_order: 0,
+                        status: HookRunStatus::Running,
+                        status_message: Some("Setting up environment".to_string()),
+                        started_at: 0,
+                        completed_at: None,
+                        duration_ms: None,
+                        entries: Vec::new(),
+                    },
+                }),
+            });
 
-        proc.handle_codex_event(Event {
-            id: "guardian".into(),
-            msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-                id: "assessment-1".to_string(),
-                turn_id: "turn-1".to_string(),
-                status: GuardianAssessmentStatus::Approved,
-                risk_score: Some(15),
-                risk_level: Some(GuardianRiskLevel::Low),
-                rationale: Some("Looks safe.".to_string()),
-                action: None,
-            }),
-        });
+            let cell = recv_inserted_history_cell(&mut rx);
+            assert_snapshot!(
+                "round_renderer_hook_started",
+                lines_to_plain_text(&cell.display_lines(width))
+            );
+        }
 
-        let cell = recv_inserted_history_cell(&mut rx);
-        assert_snapshot!(
-            "round_renderer_guardian_assessment",
-            lines_to_plain_text(&cell.display_lines(width))
-        );
+        {
+            let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+            proc.handle_codex_event(Event {
+                id: "hook-completed".into(),
+                msg: EventMsg::HookCompleted(HookCompletedEvent {
+                    turn_id: None,
+                    run: HookRunSummary {
+                        id: "hook-run-1".to_string(),
+                        event_name: HookEventName::SessionStart,
+                        handler_type: HookHandlerType::Command,
+                        execution_mode: HookExecutionMode::Sync,
+                        scope: HookScope::Thread,
+                        source_path: PathBuf::from("hooks/session_start.sh"),
+                        display_order: 0,
+                        status: HookRunStatus::Completed,
+                        status_message: None,
+                        started_at: 0,
+                        completed_at: Some(5),
+                        duration_ms: Some(5),
+                        entries: vec![
+                            HookOutputEntry {
+                                kind: HookOutputEntryKind::Warning,
+                                text: "fallback value used".to_string(),
+                            },
+                            HookOutputEntry {
+                                kind: HookOutputEntryKind::Feedback,
+                                text: "consider adding more logging".to_string(),
+                            },
+                            HookOutputEntry {
+                                kind: HookOutputEntryKind::Context,
+                                text: "exported CODEX_HOME".to_string(),
+                            },
+                            HookOutputEntry {
+                                kind: HookOutputEntryKind::Error,
+                                text: "failed to warm cache".to_string(),
+                            },
+                            HookOutputEntry {
+                                kind: HookOutputEntryKind::Stop,
+                                text: "hook requested stop".to_string(),
+                            },
+                        ],
+                    },
+                }),
+            });
+
+            let cell = recv_inserted_history_cell(&mut rx);
+            assert_snapshot!(
+                "round_renderer_hook_completed",
+                lines_to_plain_text(&cell.display_lines(width))
+            );
+        }
+
+        {
+            let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+            proc.handle_codex_event(Event {
+                id: "request-user-input".into(),
+                msg: EventMsg::RequestUserInput(RequestUserInputEvent {
+                    call_id: "call-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    questions: vec![RequestUserInputQuestion {
+                        id: "confirm_path".to_string(),
+                        header: "Confirm".to_string(),
+                        question: "Proceed with the plan?".to_string(),
+                        is_other: true,
+                        is_secret: false,
+                        options: Some(vec![
+                            RequestUserInputQuestionOption {
+                                label: "Yes (Recommended)".to_string(),
+                                description: "Continue the current plan.".to_string(),
+                            },
+                            RequestUserInputQuestionOption {
+                                label: "No".to_string(),
+                                description: "Stop and revisit the approach.".to_string(),
+                            },
+                        ]),
+                    }],
+                }),
+            });
+
+            let cell = recv_inserted_history_cell(&mut rx);
+            assert_snapshot!(
+                "round_renderer_request_user_input",
+                lines_to_plain_text(&cell.display_lines(width))
+            );
+        }
+
+        {
+            let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+            proc.handle_codex_event(Event {
+                id: "elicitation".into(),
+                msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
+                    turn_id: Some("turn-1".to_string()),
+                    server_name: "mcp-server".to_string(),
+                    id: McpRequestId::String("req-1".to_string()),
+                    request: Some(ElicitationRequest::Url {
+                        meta: None,
+                        message: "Please log in.".to_string(),
+                        url: "https://example.com/auth".to_string(),
+                        elicitation_id: "elicitation-1".to_string(),
+                    }),
+                    message: None,
+                }),
+            });
+
+            let cell = recv_inserted_history_cell(&mut rx);
+            assert_snapshot!(
+                "round_renderer_elicitation_request",
+                lines_to_plain_text(&cell.display_lines(width))
+            );
+        }
+
+        {
+            let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+            proc.handle_codex_event(Event {
+                id: "guardian".into(),
+                msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                    id: "assessment-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    status: GuardianAssessmentStatus::Approved,
+                    risk_score: Some(15),
+                    risk_level: Some(GuardianRiskLevel::Low),
+                    rationale: Some("Looks safe.".to_string()),
+                    action: None,
+                }),
+            });
+
+            let cell = recv_inserted_history_cell(&mut rx);
+            assert_snapshot!(
+                "round_renderer_guardian_assessment",
+                lines_to_plain_text(&cell.display_lines(width))
+            );
+        }
     }
 
     #[test]
@@ -7137,7 +7116,7 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_minimal_hides_coalesced_success_ran_cells() {
+    fn round_renderer_minimal_hides_ran_cells() {
         let width: u16 = 80;
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let app_event_tx = AppEventSender::new(tx_raw);
@@ -7163,37 +7142,6 @@ mod tests {
                 formatted_output: String::new(),
             }),
         });
-
-        proc.handle_codex_event(Event {
-            id: "agent-message".into(),
-            msg: EventMsg::AgentMessage(AgentMessageEvent {
-                message: "ok".into(),
-                phase: None,
-            }),
-        });
-
-        proc.handle_codex_event(Event {
-            id: "turn-complete".into(),
-            msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: "turn-1".to_string(),
-                last_agent_message: None,
-            }),
-        });
-
-        let events = drain_history_cell_strings(&mut rx, width);
-        let [agent_message] = events.as_slice() else {
-            panic!("expected agent message");
-        };
-        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
-    }
-
-    #[test]
-    fn round_renderer_minimal_hides_failed_ran_cells() {
-        let width: u16 = 80;
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let app_event_tx = AppEventSender::new(tx_raw);
-
-        let mut proc = AppServerEventProcessor::new(app_event_tx, Verbosity::default());
 
         proc.handle_codex_event(Event {
             id: "ran-failed".into(),
@@ -7870,107 +7818,6 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_coalesces_viewed_image_cells_in_event_order() {
-        let width: u16 = 80;
-        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
-        let _ = drain_history_cell_strings(&mut rx, width);
-        proc.verbosity = Verbosity::Simple;
-
-        for (id, path) in [
-            ("view-image-1", "/tmp/slock_ui_05_invite_human_modal.png"),
-            ("view-image-2", "/tmp/slock_ui_06_edit_channel_modal.png"),
-            ("view-image-3", "/tmp/slock_ui_07_create_channel_modal.png"),
-            ("view-image-4", "/tmp/slock_ui_08_create_agent_modal.png"),
-        ] {
-            proc.handle_codex_event(Event {
-                id: id.into(),
-                msg: EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
-                    call_id: id.into(),
-                    path: PathBuf::from(path),
-                }),
-            });
-        }
-
-        assert!(rx.try_recv().is_err());
-
-        proc.handle_codex_event(Event {
-            id: "agent-message".into(),
-            msg: EventMsg::AgentMessage(AgentMessageEvent {
-                message: "ok".into(),
-                phase: None,
-            }),
-        });
-
-        let events = drain_history_cell_strings(&mut rx, width);
-        let [viewed_images, _separator, agent_message] = events.as_slice() else {
-            panic!("expected viewed image cell, separator, then agent message");
-        };
-        pretty_assertions::assert_eq!(
-            viewed_images,
-            &vec![
-                "• Viewed Image".to_string(),
-                "  └ /tmp/slock_ui_05_invite_human_modal.png".to_string(),
-                "    /tmp/slock_ui_06_edit_channel_modal.png".to_string(),
-                "    /tmp/slock_ui_07_create_channel_modal.png".to_string(),
-                "    /tmp/slock_ui_08_create_agent_modal.png".to_string(),
-            ]
-        );
-        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
-    }
-
-    #[test]
-    fn round_renderer_coalesces_web_search_cells_in_simple() {
-        let width: u16 = 80;
-        let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
-        let _ = drain_history_cell_strings(&mut rx, width);
-        proc.verbosity = Verbosity::Simple;
-
-        for (id, query) in [
-            (
-                "search-1",
-                "'--label=' in\nhttps://docs.podman.io/en/latest/markdown/podman-create.1.html",
-            ),
-            (
-                "search-2",
-                "site:docs.podman.io/en/stable/markdown podman-logs official docs",
-            ),
-        ] {
-            proc.handle_codex_event(Event {
-                id: id.into(),
-                msg: EventMsg::WebSearchEnd(WebSearchEndEvent {
-                    call_id: id.into(),
-                    query: query.to_string(),
-                }),
-            });
-        }
-
-        assert!(rx.try_recv().is_err());
-
-        proc.handle_codex_event(Event {
-            id: "agent-message".into(),
-            msg: EventMsg::AgentMessage(AgentMessageEvent {
-                message: "ok".into(),
-                phase: None,
-            }),
-        });
-
-        let events = drain_history_cell_strings(&mut rx, width);
-        let [searches, _separator, agent_message] = events.as_slice() else {
-            panic!("expected web search cell, separator, then agent message");
-        };
-        pretty_assertions::assert_eq!(
-            searches,
-            &vec![
-                "• Searched".to_string(),
-                "  └ '--label=' in".to_string(),
-                "    https://docs.podman.io/en/latest/markdown/podman-create.1.html".to_string(),
-                "    site:docs.podman.io/en/stable/markdown podman-logs official docs".to_string(),
-            ]
-        );
-        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
-    }
-
-    #[test]
     fn round_renderer_simple_renders_live_web_searches_in_transient_lines() {
         let width: u16 = 80;
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
@@ -8038,6 +7885,29 @@ mod tests {
                 "    site:docs.podman.io/en/stable/markdown podman-logs official docs".to_string(),
             ]
         );
+
+        app.processor.handle_codex_event(Event {
+            id: "agent-message".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "ok".into(),
+                phase: None,
+            }),
+        });
+
+        let events = drain_history_cell_strings(&mut rx, width);
+        let [searches, _separator, agent_message] = events.as_slice() else {
+            panic!("expected web search cell, separator, then agent message");
+        };
+        pretty_assertions::assert_eq!(
+            searches,
+            &vec![
+                "• Searched".to_string(),
+                "  └ '--label=' in".to_string(),
+                "    https://docs.podman.io/en/latest/markdown/podman-create.1.html".to_string(),
+                "    site:docs.podman.io/en/stable/markdown podman-logs official docs".to_string(),
+            ]
+        );
+        pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
     }
 
     #[test]
@@ -8150,6 +8020,8 @@ mod tests {
         for (id, path) in [
             ("view-image-1", "/tmp/slock_ui_05_invite_human_modal.png"),
             ("view-image-2", "/tmp/slock_ui_06_edit_channel_modal.png"),
+            ("view-image-3", "/tmp/slock_ui_07_create_channel_modal.png"),
+            ("view-image-4", "/tmp/slock_ui_08_create_agent_modal.png"),
         ] {
             proc.handle_codex_event(Event {
                 id: id.into(),
@@ -8197,6 +8069,8 @@ mod tests {
                 "• Viewed Image".to_string(),
                 "  └ /tmp/slock_ui_05_invite_human_modal.png".to_string(),
                 "    /tmp/slock_ui_06_edit_channel_modal.png".to_string(),
+                "    /tmp/slock_ui_07_create_channel_modal.png".to_string(),
+                "    /tmp/slock_ui_08_create_agent_modal.png".to_string(),
             ]
         );
 
@@ -8218,6 +8092,8 @@ mod tests {
                 "• Viewed Image".to_string(),
                 "  └ /tmp/slock_ui_05_invite_human_modal.png".to_string(),
                 "    /tmp/slock_ui_06_edit_channel_modal.png".to_string(),
+                "    /tmp/slock_ui_07_create_channel_modal.png".to_string(),
+                "    /tmp/slock_ui_08_create_agent_modal.png".to_string(),
             ]
         );
         pretty_assertions::assert_eq!(agent_message, &vec!["• ok".to_string()]);
@@ -8502,31 +8378,19 @@ mod tests {
     }
 
     #[test]
-    fn prompt_footer_includes_branch_and_working_dir() {
+    fn prompt_footer_snapshots() {
         assert_snapshot!(
             "prompt_footer_includes_branch_and_working_dir",
             render_prompt_footer_line_for_branch(Some("main"))
         );
-    }
-
-    #[test]
-    fn prompt_footer_omits_branch_separator_when_branch_unknown() {
         assert_snapshot!(
             "prompt_footer_omits_branch_separator_when_branch_unknown",
             render_prompt_footer_line_for_branch(None)
         );
-    }
-
-    #[test]
-    fn prompt_footer_includes_yolo_indicator() {
         assert_snapshot!(
             "prompt_footer_includes_yolo_indicator",
             render_prompt_footer_line(None, Some("main"), true)
         );
-    }
-
-    #[test]
-    fn prompt_footer_external_editor_override_replaces_footer() {
         assert_snapshot!(
             "prompt_footer_external_editor_override",
             render_prompt_footer_line(
