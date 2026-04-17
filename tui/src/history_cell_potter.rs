@@ -371,6 +371,61 @@ mod tests {
             "Budget marker should not be bold: {exhausted:?}"
         );
     }
+
+    #[test]
+    fn potter_project_summary_omits_view_changes_when_git_commits_are_missing() {
+        let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/03/07/9/MAIN.md");
+
+        let missing_start = new_potter_project_succeeded(
+            2,
+            Duration::from_secs(23),
+            user_prompt_file.clone(),
+            String::new(),
+            "662d232cafebabedeadbeefdeadbeefdeadbeef".to_string(),
+        );
+        let lines = missing_start.display_lines(120);
+        assert_eq!(lines.len(), 4);
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.to_string().contains("View changes:"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains("Task history:"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains("Loop more rounds:"))
+        );
+
+        let missing_end = new_potter_project_succeeded(
+            2,
+            Duration::from_secs(23),
+            user_prompt_file,
+            "fb827a203635875b58d7e6792da84f22d723d41b".to_string(),
+            String::new(),
+        );
+        let lines = missing_end.display_lines(120);
+        assert_eq!(lines.len(), 4);
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.to_string().contains("View changes:"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains("Task history:"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains("Loop more rounds:"))
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
