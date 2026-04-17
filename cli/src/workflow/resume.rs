@@ -569,6 +569,11 @@ async fn render_replay_events<U: ResumeUi>(
             codex_op_tx: op_tx,
             codex_event_rx: event_rx,
             fatal_exit_rx,
+            projects_overlay_provider: Some(
+                crate::workflow::projects_overlay_backend::spawn_projects_overlay_provider(
+                    prompt_footer.working_dir.clone(),
+                ),
+            ),
         })
         .await?;
 

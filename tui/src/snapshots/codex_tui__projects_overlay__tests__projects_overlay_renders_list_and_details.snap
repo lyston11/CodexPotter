@@ -1,0 +1,22 @@
+---
+source: tui/src/projects_overlay.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"┃ ✓ 4 rounds · 1 minute ago     .codexpotter/projects/2026/04/16/1/MAIN.md      "
+"┃   Add projects overlay                                                        "
+"                                ROUND 1 @ 1 minute ago                          "
+"                                                                                "
+"                                Done                                            "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page                          "

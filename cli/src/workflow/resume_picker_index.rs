@@ -7,7 +7,6 @@
 //! referenced upstream rollout files to exist, so selecting a row always results in a resumable
 //! project.
 
-use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -15,41 +14,13 @@ use std::time::UNIX_EPOCH;
 
 use chrono::NaiveDate;
 use codex_tui::ResumePickerRow;
-use ignore::WalkBuilder;
-
-const PROJECT_MAIN_FILE: &str = "MAIN.md";
 
 pub fn discover_resumable_projects(workdir: &Path) -> anyhow::Result<Vec<ResumePickerRow>> {
     let projects_root = workdir.join(".codexpotter").join("projects");
-    if !projects_root.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let walker = WalkBuilder::new(&projects_root)
-        .hidden(false)
-        .ignore(false)
-        .git_ignore(false)
-        .git_exclude(false)
-        .git_global(false)
-        .parents(false)
-        .follow_links(false)
-        .build();
-
     let mut rows = Vec::new();
 
-    for entry in walker {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-        if entry.path().file_name() != Some(OsStr::new(PROJECT_MAIN_FILE)) {
-            continue;
-        }
-
-        if let Some(row) = row_for_progress_file(workdir, entry.path()) {
+    for progress_file in super::project_progress_files::discover_project_progress_files(workdir) {
+        if let Some(row) = row_for_progress_file(workdir, &projects_root, &progress_file) {
             rows.push(row);
         }
     }
@@ -58,7 +29,11 @@ pub fn discover_resumable_projects(workdir: &Path) -> anyhow::Result<Vec<ResumeP
     Ok(rows)
 }
 
-fn row_for_progress_file(workdir: &Path, progress_file: &Path) -> Option<ResumePickerRow> {
+fn row_for_progress_file(
+    workdir: &Path,
+    projects_root: &Path,
+    progress_file: &Path,
+) -> Option<ResumePickerRow> {
     let resolved = crate::workflow::resume::resolve_project_paths(workdir, progress_file).ok()?;
 
     let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&resolved.project_dir);
@@ -68,11 +43,8 @@ fn row_for_progress_file(workdir: &Path, progress_file: &Path) -> Option<ResumeP
 
     let metadata = std::fs::metadata(&potter_rollout_path).ok()?;
     let updated_at = metadata.modified().ok()?;
-    let created_at = created_at_from_progress_file(
-        &workdir.join(".codexpotter").join("projects"),
-        progress_file,
-    )
-    .unwrap_or(updated_at);
+    let created_at =
+        created_at_from_progress_file(projects_root, progress_file).unwrap_or(updated_at);
 
     let potter_rollout_lines = crate::workflow::rollout::read_lines(&potter_rollout_path).ok()?;
     if potter_rollout_lines.is_empty() {

@@ -1,0 +1,1761 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+use codex_protocol::protocol::PotterProjectDetails;
+use codex_protocol::protocol::PotterProjectListEntry;
+use codex_protocol::protocol::PotterProjectListStatus;
+use codex_protocol::protocol::PotterProjectRoundSummary;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::prelude::Widget as _;
+use ratatui::style::Style;
+use ratatui::style::Styled as _;
+use ratatui::style::Stylize as _;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::text::Text;
+use ratatui::widgets::Paragraph;
+use textwrap::Options as WrapOptions;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+use crate::human_time::human_time_ago;
+use crate::ui_colors::orange_color;
+
+#[derive(Debug, Default, Clone, Copy)]
+struct OverlayMetrics {
+    left_inner_width: u16,
+    left_inner_height: u16,
+    right_inner_height: u16,
+    right_total_lines: usize,
+}
+
+#[derive(Debug, Default)]
+/// UI-only state machine for the inline projects list overlay (`Ctrl+L` / `/list`).
+///
+/// This struct intentionally contains no filesystem/business logic; the CLI workflow layer owns
+/// discovery/detail loading and feeds results back through the provider channels.
+pub struct ProjectsOverlay {
+    open: bool,
+
+    list_loading: bool,
+    list_error: Option<String>,
+    projects: Vec<PotterProjectListEntry>,
+    selected: usize,
+    scroll_top: usize,
+
+    right_scroll: usize,
+    /// Cached details payloads keyed by the workdir-relative project directory.
+    details_by_project: HashMap<PathBuf, PotterProjectDetails>,
+    refresh_selected_project_dir: Option<PathBuf>,
+
+    metrics: OverlayMetrics,
+}
+
+impl ProjectsOverlay {
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub fn open_or_refresh(&mut self) -> crate::ProjectsOverlayRequest {
+        let was_open = self.open;
+        self.refresh_selected_project_dir = if was_open {
+            self.selected_project_dir()
+        } else {
+            None
+        };
+        self.open = true;
+        self.list_loading = true;
+        self.list_error = None;
+        self.projects.clear();
+        self.right_scroll = 0;
+        self.details_by_project.clear();
+        if !was_open {
+            self.selected = 0;
+            self.scroll_top = 0;
+        }
+        crate::ProjectsOverlayRequest::List
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    pub fn on_projects_list(
+        &mut self,
+        projects: Vec<PotterProjectListEntry>,
+        error: Option<String>,
+    ) -> Option<crate::ProjectsOverlayRequest> {
+        if !self.open {
+            return None;
+        }
+
+        self.list_loading = false;
+        self.list_error = error;
+        self.projects = projects;
+        self.selected = match self.refresh_selected_project_dir.take() {
+            Some(project_dir) => self
+                .projects
+                .iter()
+                .position(|project| project.project_dir == project_dir)
+                .unwrap_or_default(),
+            None => self.selected.min(self.projects.len().saturating_sub(1)),
+        };
+        self.scroll_top = self.scroll_top.min(self.selected);
+        self.right_scroll = 0;
+        self.details_by_project.clear();
+
+        self.selected_project_dir()
+            .map(|project_dir| crate::ProjectsOverlayRequest::Details { project_dir })
+    }
+
+    pub fn on_project_details(&mut self, details: PotterProjectDetails) {
+        let is_for_selected = self
+            .projects
+            .get(self.selected)
+            .is_some_and(|project| project.project_dir == details.project_dir);
+        self.details_by_project
+            .insert(details.project_dir.clone(), details);
+        if is_for_selected {
+            self.right_scroll = 0;
+        }
+    }
+
+    pub fn handle_key_event(
+        &mut self,
+        key_event: KeyEvent,
+    ) -> Option<crate::ProjectsOverlayRequest> {
+        if !self.open {
+            return None;
+        }
+
+        if self.is_ctrl_char(key_event, 'l')
+            && matches!(key_event.kind, crossterm::event::KeyEventKind::Press)
+        {
+            self.close();
+            return None;
+        }
+
+        if self.is_ctrl_char(key_event, 'c')
+            && matches!(key_event.kind, crossterm::event::KeyEventKind::Press)
+        {
+            self.close();
+            return None;
+        }
+
+        if key_event.modifiers == KeyModifiers::NONE {
+            match key_event.code {
+                KeyCode::Esc => {
+                    self.close();
+                    return None;
+                }
+                KeyCode::Up => return self.bump_selection(-1),
+                KeyCode::Down => return self.bump_selection(1),
+                _ => {}
+            }
+        }
+
+        if key_event.modifiers == KeyModifiers::SHIFT {
+            match key_event.code {
+                KeyCode::Up => {
+                    self.bump_right_scroll(-3);
+                    return None;
+                }
+                KeyCode::Down => {
+                    self.bump_right_scroll(3);
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
+        if self.is_ctrl_char(key_event, 'u') {
+            self.page_right_scroll(-1);
+            return None;
+        }
+        if self.is_ctrl_char(key_event, 'd') {
+            self.page_right_scroll(1);
+            return None;
+        }
+
+        None
+    }
+
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, now: SystemTime) {
+        if !self.open || area.is_empty() {
+            return;
+        }
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        let body_area = layout[0];
+        let footer_area = layout[1];
+
+        let separator_width: u16 = 3;
+        let available_width = body_area.width.saturating_sub(separator_width);
+        let mut left_width =
+            u16::try_from(u32::from(available_width) * 38 / 100).unwrap_or_default();
+        if available_width > 0 && left_width == 0 {
+            left_width = 1;
+        }
+        left_width = left_width.min(40).min(available_width);
+        let right_width = available_width.saturating_sub(left_width);
+
+        let left_area = Rect::new(body_area.x, body_area.y, left_width, body_area.height);
+        let right_area = Rect::new(
+            body_area
+                .x
+                .saturating_add(left_width)
+                .saturating_add(separator_width),
+            body_area.y,
+            right_width,
+            body_area.height,
+        );
+
+        let left_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(left_area);
+        let left_list_area = left_layout[0];
+        let left_pager_area = left_layout[1];
+
+        let left_content_area = Rect::new(
+            left_list_area.x,
+            left_list_area.y.saturating_add(1),
+            left_list_area.width,
+            left_list_area.height.saturating_sub(1),
+        );
+
+        let right_content_area = Rect::new(
+            right_area.x,
+            right_area.y.saturating_add(1),
+            right_area.width.saturating_sub(2),
+            right_area.height.saturating_sub(2),
+        );
+
+        self.metrics = OverlayMetrics {
+            left_inner_width: left_content_area.width,
+            left_inner_height: left_content_area.height,
+            right_inner_height: right_content_area.height,
+            right_total_lines: 0,
+        };
+
+        let left_lines = self.render_left_lines(left_content_area, now);
+        Paragraph::new(Text::from(left_lines)).render(left_content_area, buf);
+        self.render_left_pager(left_pager_area, buf);
+
+        let right_lines = self.build_right_lines(right_content_area, now);
+        self.metrics.right_total_lines = right_lines.len();
+        self.right_scroll = self.right_scroll.min(self.max_right_scroll());
+        Paragraph::new(Text::from(right_lines))
+            .scroll((u16::try_from(self.right_scroll).unwrap_or(u16::MAX), 0))
+            .render(right_content_area, buf);
+
+        self.render_footer(footer_area, buf);
+    }
+
+    fn render_footer(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+
+        let footer_area = Rect::new(
+            area.x.saturating_add(2),
+            area.y,
+            area.width.saturating_sub(4),
+            area.height,
+        );
+        if footer_area.is_empty() {
+            return;
+        }
+
+        let pager_line = self.detail_pager_line(footer_area.width);
+        let pager_width = u16::try_from(pager_line.width())
+            .unwrap_or(u16::MAX)
+            .min(footer_area.width);
+
+        if pager_width == 0 {
+            let hint_line = self.footer_hint_line(footer_area.width);
+            Paragraph::new(hint_line).render(footer_area, buf);
+            return;
+        }
+
+        if footer_area.width <= pager_width {
+            Paragraph::new(pager_line).render(footer_area, buf);
+            return;
+        }
+
+        let hint_area = Rect::new(
+            footer_area.x,
+            footer_area.y,
+            footer_area.width.saturating_sub(pager_width),
+            footer_area.height,
+        );
+        let pager_area = Rect::new(
+            hint_area.right(),
+            footer_area.y,
+            pager_width,
+            footer_area.height,
+        );
+
+        let hint_line = self.footer_hint_line(hint_area.width);
+        Paragraph::new(hint_line).render(hint_area, buf);
+        Paragraph::new(pager_line).render(pager_area, buf);
+    }
+
+    fn footer_hint_line(&self, width: u16) -> Line<'static> {
+        let variants = self.footer_hint_variants();
+        let fallback = variants.last().cloned().unwrap_or_default();
+        variants
+            .into_iter()
+            .find(|line| line.width() <= usize::from(width))
+            .unwrap_or(fallback)
+    }
+
+    fn footer_hint_variants(&self) -> Vec<Line<'static>> {
+        vec![
+            Line::from(vec![
+                "Esc".into(),
+                " close".dim(),
+                "  ".into(),
+                "↑↓".into(),
+                " switch".dim(),
+                "  ".into(),
+                "shift+↑↓".into(),
+                " scroll".dim(),
+                "  ".into(),
+                "ctrl+u/d".into(),
+                " page".dim(),
+            ]),
+            Line::from(vec![
+                "Esc".into(),
+                "  ".into(),
+                "↑↓".into(),
+                " switch".dim(),
+                " ".into(),
+                "⇧↑↓".into(),
+                " scroll".dim(),
+                " ".into(),
+                "^U/^D".into(),
+                " page".dim(),
+            ]),
+            Line::from(vec![
+                "Esc".into(),
+                "  ".into(),
+                "↑↓".into(),
+                " ".into(),
+                "⇧↑↓".into(),
+                " ".into(),
+                "^U/^D".into(),
+            ]),
+            Line::from(vec!["Esc".into()]),
+        ]
+    }
+
+    fn render_left_pager(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+
+        Paragraph::new(self.left_pager_line(area.width)).render(area, buf);
+    }
+
+    fn left_pager_line(&self, width: u16) -> Line<'static> {
+        if self.list_loading
+            || self.list_error.is_some()
+            || self.projects.is_empty()
+            || self.metrics.left_inner_height == 0
+            || width == 0
+        {
+            return Line::from("");
+        }
+
+        let wrap_width = project_list_description_wrap_width(self.metrics.left_inner_width);
+        let viewport_height = usize::from(self.metrics.left_inner_height);
+        let pages = project_list_page_starts(&self.projects, wrap_width, viewport_height);
+        let page_count = pages.len().max(1);
+        if page_count <= 1 {
+            return Line::from("");
+        }
+        let selected = self.selected.min(self.projects.len().saturating_sub(1));
+        let current_page = pages
+            .iter()
+            .rposition(|page_start| *page_start <= selected)
+            .unwrap_or(0);
+
+        let max_width = usize::from(width);
+        let max_dots = page_count.min(max_width).clamp(1, 5);
+        let mut spans = dots_pager_spans(current_page, page_count, max_dots);
+
+        let dot_count = spans.len();
+        let pad = if dot_count < max_width {
+            (max_width - dot_count) / 2
+        } else {
+            0
+        };
+
+        if pad > 0 {
+            spans.insert(0, Span::from(" ".repeat(pad)));
+        }
+
+        Line::from(spans)
+    }
+
+    fn detail_pager_line(&self, width: u16) -> Line<'static> {
+        if width == 0 || self.metrics.right_total_lines == 0 {
+            return Line::from("");
+        }
+
+        let viewport_height = usize::from(self.metrics.right_inner_height);
+        if viewport_height == 0 {
+            return Line::from("");
+        }
+
+        let page_count =
+            (self.metrics.right_total_lines + viewport_height.saturating_sub(1)) / viewport_height;
+        let page_count = page_count.max(1);
+        if page_count <= 1 {
+            return Line::from("");
+        }
+        // The details pager is a progress indicator over the rendered content, not a strict page
+        // index. When the final "page" is shorter than the viewport, `max_right_scroll()` will be
+        // less than `(page_count - 1) * viewport_height`, so integer-dividing by viewport height
+        // would prevent the last dot from ever activating.
+        let max_scroll = self
+            .metrics
+            .right_total_lines
+            .saturating_sub(viewport_height);
+        let current_page = if max_scroll == 0 {
+            0
+        } else {
+            (self.right_scroll.min(max_scroll) * page_count.saturating_sub(1)) / max_scroll
+        };
+
+        let max_dots = page_count.min(usize::from(width)).clamp(1, 5);
+        Line::from(dots_pager_spans(current_page, page_count, max_dots))
+    }
+
+    fn render_left_lines(&mut self, area: Rect, now: SystemTime) -> Vec<Line<'static>> {
+        if area.is_empty() {
+            return Vec::new();
+        }
+
+        if self.list_loading {
+            return vec![Line::from("Loading projects...")];
+        }
+
+        if let Some(err) = self.list_error.as_deref() {
+            return vec![
+                Line::from(vec![
+                    Span::from("Failed to load projects list:").red().bold(),
+                ]),
+                Line::from(vec![Span::from(err.to_string()).red()]),
+            ];
+        }
+
+        if self.projects.is_empty() {
+            return vec![Line::from(vec![
+                Span::from("No projects found under .codexpotter/projects").dim(),
+            ])];
+        }
+
+        self.ensure_selected_visible();
+
+        let wrap_width = project_list_description_wrap_width(area.width);
+
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let mut remaining = usize::from(area.height);
+
+        for (idx, project) in self.projects.iter().enumerate().skip(self.scroll_top) {
+            if remaining == 0 {
+                break;
+            }
+
+            let item_lines =
+                render_project_list_item(project, wrap_width, now, idx == self.selected);
+            let height = item_lines.len();
+            if height > remaining {
+                break;
+            }
+
+            out.extend(item_lines);
+
+            remaining = remaining.saturating_sub(height);
+        }
+
+        out
+    }
+
+    fn build_right_lines(&self, area: Rect, now: SystemTime) -> Vec<Line<'static>> {
+        if area.is_empty() {
+            return Vec::new();
+        }
+
+        let wrap_width = usize::from(area.width.max(1));
+
+        if self.list_loading {
+            return wrap_plain_lines(
+                vec![Line::from(vec![Span::from("Loading projects...").dim()])],
+                wrap_width,
+            );
+        }
+
+        if let Some(err) = self.list_error.as_deref() {
+            return wrap_plain_lines(
+                vec![
+                    Line::from(vec![
+                        Span::from("Failed to load projects list:").red().bold(),
+                    ]),
+                    Line::from(vec![Span::from(err.to_string()).red()]),
+                ],
+                wrap_width,
+            );
+        }
+
+        if self.projects.is_empty() {
+            return wrap_plain_lines(
+                vec![Line::from(vec![
+                    Span::from("No projects found under .codexpotter/projects").dim(),
+                ])],
+                wrap_width,
+            );
+        }
+
+        let Some(selected) = self.projects.get(self.selected) else {
+            return wrap_plain_lines(
+                vec![Line::from(vec![Span::from("No project selected").dim()])],
+                wrap_width,
+            );
+        };
+
+        let Some(details) = self.details_by_project.get(&selected.project_dir) else {
+            return wrap_plain_lines(
+                vec![Line::from(vec![
+                    Span::from("Loading project details...").dim(),
+                ])],
+                wrap_width,
+            );
+        };
+
+        if let Some(err) = details.error.as_deref() {
+            return wrap_plain_lines(
+                vec![
+                    Line::from(vec![
+                        Span::from("Failed to load project details:").red().bold(),
+                    ]),
+                    Line::from(vec![Span::from(err.to_string()).red()]),
+                ],
+                wrap_width,
+            );
+        }
+
+        let mut lines = wrap_plain_lines(
+            vec![
+                Line::from(vec![
+                    Span::from(details.progress_file.to_string_lossy().to_string()).dim(),
+                ]),
+                Line::from(""),
+            ],
+            wrap_width,
+        );
+        for round in &details.rounds {
+            append_round_details(&mut lines, round, wrap_width, now);
+            lines.push(Line::from(""));
+        }
+
+        lines
+    }
+
+    fn ensure_selected_visible(&mut self) {
+        let height = usize::from(self.metrics.left_inner_height);
+        // Selection visibility is computed using metrics captured during the last render pass.
+        // This keeps key handling decoupled from the terminal layout system.
+        if height == 0 || self.projects.is_empty() {
+            self.scroll_top = self.scroll_top.min(self.selected);
+            return;
+        }
+
+        if self.selected < self.scroll_top {
+            self.scroll_top = self.selected;
+            return;
+        }
+
+        let wrap_width = project_list_description_wrap_width(self.metrics.left_inner_width);
+        let mut used = 0usize;
+        let mut last_visible = self.scroll_top;
+
+        for (idx, project) in self.projects.iter().enumerate().skip(self.scroll_top) {
+            let item_height = project_list_item_height(project, wrap_width);
+            if used + item_height > height {
+                break;
+            }
+            used += item_height;
+            last_visible = idx;
+        }
+
+        if self.selected <= last_visible {
+            return;
+        }
+
+        let mut start = self.selected;
+        loop {
+            let mut total = 0usize;
+            for project in &self.projects[start..=self.selected] {
+                total += project_list_item_height(project, wrap_width);
+            }
+            if total <= height {
+                self.scroll_top = start;
+                return;
+            }
+            if start == 0 {
+                self.scroll_top = 0;
+                return;
+            }
+            start -= 1;
+        }
+    }
+
+    fn bump_selection(&mut self, delta: i32) -> Option<crate::ProjectsOverlayRequest> {
+        if self.projects.is_empty() {
+            return None;
+        }
+
+        let max = self.projects.len().saturating_sub(1);
+        let selected = i32::try_from(self.selected).unwrap_or(0);
+        let next = (selected + delta).clamp(0, i32::try_from(max).unwrap_or(0));
+        let next = usize::try_from(next).unwrap_or_default();
+
+        if next == self.selected {
+            return None;
+        }
+
+        self.selected = next;
+        self.right_scroll = 0;
+        self.ensure_selected_visible();
+
+        let project_dir = self
+            .projects
+            .get(self.selected)
+            .map(|project| &project.project_dir)?;
+        if self.details_by_project.contains_key(project_dir) {
+            return None;
+        }
+        Some(crate::ProjectsOverlayRequest::Details {
+            project_dir: project_dir.clone(),
+        })
+    }
+
+    fn bump_right_scroll(&mut self, delta: i32) {
+        if self.metrics.right_inner_height == 0 {
+            return;
+        }
+
+        let current = i32::try_from(self.right_scroll).unwrap_or(0);
+        let max = i32::try_from(self.max_right_scroll()).unwrap_or(0);
+        self.right_scroll = usize::try_from((current + delta).clamp(0, max)).unwrap_or_default();
+    }
+
+    fn page_right_scroll(&mut self, delta_pages: i32) {
+        let height = usize::from(self.metrics.right_inner_height);
+        if height == 0 {
+            return;
+        }
+
+        let step = i32::try_from((height / 3).max(1)).unwrap_or(1);
+        self.bump_right_scroll(step * delta_pages);
+    }
+
+    fn max_right_scroll(&self) -> usize {
+        let height = usize::from(self.metrics.right_inner_height);
+        self.metrics.right_total_lines.saturating_sub(height)
+    }
+
+    fn selected_project_dir(&self) -> Option<PathBuf> {
+        self.projects
+            .get(self.selected)
+            .map(|p| p.project_dir.clone())
+    }
+
+    fn is_ctrl_char(&self, key_event: KeyEvent, expected: char) -> bool {
+        key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key_event.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected))
+    }
+}
+
+fn project_list_description_wrap_width(area_width: u16) -> usize {
+    usize::from(area_width.max(1)).saturating_sub(4).max(1)
+}
+
+fn project_list_item_height(project: &PotterProjectListEntry, wrap_width: usize) -> usize {
+    1 + description_lines(project, wrap_width).len() + 1
+}
+
+fn project_list_page_starts(
+    projects: &[PotterProjectListEntry],
+    wrap_width: usize,
+    viewport_height: usize,
+) -> Vec<usize> {
+    if projects.is_empty() {
+        return vec![0];
+    }
+    if viewport_height == 0 {
+        return vec![0];
+    }
+
+    let mut page_starts = Vec::new();
+    let mut start = 0usize;
+    while start < projects.len() {
+        page_starts.push(start);
+
+        let mut used = 0usize;
+        let mut next = start;
+        while next < projects.len() {
+            let item_height = project_list_item_height(&projects[next], wrap_width);
+            if used + item_height > viewport_height {
+                break;
+            }
+            used += item_height;
+            next += 1;
+        }
+
+        if next == start {
+            next = start.saturating_add(1);
+        }
+        start = next;
+    }
+
+    page_starts
+}
+
+fn dots_pager_spans(current_page: usize, page_count: usize, max_dots: usize) -> Vec<Span<'static>> {
+    if page_count == 0 || max_dots == 0 {
+        return Vec::new();
+    }
+
+    let current_page = current_page.min(page_count.saturating_sub(1));
+    let window_len = page_count.min(max_dots).max(1);
+
+    let mut window_start = 0usize;
+    if page_count > window_len {
+        let half = window_len / 2;
+        window_start = current_page.saturating_sub(half);
+        if window_start + window_len > page_count {
+            window_start = page_count.saturating_sub(window_len);
+        }
+    }
+
+    let mut spans = Vec::with_capacity(window_len);
+    for idx in window_start..window_start.saturating_add(window_len) {
+        spans.push(if idx == current_page {
+            "▪".dim()
+        } else {
+            "▫".dim()
+        });
+    }
+    spans
+}
+
+fn wrap_plain_lines(lines: Vec<Line<'static>>, wrap_width: usize) -> Vec<Line<'static>> {
+    if wrap_width == 0 {
+        return Vec::new();
+    }
+
+    crate::wrapping::word_wrap_lines(lines.iter(), wrap_width)
+}
+
+fn render_project_list_item(
+    project: &PotterProjectListEntry,
+    wrap_width: usize,
+    now: SystemTime,
+    is_selected: bool,
+) -> Vec<Line<'static>> {
+    let (icon, status_style) = status_icon_and_style(&project.status);
+    let round_label = if project.rounds == 1 {
+        "round"
+    } else {
+        "rounds"
+    };
+    let rounds = format!("{icon} {} {round_label}", project.rounds);
+    let age = project
+        .started_at_unix_secs
+        .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+        .map(|ts| human_time_ago(ts, now))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let status_spans: Vec<Span<'static>> = vec![
+        Span::from(rounds).set_style(status_style),
+        " · ".dim(),
+        Span::from(age).dim(),
+    ];
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let highlight_bar_style = highlight_bar_style(&project.status);
+    let mut first_spans: Vec<Span<'static>> = if is_selected {
+        vec![Span::from("┃").set_style(highlight_bar_style), " ".into()]
+    } else {
+        vec!["  ".into()]
+    };
+    first_spans.extend(status_spans);
+    lines.push(Line::from(first_spans));
+
+    let desc_lines = description_lines(project, wrap_width);
+    for desc in desc_lines {
+        let mut spans: Vec<Span<'static>> = if is_selected {
+            vec![Span::from("┃").set_style(highlight_bar_style), " ".into()]
+        } else {
+            vec!["  ".into()]
+        };
+        spans.push("  ".into());
+        spans.push(Span::from(desc));
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines
+}
+
+fn description_lines(project: &PotterProjectListEntry, wrap_width: usize) -> Vec<String> {
+    let description = project.description.trim();
+    if description.is_empty() {
+        return vec![String::new()];
+    }
+
+    let wrap = textwrap::wrap(description, WrapOptions::new(wrap_width));
+    if wrap.len() <= 1 {
+        return vec![
+            wrap.first()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default(),
+        ];
+    }
+
+    let truncated = wrap.len() > 2;
+    let mut out = Vec::new();
+    for (idx, line) in wrap.into_iter().enumerate() {
+        if idx >= 2 {
+            break;
+        }
+        out.push(line.to_string());
+    }
+
+    if truncated && out.len() == 2 {
+        out[1] = with_truncation_ellipsis(out[1].as_str(), wrap_width);
+    }
+
+    out
+}
+
+fn with_truncation_ellipsis(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    if UnicodeWidthStr::width(text) < max_width {
+        return format!("{text}…");
+    }
+
+    let mut out = String::new();
+    let mut used = 0usize;
+    let content_width = max_width.saturating_sub(1);
+    for grapheme in UnicodeSegmentation::graphemes(text, true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if used + width > content_width {
+            break;
+        }
+        out.push_str(grapheme);
+        used += width;
+    }
+    out.push('…');
+    out
+}
+
+fn status_icon_and_style(status: &PotterProjectListStatus) -> (char, Style) {
+    match status {
+        PotterProjectListStatus::Succeeded => ('✓', Style::default().light_green()),
+        PotterProjectListStatus::BudgetExhausted => ('■', Style::default().fg(orange_color())),
+        PotterProjectListStatus::Interrupted => ('■', Style::default().red()),
+        PotterProjectListStatus::Failed => ('■', Style::default().red()),
+        PotterProjectListStatus::Incomplete => ('■', Style::default()),
+    }
+}
+
+fn highlight_bar_style(status: &PotterProjectListStatus) -> Style {
+    match status {
+        PotterProjectListStatus::Succeeded => Style::default().light_green().bold(),
+        PotterProjectListStatus::BudgetExhausted | PotterProjectListStatus::Incomplete => {
+            Style::default().fg(orange_color()).bold()
+        }
+        PotterProjectListStatus::Interrupted | PotterProjectListStatus::Failed => {
+            Style::default().red().bold()
+        }
+    }
+}
+
+fn append_round_details(
+    out: &mut Vec<Line<'static>>,
+    round: &PotterProjectRoundSummary,
+    wrap_width: usize,
+    now: SystemTime,
+) {
+    let when = round
+        .final_message_unix_secs
+        .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+        .map(|ts| human_time_ago(ts, now))
+        .unwrap_or_else(|| "unknown".to_string());
+    out.extend(wrap_plain_lines(
+        vec![
+            Line::from(vec![
+                Span::from(format!("ROUND {} @ {when}", round.round_current)).dim(),
+            ]),
+            Line::from(""),
+        ],
+        wrap_width,
+    ));
+
+    let Some(message) = round.final_message.as_deref() else {
+        out.extend(wrap_plain_lines(
+            vec![Line::from(
+                Span::from("(no final agent message recorded)").dim(),
+            )],
+            wrap_width,
+        ));
+        return;
+    };
+
+    let rendered =
+        crate::markdown_render::render_markdown_text_with_width(message, Some(wrap_width));
+    out.extend(rendered.lines);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
+    fn render_overlay_to_terminal(
+        overlay: &mut ProjectsOverlay,
+        width: u16,
+        height: u16,
+        now: SystemTime,
+    ) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ratatui::widgets::Clear.render(area, frame.buffer_mut());
+                overlay.render(area, frame.buffer_mut(), now);
+            })
+            .expect("draw");
+        terminal
+    }
+
+    #[test]
+    fn projects_overlay_renders_list_and_details() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Add projects overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 4,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 4,
+                final_message_unix_secs: Some(1),
+                final_message: Some(String::from("**Done**")),
+            }],
+            error: None,
+        });
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 18, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_loading_projects() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 8, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_projects_list_error() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(Vec::new(), Some("permission denied".to_string()));
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 8, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_empty_projects_list() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(Vec::new(), None);
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 8, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_loading_project_details() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Loading details state".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 8, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_project_details_error() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Details error state".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir,
+            progress_file,
+            rounds: Vec::new(),
+            error: Some("malformed potter-rollout.jsonl".to_string()),
+        });
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 8, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_left_list_pager() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                    description: "Paged project 1".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/2"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/2/MAIN.md"),
+                    description: "Paged project 2".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/3"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/3/MAIN.md"),
+                    description: "Paged project 3".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/4"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/4/MAIN.md"),
+                    description: "Paged project 4".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/5"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/5/MAIN.md"),
+                    description: "Paged project 5".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/6"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/6/MAIN.md"),
+                    description: "Paged project 6".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/7"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/7/MAIN.md"),
+                    description: "Paged project 7".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+            ],
+            None,
+        );
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 60, 12, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_details_pager() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Details pager state".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 4,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir,
+            progress_file,
+            rounds: vec![
+                PotterProjectRoundSummary {
+                    round_current: 1,
+                    round_total: 4,
+                    final_message_unix_secs: Some(1),
+                    final_message: Some(String::from("Done")),
+                },
+                PotterProjectRoundSummary {
+                    round_current: 2,
+                    round_total: 4,
+                    final_message_unix_secs: Some(1),
+                    final_message: Some(String::from("Done")),
+                },
+                PotterProjectRoundSummary {
+                    round_current: 3,
+                    round_total: 4,
+                    final_message_unix_secs: Some(1),
+                    final_message: Some(String::from("Done")),
+                },
+                PotterProjectRoundSummary {
+                    round_current: 4,
+                    round_total: 4,
+                    final_message_unix_secs: Some(1),
+                    final_message: Some(String::from("Done")),
+                },
+            ],
+            error: None,
+        });
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 12, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_missing_final_message_placeholder_is_dim_only() {
+        let mut out = Vec::new();
+        append_round_details(
+            &mut out,
+            &PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: None,
+            },
+            80,
+            UNIX_EPOCH + Duration::from_secs(120),
+        );
+
+        let placeholder = out
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "(no final agent message recorded)")
+            .unwrap_or_else(|| panic!("missing placeholder span: {out:?}"));
+
+        assert!(
+            placeholder.style.add_modifier.contains(Modifier::DIM),
+            "placeholder should be dim: {placeholder:?}"
+        );
+        assert_eq!(
+            placeholder.style.add_modifier,
+            Modifier::DIM,
+            "placeholder should not include any modifiers besides DIM: {placeholder:?}"
+        );
+    }
+
+    #[test]
+    fn projects_overlay_narrow_width_keeps_project_row_compact() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/123456"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/123456/MAIN.md"),
+                description: "Add projects overlay compact narrow layout".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 12,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/123456"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/123456/MAIN.md"),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 12,
+                final_message_unix_secs: Some(1),
+                final_message: Some(String::from("Done")),
+            }],
+            error: None,
+        });
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 40, 12, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn incomplete_projects_render_with_neutral_status_style() {
+        let (icon, style) = status_icon_and_style(&PotterProjectListStatus::Incomplete);
+        assert_eq!(icon, '■');
+        assert_eq!(style, Style::default());
+    }
+
+    #[test]
+    fn dots_pager_spans_use_dim_squares() {
+        assert_eq!(
+            dots_pager_spans(0, 3, 3),
+            vec!["▪".dim(), "▫".dim(), "▫".dim()]
+        );
+        assert_eq!(dots_pager_spans(1, 2, 2), vec!["▫".dim(), "▪".dim()]);
+    }
+
+    #[test]
+    fn description_lines_keep_ellipsis_when_second_line_fills_width() {
+        let project = PotterProjectListEntry {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            description: "abcde fghij klmno".to_string(),
+            started_at_unix_secs: Some(1),
+            rounds: 1,
+            status: PotterProjectListStatus::Succeeded,
+        };
+
+        assert_eq!(
+            description_lines(&project, 5),
+            vec!["abcde".to_string(), "fghi…".to_string()]
+        );
+    }
+
+    #[test]
+    fn single_round_projects_render_singular_round_label() {
+        let project = PotterProjectListEntry {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            description: "Singular round label".to_string(),
+            started_at_unix_secs: Some(1),
+            rounds: 1,
+            status: PotterProjectListStatus::Succeeded,
+        };
+
+        let lines =
+            render_project_list_item(&project, 32, UNIX_EPOCH + Duration::from_secs(120), false);
+        let first_line = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(first_line.trim_start(), "✓ 1 round · 1 minute ago");
+    }
+
+    #[test]
+    fn refresh_clears_cached_details_until_new_response_arrives() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Refresh projects overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: project_dir.clone(),
+            progress_file: progress_file.clone(),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("old details".to_string()),
+            }],
+            error: None,
+        });
+
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir,
+                progress_file,
+                description: "Refresh projects overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        let lines = overlay.build_right_lines(
+            Rect::new(0, 0, 48, 10),
+            UNIX_EPOCH + Duration::from_secs(120),
+        );
+        assert_eq!(
+            lines,
+            vec![Line::from(vec![
+                Span::from("Loading project details...").dim()
+            ])]
+        );
+    }
+
+    #[test]
+    fn refreshed_list_clears_stale_details_reinserted_before_list_response() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Refresh projects overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: project_dir.clone(),
+            progress_file: progress_file.clone(),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("old details".to_string()),
+            }],
+            error: None,
+        });
+
+        overlay.open_or_refresh();
+
+        // Simulate a stale in-flight response from the previous refresh arriving before the new
+        // projects list response is processed.
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: project_dir.clone(),
+            progress_file: progress_file.clone(),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("stale details".to_string()),
+            }],
+            error: None,
+        });
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir,
+                progress_file,
+                description: "Refresh projects overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        let lines = overlay.build_right_lines(
+            Rect::new(0, 0, 48, 10),
+            UNIX_EPOCH + Duration::from_secs(120),
+        );
+        assert_eq!(
+            lines,
+            vec![Line::from(vec![
+                Span::from("Loading project details...").dim()
+            ])]
+        );
+    }
+
+    #[test]
+    fn refresh_preserves_selected_project_context() {
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: first_project_dir.clone(),
+                    progress_file: first_project_dir.join("MAIN.md"),
+                    description: "First project".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: second_project_dir.clone(),
+                    progress_file: second_project_dir.join("MAIN.md"),
+                    description: "Second project".to_string(),
+                    started_at_unix_secs: Some(2),
+                    rounds: 2,
+                    status: PotterProjectListStatus::Interrupted,
+                },
+            ],
+            None,
+        );
+
+        match overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)) {
+            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected details request after moving selection, got {other:?}"),
+        }
+
+        assert_eq!(
+            overlay.selected_project_dir(),
+            Some(second_project_dir.clone())
+        );
+
+        assert!(matches!(
+            overlay.open_or_refresh(),
+            crate::ProjectsOverlayRequest::List
+        ));
+
+        match overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: second_project_dir.clone(),
+                    progress_file: second_project_dir.join("MAIN.md"),
+                    description: "Second project".to_string(),
+                    started_at_unix_secs: Some(3),
+                    rounds: 3,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: first_project_dir.clone(),
+                    progress_file: first_project_dir.join("MAIN.md"),
+                    description: "First project".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+            ],
+            None,
+        ) {
+            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected refresh to request restored project details, got {other:?}"),
+        }
+
+        assert_eq!(overlay.selected_project_dir(), Some(second_project_dir));
+    }
+
+    #[test]
+    fn selection_change_does_not_re_request_cached_details() {
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        let projects = vec![
+            PotterProjectListEntry {
+                project_dir: first_project_dir.clone(),
+                progress_file: first_project_dir.join("MAIN.md"),
+                description: "First project".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            },
+            PotterProjectListEntry {
+                project_dir: second_project_dir.clone(),
+                progress_file: second_project_dir.join("MAIN.md"),
+                description: "Second project".to_string(),
+                started_at_unix_secs: Some(2),
+                rounds: 2,
+                status: PotterProjectListStatus::Interrupted,
+            },
+        ];
+        overlay.on_projects_list(projects, None);
+
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: first_project_dir.clone(),
+            progress_file: first_project_dir.join("MAIN.md"),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 2,
+                final_message_unix_secs: Some(1),
+                final_message: Some("First done".to_string()),
+            }],
+            error: None,
+        });
+
+        match overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)) {
+            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected details request after moving selection, got {other:?}"),
+        }
+
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: second_project_dir.clone(),
+            progress_file: second_project_dir.join("MAIN.md"),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 2,
+                round_total: 2,
+                final_message_unix_secs: Some(2),
+                final_message: Some("Second done".to_string()),
+            }],
+            error: None,
+        });
+
+        assert!(
+            overlay
+                .handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn shift_arrow_keys_scroll_details_three_lines_at_a_time() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.metrics.right_inner_height = 10;
+        overlay.metrics.right_total_lines = 100;
+        overlay.right_scroll = 0;
+
+        assert!(
+            overlay
+                .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT))
+                .is_none()
+        );
+        assert_eq!(overlay.right_scroll, 3);
+
+        assert!(
+            overlay
+                .handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT))
+                .is_none()
+        );
+        assert_eq!(overlay.right_scroll, 0);
+    }
+
+    #[test]
+    fn right_details_ctrl_u_d_scroll_one_third_screen() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.metrics.right_inner_height = 12;
+        overlay.metrics.right_total_lines = 100;
+        overlay.right_scroll = 0;
+
+        assert!(
+            overlay
+                .handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+                .is_none()
+        );
+        assert_eq!(overlay.right_scroll, 4);
+
+        assert!(
+            overlay
+                .handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+                .is_none()
+        );
+        assert_eq!(overlay.right_scroll, 0);
+    }
+
+    #[test]
+    fn detail_pager_highlights_last_dot_at_max_scroll() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.metrics.right_inner_height = 10;
+        overlay.metrics.right_total_lines = 21;
+        overlay.right_scroll = overlay.max_right_scroll();
+
+        let line = overlay.detail_pager_line(5);
+        assert_eq!(line.spans, vec!["▫".dim(), "▫".dim(), "▪".dim()]);
+    }
+
+    #[test]
+    fn narrow_width_right_paging_uses_wrapped_rendered_line_count() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/123456");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Narrow width scrolling".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir,
+            progress_file,
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("Done".to_string()),
+            }],
+            error: None,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(24, 8)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ratatui::widgets::Clear.render(area, frame.buffer_mut());
+                overlay.render(
+                    area,
+                    frame.buffer_mut(),
+                    UNIX_EPOCH + Duration::from_secs(120),
+                );
+            })
+            .expect("draw");
+
+        assert_eq!(overlay.right_scroll, 0);
+
+        assert!(
+            overlay
+                .handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+                .is_none()
+        );
+        assert!(
+            overlay.right_scroll > 0,
+            "expected wrapped progress path to make the right pane pageable"
+        );
+    }
+
+    #[test]
+    fn right_details_keep_markdown_code_block_lines_intact() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/123456");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Code block rendering".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir,
+            progress_file,
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("```text\n12345678901234567890\n```".to_string()),
+            }],
+            error: None,
+        });
+
+        let lines = overlay.build_right_lines(
+            Rect::new(0, 0, 12, 12),
+            UNIX_EPOCH + Duration::from_secs(120),
+        );
+        let line_texts: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert!(
+            line_texts.iter().any(|line| line == "12345678901234567890"),
+            "expected code block line to stay intact after right-pane layout"
+        );
+    }
+}

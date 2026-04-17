@@ -328,6 +328,7 @@ mod tests {
                 codex_op_tx,
                 codex_event_rx,
                 fatal_exit_rx,
+                projects_overlay_provider: None,
             })
             .await
             .expect("render_round");
@@ -420,6 +421,7 @@ mod tests {
                 codex_op_tx,
                 codex_event_rx,
                 fatal_exit_rx,
+                projects_overlay_provider: None,
             })
             .await
             .expect("render_round");

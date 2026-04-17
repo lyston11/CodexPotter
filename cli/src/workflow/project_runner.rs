@@ -61,6 +61,7 @@ trait ProjectRunnerUi: crate::workflow::round_runner::PotterRoundUi {
     fn prompt_user<'a>(
         &'a mut self,
         prompt_footer: codex_tui::PromptFooterContext,
+        projects_overlay_provider: Option<codex_tui::ProjectsOverlayProviderChannels>,
     ) -> UiFuture<'a, Option<String>>;
 
     fn prompt_interrupted_project_action<'a>(
@@ -84,8 +85,13 @@ impl ProjectRunnerUi for codex_tui::CodexPotterTui {
     fn prompt_user<'a>(
         &'a mut self,
         prompt_footer: codex_tui::PromptFooterContext,
+        projects_overlay_provider: Option<codex_tui::ProjectsOverlayProviderChannels>,
     ) -> UiFuture<'a, Option<String>> {
-        Box::pin(codex_tui::CodexPotterTui::prompt_user(self, prompt_footer))
+        Box::pin(codex_tui::CodexPotterTui::prompt_user(
+            self,
+            prompt_footer,
+            projects_overlay_provider,
+        ))
     }
 
     fn prompt_interrupted_project_action<'a>(
@@ -223,7 +229,13 @@ where
 
         let next_prompt =
             crate::workflow::prompt_queue::next_prompt_or_prompt_user(next_prompt, || {
-                ui.prompt_user(build_prompt_footer())
+                let prompt_footer = build_prompt_footer();
+                let projects_overlay_provider = Some(
+                    crate::workflow::projects_overlay_backend::spawn_projects_overlay_provider(
+                        prompt_footer.working_dir.clone(),
+                    ),
+                );
+                ui.prompt_user(prompt_footer, projects_overlay_provider)
             })
             .await?;
 
@@ -362,8 +374,66 @@ mod tests {
     use codex_protocol::protocol::PotterProjectOutcome;
     use codex_protocol::protocol::PotterRoundOutcome;
     use codex_protocol::protocol::TokenUsage;
+    use codex_tui::ProjectsOverlayRequest;
+    use codex_tui::ProjectsOverlayResponse;
     use pretty_assertions::assert_eq;
     use std::collections::VecDeque;
+
+    #[tokio::test]
+    async fn prompt_screen_projects_overlay_backend_serves_list_and_details() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut backend =
+            crate::workflow::projects_overlay_backend::spawn_projects_overlay_provider(
+                temp.path().to_path_buf(),
+            );
+
+        backend
+            .request_tx
+            .send(ProjectsOverlayRequest::List)
+            .expect("send list request");
+
+        let response = backend
+            .response_rx
+            .recv()
+            .await
+            .expect("receive list response");
+        match response {
+            ProjectsOverlayResponse::List { projects, error } => {
+                assert_eq!(projects, Vec::new());
+                assert_eq!(error, None);
+            }
+            other => panic!("expected list response, got {other:?}"),
+        }
+
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        backend
+            .request_tx
+            .send(ProjectsOverlayRequest::Details {
+                project_dir: project_dir.clone(),
+            })
+            .expect("send details request");
+
+        let response = backend
+            .response_rx
+            .recv()
+            .await
+            .expect("receive details response");
+        match response {
+            ProjectsOverlayResponse::Details { details } => {
+                assert_eq!(details.project_dir, project_dir);
+                assert_eq!(
+                    details.progress_file,
+                    PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md")
+                );
+                assert_eq!(details.rounds, Vec::new());
+                assert!(
+                    details.error.is_some(),
+                    "expected missing progress file to surface an error"
+                );
+            }
+            other => panic!("expected details response, got {other:?}"),
+        }
+    }
 
     #[derive(Debug, Default)]
     struct MockUi {
@@ -457,6 +527,7 @@ mod tests {
         fn prompt_user<'a>(
             &'a mut self,
             _prompt_footer: codex_tui::PromptFooterContext,
+            _projects_overlay_provider: Option<codex_tui::ProjectsOverlayProviderChannels>,
         ) -> UiFuture<'a, Option<String>> {
             self.prompt_user_calls += 1;
             let response = self

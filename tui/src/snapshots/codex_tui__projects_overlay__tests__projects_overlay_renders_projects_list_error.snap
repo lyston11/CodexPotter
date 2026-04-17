@@ -1,0 +1,12 @@
+---
+source: tui/src/projects_overlay.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"Failed to load projects list:   Failed to load projects list:                   "
+"permission denied               permission denied                               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page                          "

@@ -21,8 +21,12 @@
 
 pub mod potter_xmodel;
 pub mod project;
+mod project_progress_files;
 pub mod project_render_loop;
 pub mod project_runner;
+pub mod projects_overlay_backend;
+pub mod projects_overlay_details;
+pub mod projects_overlay_index;
 pub mod prompt_queue;
 pub mod replay_session_config;
 pub mod resume;

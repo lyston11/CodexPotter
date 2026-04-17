@@ -13,10 +13,10 @@
 //!
 //! See `tui/AGENTS.md` for the canonical list. Highlights:
 //!
-//! - Supports a `/` command picker popup (subset: `/theme`, `/verbosity`, `/yolo`, `/exit`,
-//!   `/mention`, `/compact-kb`, `/potter:xmodel`).
-//!   Normal commands dispatch through the round renderer; `/potter:xmodel` inserts literal text
-//!   into the composer instead.
+//! - Supports a `/` command picker popup (subset: `/mention`, `/list`, `/theme`, `/verbosity`,
+//!   `/yolo`, `/compact-kb`, `/exit`, `/potter:xmodel`).
+//!   Most commands dispatch through the round renderer; `/potter:xmodel` and `/compact-kb` insert
+//!   literal text into the composer instead.
 //! - No `?` shortcuts overlay (`?` is inserted literally).
 //! - No Esc-driven rewind/backtrack UX (`Esc` dismisses popups; task interrupt is handled by the round renderer).
 //! - No steer mode: <kbd>Enter</kbd> queues the message instead of submitting immediately.

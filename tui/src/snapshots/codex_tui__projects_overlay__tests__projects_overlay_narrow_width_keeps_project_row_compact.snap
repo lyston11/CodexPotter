@@ -1,0 +1,16 @@
+---
+source: tui/src/projects_overlay.rs
+expression: terminal.backend()
+---
+"                                        "
+"┃ ✓ 12 rounds    .codexpotter/          "
+"┃   Add          projects/2026/04/16/1  "
+"┃   projects…    23456/MAIN.md          "
+"                                        "
+"                 ROUND 1 @ 1 minute     "
+"                 ago                    "
+"                                        "
+"                 Done                   "
+"                                        "
+"                                        "
+"  Esc  ↑↓ switch ⇧↑↓ scroll ^U/^D page  "

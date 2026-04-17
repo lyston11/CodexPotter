@@ -6,6 +6,8 @@
 pub enum SlashCommand {
     /// Insert a file mention trigger (`@`) into the composer.
     Mention,
+    /// Open the projects list overlay (`/list`).
+    List,
     /// Insert a canned prompt that asks CodexPotter to compact its local knowledge base.
     CompactKb,
     /// Configure whether to enable YOLO by default.
@@ -25,6 +27,7 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention a file",
+            SlashCommand::List => "open the projects list overlay",
             SlashCommand::CompactKb => "compact CodexPotter's knowledge base",
             SlashCommand::Yolo => "configure whether to enable YOLO by default",
             SlashCommand::PotterXModel => {
@@ -40,6 +43,7 @@ impl SlashCommand {
     pub fn command(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention",
+            SlashCommand::List => "list",
             SlashCommand::CompactKb => "compact-kb",
             SlashCommand::Yolo => "yolo",
             SlashCommand::PotterXModel => "potter:xmodel",
@@ -54,6 +58,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Theme => false,
             SlashCommand::Mention
+            | SlashCommand::List
             | SlashCommand::CompactKb
             | SlashCommand::Yolo
             | SlashCommand::PotterXModel
@@ -73,6 +78,7 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     // Keep order aligned with upstream Codex CLI for the subset we support.
     vec![
         (SlashCommand::Mention.command(), SlashCommand::Mention),
+        (SlashCommand::List.command(), SlashCommand::List),
         (SlashCommand::Theme.command(), SlashCommand::Theme),
         (SlashCommand::Verbosity.command(), SlashCommand::Verbosity),
         (SlashCommand::Yolo.command(), SlashCommand::Yolo),

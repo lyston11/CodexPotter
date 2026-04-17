@@ -1,0 +1,16 @@
+---
+source: tui/src/projects_overlay.rs
+expression: terminal.backend()
+---
+"                                                            "
+"┃ ✓ 1 round · 1 minut   Loading project details...          "
+"┃   Paged project 1                                         "
+"                                                            "
+"  ✓ 1 round · 1 minut                                       "
+"    Paged project 2                                         "
+"                                                            "
+"  ✓ 1 round · 1 minut                                       "
+"    Paged project 3                                         "
+"                                                            "
+"         ▪▫▫                                                "
+"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page      "

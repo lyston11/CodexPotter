@@ -359,15 +359,21 @@ where
         // Buffer. Thus, we're taking the important data out of the Frame and dropping it.
         let cursor_position = frame.cursor_position;
 
+        // Hide the cursor while drawing so users don't see it jump around while we emit the diff.
+        //
+        // Always hide, even when `hidden_cursor` is already true, because code paths that bypass
+        // `Terminal` (e.g. terminal restore or Ctrl-Z suspend/resume) can make the cursor visible
+        // again without updating our internal state.
+        //
+        // We'll restore it after flushing the frame based on `cursor_position`.
+        self.hide_cursor()?;
+
         // Draw to stdout
         self.flush()?;
 
-        match cursor_position {
-            None => self.hide_cursor()?,
-            Some(position) => {
-                self.show_cursor()?;
-                self.set_cursor_position(position)?;
-            }
+        if let Some(position) = cursor_position {
+            self.show_cursor()?;
+            self.set_cursor_position(position)?;
         }
 
         self.swap_buffers();
@@ -636,6 +642,7 @@ mod tests {
     use crate::test_backend::VT100Backend;
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
+    use ratatui::layout::Size;
     use ratatui::style::Style;
 
     #[test]
@@ -785,5 +792,190 @@ mod tests {
         let term = Terminal::with_options(backend).expect("terminal");
         assert_eq!(term.last_known_cursor_pos, Position { x: 0, y: 0 });
         assert_eq!(term.viewport_area, Rect::new(0, 0, 0, 0));
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum RecordingEvent {
+        HideCursor,
+        ShowCursor,
+        Write,
+    }
+
+    struct RecordingBackend {
+        events: Vec<RecordingEvent>,
+        size: Size,
+        cursor_pos: Position,
+    }
+
+    impl RecordingBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                events: Vec::new(),
+                size: Size::new(width, height),
+                cursor_pos: Position { x: 0, y: 0 },
+            }
+        }
+    }
+
+    impl Write for RecordingBackend {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if !buf.is_empty() {
+                self.events.push(RecordingEvent::Write);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Backend for RecordingBackend {
+        fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            Ok(())
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.events.push(RecordingEvent::HideCursor);
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.events.push(RecordingEvent::ShowCursor);
+            Ok(())
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            Ok(self.cursor_pos)
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            self.cursor_pos = position.into();
+            Ok(())
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clear_region(&mut self, _clear_type: ClearType) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn append_lines(&mut self, _line_count: u16) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            Ok(self.size)
+        }
+
+        fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+            Ok(ratatui::backend::WindowSize {
+                columns_rows: self.size,
+                pixels: Size::new(0, 0),
+            })
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn scroll_region_up(
+            &mut self,
+            _region: std::ops::Range<u16>,
+            _scroll_by: u16,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn scroll_region_down(
+            &mut self,
+            _region: std::ops::Range<u16>,
+            _scroll_by: u16,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn try_draw_hides_cursor_before_emitting_diff() {
+        let backend = RecordingBackend::new(3, 1);
+        let mut terminal = Terminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 3, 1));
+
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut().set_string(0, 0, "X", Style::default());
+                frame.set_cursor_position((0, 0));
+            })
+            .expect("draw");
+
+        let events = &terminal.backend().events;
+        let hide_idx = events
+            .iter()
+            .position(|event| *event == RecordingEvent::HideCursor)
+            .expect("expected hide cursor event");
+        let first_write_idx = events
+            .iter()
+            .position(|event| *event == RecordingEvent::Write)
+            .expect("expected at least one write event");
+        let show_idx = events
+            .iter()
+            .position(|event| *event == RecordingEvent::ShowCursor)
+            .expect("expected show cursor event");
+
+        assert!(
+            hide_idx < first_write_idx,
+            "expected cursor to hide before flushing updates; events: {events:?}",
+        );
+        assert!(
+            show_idx > first_write_idx,
+            "expected cursor to be shown after flushing updates; events: {events:?}",
+        );
+    }
+
+    #[test]
+    fn try_draw_hides_cursor_even_when_hidden_cursor_flag_is_stale() {
+        let backend = RecordingBackend::new(3, 1);
+        let mut terminal = Terminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 3, 1));
+
+        // Simulate stale internal state: other code may show the cursor (e.g. restore or Ctrl-Z
+        // suspend handling) without updating `Terminal::hidden_cursor`.
+        terminal.hidden_cursor = true;
+
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut().set_string(0, 0, "X", Style::default());
+                frame.set_cursor_position((0, 0));
+            })
+            .expect("draw");
+
+        let events = &terminal.backend().events;
+        let hide_idx = events
+            .iter()
+            .position(|event| *event == RecordingEvent::HideCursor)
+            .expect("expected hide cursor event");
+        let first_write_idx = events
+            .iter()
+            .position(|event| *event == RecordingEvent::Write)
+            .expect("expected at least one write event");
+        let show_idx = events
+            .iter()
+            .position(|event| *event == RecordingEvent::ShowCursor)
+            .expect("expected show cursor event");
+
+        assert!(
+            hide_idx < first_write_idx,
+            "expected cursor to hide before flushing updates; events: {events:?}",
+        );
+        assert!(
+            show_idx > first_write_idx,
+            "expected cursor to be shown after flushing updates; events: {events:?}",
+        );
     }
 }

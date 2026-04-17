@@ -336,6 +336,54 @@ pub enum PotterProjectOutcome {
     },
 }
 
+/// Summary status used by the `codex-potter` projects list overlay.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PotterProjectListStatus {
+    Succeeded,
+    BudgetExhausted,
+    Interrupted,
+    Failed,
+    Incomplete,
+}
+
+/// A single project row shown in the `codex-potter` projects list overlay.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PotterProjectListEntry {
+    /// Project directory (prefer relative to the workdir for stable display).
+    pub project_dir: PathBuf,
+    /// Progress file path (prefer relative to the workdir for stable display).
+    pub progress_file: PathBuf,
+    /// Human-facing project description (short title when available).
+    pub description: String,
+    /// Project start time derived from upstream rollouts, when available.
+    pub started_at_unix_secs: Option<u64>,
+    /// Project rounds count rendered in the left list (best-effort).
+    pub rounds: u32,
+    pub status: PotterProjectListStatus,
+}
+
+/// The final assistant message summary for a single round, used in the projects list overlay.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PotterProjectRoundSummary {
+    pub round_current: u32,
+    pub round_total: u32,
+    /// Event time for the final assistant message, derived from upstream rollouts.
+    pub final_message_unix_secs: Option<u64>,
+    /// The final assistant message content to render as markdown.
+    pub final_message: Option<String>,
+}
+
+/// Details payload for the right-hand pane of the projects list overlay.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PotterProjectDetails {
+    pub project_dir: PathBuf,
+    pub progress_file: PathBuf,
+    pub rounds: Vec<PotterProjectRoundSummary>,
+    /// A user-facing error message when the details payload could not be constructed.
+    pub error: Option<String>,
+}
+
 /// Codex errors that we expose to clients.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

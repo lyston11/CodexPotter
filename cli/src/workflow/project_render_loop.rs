@@ -132,6 +132,10 @@ where
 
         let (event_tx, event_rx) = unbounded_channel::<Event>();
         let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+        let projects_overlay_provider =
+            super::projects_overlay_backend::spawn_projects_overlay_provider(
+                prompt_footer.working_dir.clone(),
+            );
 
         let yolo_active = crate::yolo::effective_yolo_enabled(yolo_cli_override);
         let mut render = Box::pin(
@@ -146,6 +150,7 @@ where
                 codex_op_tx: op_tx.clone(),
                 codex_event_rx: event_rx,
                 fatal_exit_rx,
+                projects_overlay_provider: Some(projects_overlay_provider),
             }),
         );
 
@@ -197,22 +202,25 @@ where
 
             tokio::select! {
                 Some(op) = op_rx.recv() => {
-                    if matches!(op, Op::Interrupt) && !interrupt_requested {
-                        match event_source.interrupt_project(project_id.to_string()).await {
-                            Ok(buffered_events) => {
-                                let mut buffered_events = VecDeque::from(buffered_events);
-                                pending_events.append(&mut buffered_events);
-                                interrupt_requested = true;
-                            }
-                            Err(err) => {
-                                let message = format!(
-                                    "failed to interrupt project via potter app-server (project_id={project_id}): {err:#}"
-                                );
-                                project_outcome = Some(PotterProjectOutcome::Fatal { message: message.clone() });
-                                let _ = fatal_exit_tx.send(message);
+                    match op {
+                        Op::Interrupt if !interrupt_requested => {
+                            match event_source.interrupt_project(project_id.to_string()).await {
+                                Ok(buffered_events) => {
+                                    let mut buffered_events = VecDeque::from(buffered_events);
+                                    pending_events.append(&mut buffered_events);
+                                    interrupt_requested = true;
+                                }
+                                Err(err) => {
+                                    let message = format!(
+                                        "failed to interrupt project via potter app-server (project_id={project_id}): {err:#}"
+                                    );
+                                    project_outcome = Some(PotterProjectOutcome::Fatal { message: message.clone() });
+                                    let _ = fatal_exit_tx.send(message);
+                                }
                             }
                         }
-                    }
+                        _ => {}
+                    };
                 }
                 exit_info = &mut render => {
                     let exit_info = exit_info?;

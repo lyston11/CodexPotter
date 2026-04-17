@@ -1,0 +1,12 @@
+---
+source: tui/src/projects_overlay.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"┃ ✓ 1 round · 1 minute ago      Failed to load project details:                 "
+"┃   Details error state         malformed potter-rollout.jsonl                  "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page                          "

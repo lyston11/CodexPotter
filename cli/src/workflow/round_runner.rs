@@ -385,6 +385,11 @@ async fn run_potter_round_inner(
         context.workdir.clone(),
         crate::workflow::project::resolve_git_branch(&context.workdir),
     );
+    let projects_overlay_provider = Some(
+        crate::workflow::projects_overlay_backend::spawn_projects_overlay_provider(
+            context.workdir.clone(),
+        ),
+    );
     let exit_info = ui
         .render_round(codex_tui::RenderRoundParams {
             prompt,
@@ -394,6 +399,7 @@ async fn run_potter_round_inner(
             codex_op_tx: op_tx,
             codex_event_rx: ui_event_rx,
             fatal_exit_rx,
+            projects_overlay_provider,
         })
         .await?;
 

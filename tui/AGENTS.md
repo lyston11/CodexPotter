@@ -21,7 +21,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 ### Text Box
 
 - Supports `$` skills picker, the same as upstream.
-- Slash command picker exists but only supports `/theme`, `/verbosity`, `/yolo`, `/exit`, `/mention`, `/compact-kb` (inserts a canned KB cleanup prompt), `/potter:xmodel` (inserts a literal marker only).
+- Slash command picker exists but only supports `/mention`, `/list`, `/theme`, `/verbosity`, `/yolo`, `/compact-kb` (inserts a canned KB cleanup prompt), `/exit`, `/potter:xmodel` (inserts a literal marker only).
 - No `?` shortcuts overlay (treat `?` as a literal character).
 - `Tab` inserts a literal tab character (`\t`) into the composer.
 - Composer placeholder text is customized.
@@ -71,6 +71,7 @@ Behavior related
 - A customized banner on startup; the first-screen model label appends `[fast]` when layered Codex config resolves `service_tier = "fast"` and `features.fast_mode` remains enabled
 - Home-relative `CODEX_HOME` values are expanded before resolving TUI config, themes, and skill roots (including Windows-native `~\...`)
 - Additionally shows gitignore startup hint
+- Hide the cursor while emitting frame diffs to avoid visible cursor movement; restore it after each draw.
 - Startup onboarding prompts:
   - Suggest adding `.codexpotter/` to the global gitignore.
   - If no `[tui].verbosity` is configured yet, prompt for a default verbosity level.
@@ -81,6 +82,7 @@ Behavior related
 - Customized update notification / self-update (and on-disk state under `~/.codexpotter/`).
 - No desktop notifications when the terminal is unfocused.
 - Esc triggers project interrupt with an action selection UI instead of turn interrupt.
+- `Ctrl+L` (or `/list`) opens a full-screen projects list overlay with round summaries (also available on the prompt screen before any rounds start).
 
 Engineering related:
 
@@ -96,7 +98,12 @@ Engineering related:
 
 ## Conventions
 
-- TUI is stateless, should be fully driven by `EventMsg`. Codex-potter has some customized rendering logic, and they are all converted into customized `EventMsg` variants (prefixed with `Potter`), so that TUI is kept as a pure rendering module without any special logic for codex-potter.
+- TUI should stay a pure UI module: business logic, filesystem access, and project-specific data loading belong outside `tui/`.
+- Default rule: transcript rendering and long-lived task state should still be driven by `EventMsg` / upstream protocol events so upstream parity stays straightforward.
+- Exception: TUI-owned popup state machines that are generic UI affordances may be driven by a narrow request/response provider instead of new protocol `Op` / `EventMsg` variants when that keeps protocol semantics cleaner. `projects overlay` is the canonical example:
+  - TUI owns the popup state machine and key routing (`tui/src/app_server_render.rs`, `tui/src/projects_overlay.rs`).
+  - CLI/workflow owns discovery + detail loading via `ProjectsOverlayProviderChannels` (`tui/src/potter_tui.rs`, `cli/src/workflow/projects_overlay_backend.rs`).
+  - Do not move this popup back into protocol-only driver messages unless the popup stops being a TUI concern.
 
 - Test: Always use snapshot tests (without ASCII escape sequences) for TUI rendering tests, so that it is visually clear what the output looks like, unless the test or code comes from upstream codex where non-snapshot tests are used, in which case you must preserve parity.
 

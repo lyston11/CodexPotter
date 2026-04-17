@@ -1,0 +1,16 @@
+---
+source: tui/src/projects_overlay.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"┃ ✓ 4 rounds · 1 minute ago     .codexpotter/projects/2026/04/16/1/MAIN.md      "
+"┃   Details pager state                                                         "
+"                                ROUND 1 @ 1 minute ago                          "
+"                                                                                "
+"                                Done                                            "
+"                                                                                "
+"                                ROUND 2 @ 1 minute ago                          "
+"                                                                                "
+"                                Done                                            "
+"                                                                                "
+"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page                      ▪▫  "

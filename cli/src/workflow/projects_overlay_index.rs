@@ -1,0 +1,536 @@
+//! Projects list overlay discovery.
+//!
+//! This module scans `.codexpotter/projects/**/MAIN.md` under a workdir and builds
+//! [`codex_protocol::protocol::PotterProjectListEntry`] items for the interactive projects list
+//! overlay.
+
+use std::io::BufRead as _;
+use std::path::Path;
+use std::path::PathBuf;
+
+use anyhow::Context;
+use chrono::DateTime;
+use codex_protocol::protocol::PotterProjectListEntry;
+use codex_protocol::protocol::PotterProjectListStatus;
+use codex_protocol::protocol::PotterRoundOutcome;
+
+/// Discover CodexPotter project progress files under `workdir` and build overlay list entries.
+///
+/// Discovery is best-effort: malformed or incomplete projects are treated as `Incomplete` so the
+/// overlay can still render the remaining items.
+pub fn discover_projects_for_overlay(
+    workdir: &Path,
+) -> anyhow::Result<Vec<PotterProjectListEntry>> {
+    let mut rows = Vec::new();
+
+    for progress_file in super::project_progress_files::discover_project_progress_files(workdir) {
+        match project_entry_for_progress_file(workdir, &progress_file) {
+            Ok(Some(row)) => rows.push(row),
+            Ok(None) => {}
+            Err(_) => {
+                // Keep discovery best-effort: the overlay should still open even if individual
+                // projects are malformed.
+            }
+        }
+    }
+
+    sort_rows(&mut rows);
+    Ok(rows)
+}
+
+fn project_entry_for_progress_file(
+    workdir: &Path,
+    progress_file_abs: &Path,
+) -> anyhow::Result<Option<PotterProjectListEntry>> {
+    let project_dir_abs = progress_file_abs
+        .parent()
+        .context("derive project_dir from progress file path")?;
+
+    let progress_file = relativize_path(workdir, progress_file_abs);
+    let project_dir = relativize_path(workdir, project_dir_abs);
+
+    let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(project_dir_abs);
+    let rollout_lines = crate::workflow::rollout::read_lines(&potter_rollout_path).ok();
+    let index = rollout_lines
+        .as_deref()
+        .filter(|lines| !lines.is_empty())
+        .and_then(|lines| crate::workflow::rollout_resume_index::build_resume_index(lines).ok());
+
+    let Some(index) = index else {
+        let description = read_project_description(progress_file_abs, None).unwrap_or_default();
+        return Ok(Some(PotterProjectListEntry {
+            project_dir,
+            progress_file,
+            description,
+            started_at_unix_secs: None,
+            rounds: 0,
+            status: PotterProjectListStatus::Incomplete,
+        }));
+    };
+
+    let status = project_list_status(&index);
+    let description = read_project_description(
+        progress_file_abs,
+        index.project_started.user_message.as_deref(),
+    )
+    .unwrap_or_default();
+    let rounds = project_list_rounds(&status, &index);
+    let started_at_unix_secs = project_started_at_unix_secs(workdir, &index);
+
+    Ok(Some(PotterProjectListEntry {
+        project_dir,
+        progress_file,
+        description,
+        started_at_unix_secs,
+        rounds,
+        status,
+    }))
+}
+
+fn relativize_path(workdir: &Path, path: &Path) -> PathBuf {
+    path.strip_prefix(workdir).unwrap_or(path).to_path_buf()
+}
+
+fn project_list_status(
+    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
+) -> PotterProjectListStatus {
+    if index
+        .completed_rounds
+        .iter()
+        .any(|round| round.project_succeeded.is_some())
+    {
+        return PotterProjectListStatus::Succeeded;
+    }
+
+    if index.unfinished_round.is_some() {
+        // EOF with an unfinished round means the project has started a live round but has not
+        // emitted `RoundFinished` yet. That is not the same thing as an explicit user interrupt.
+        return PotterProjectListStatus::Incomplete;
+    }
+
+    let Some(last_round) = index.completed_rounds.last() else {
+        return PotterProjectListStatus::Incomplete;
+    };
+
+    match &last_round.outcome {
+        PotterRoundOutcome::Completed => {
+            if last_round.round_current == last_round.round_total {
+                PotterProjectListStatus::BudgetExhausted
+            } else {
+                PotterProjectListStatus::Incomplete
+            }
+        }
+        PotterRoundOutcome::Interrupted | PotterRoundOutcome::UserRequested => {
+            PotterProjectListStatus::Interrupted
+        }
+        PotterRoundOutcome::TaskFailed { .. } | PotterRoundOutcome::Fatal { .. } => {
+            PotterProjectListStatus::Failed
+        }
+    }
+}
+
+fn project_list_rounds(
+    status: &PotterProjectListStatus,
+    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
+) -> u32 {
+    if *status == PotterProjectListStatus::Succeeded
+        && let Some(rounds) = index.completed_rounds.iter().rev().find_map(|round| {
+            round
+                .project_succeeded
+                .as_ref()
+                .map(|succeeded| succeeded.rounds)
+        })
+    {
+        return rounds;
+    }
+
+    if let Some(unfinished) = index.unfinished_round.as_ref() {
+        return unfinished.round_current;
+    }
+
+    index
+        .completed_rounds
+        .last()
+        .map(|round| round.round_current)
+        .unwrap_or_default()
+}
+
+fn project_started_at_unix_secs(
+    workdir: &Path,
+    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
+) -> Option<u64> {
+    let rollout_path = index
+        .completed_rounds
+        .iter()
+        .find_map(|round| {
+            round
+                .configured
+                .as_ref()
+                .map(|configured| configured.rollout_path.clone())
+        })
+        .or_else(|| {
+            index
+                .unfinished_round
+                .as_ref()
+                .map(|round| round.rollout_path.clone())
+        })?;
+
+    let rollout_path = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+        workdir,
+        &rollout_path,
+    );
+    read_first_rollout_timestamp_unix_secs(&rollout_path).ok()
+}
+
+fn read_first_rollout_timestamp_unix_secs(rollout_path: &Path) -> anyhow::Result<u64> {
+    let file = std::fs::File::open(rollout_path)
+        .with_context(|| format!("open rollout {}", rollout_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    for (idx, line) in reader.lines().enumerate() {
+        let line_number = idx + 1;
+        let line = line.with_context(|| format!("read rollout line {line_number}"))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let value: serde_json::Value = serde_json::from_str(trimmed)
+            .with_context(|| format!("parse rollout json line {line_number}: {trimmed}"))?;
+        let Some(ts) = value.get("timestamp").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+
+        let parsed = DateTime::parse_from_rfc3339(ts)
+            .with_context(|| format!("parse rollout timestamp {ts:?}"))?;
+        return u64::try_from(parsed.timestamp())
+            .context("convert rollout timestamp to unix seconds");
+    }
+
+    anyhow::bail!("missing timestamp in rollout {}", rollout_path.display());
+}
+
+fn read_project_description(
+    progress_file_abs: &Path,
+    user_message: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(short_title) =
+        crate::workflow::project::progress_file_short_title(progress_file_abs)
+            .context("read short_title")?
+    {
+        return Ok(short_title);
+    }
+
+    if let Some(user_message) = user_message {
+        let trimmed = user_message.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let contents = std::fs::read_to_string(progress_file_abs)
+        .with_context(|| format!("read {}", progress_file_abs.display()))?;
+
+    let mut in_overall_goal = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if !in_overall_goal {
+            if trimmed == "# Overall Goal" {
+                in_overall_goal = true;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with('#') {
+            break;
+        }
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        return Ok(trimmed.to_string());
+    }
+
+    Ok(String::new())
+}
+
+fn sort_rows(rows: &mut [PotterProjectListEntry]) {
+    rows.sort_by(|a, b| {
+        b.started_at_unix_secs
+            .cmp(&a.started_at_unix_secs)
+            .then_with(|| a.project_dir.cmp(&b.project_dir))
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+
+    fn write_main(workdir: &Path, rel_dir: &str, short_title: Option<&str>) -> PathBuf {
+        let path = workdir.join(rel_dir).join("MAIN.md");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+
+        let short_title = short_title.unwrap_or("");
+        std::fs::write(
+            &path,
+            format!(
+                r#"---
+status: open
+short_title: "{short_title}"
+git_branch: ""
+---
+
+# Overall Goal
+original goal line
+
+## Todo
+"#
+            ),
+        )
+        .expect("write MAIN.md");
+
+        path
+    }
+
+    fn write_rollout_with_timestamp(path: &Path, timestamp: &str) {
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"agent_message","message":"hello"}}}}
+"#
+            ),
+        )
+        .expect("write rollout");
+    }
+
+    fn write_potter_rollout(
+        project_dir: &Path,
+        user_prompt_file: &Path,
+        round_current: u32,
+        round_total: u32,
+        rollout_path: &Path,
+        outcome: PotterRoundOutcome,
+        succeeded_rounds: Option<u32>,
+    ) {
+        let potter_rollout_path =
+            project_dir.join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("original prompt".to_string()),
+                user_prompt_file: user_prompt_file.to_path_buf(),
+            },
+        )
+        .expect("append project_started");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: round_current,
+                total: round_total,
+            },
+        )
+        .expect("append round_started");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: rollout_path.to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+
+        if let Some(rounds) = succeeded_rounds {
+            crate::workflow::rollout::append_line(
+                &potter_rollout_path,
+                &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                    rounds,
+                    duration_secs: 1,
+                    user_prompt_file: user_prompt_file.to_path_buf(),
+                    git_commit_start: "".to_string(),
+                    git_commit_end: "".to_string(),
+                },
+            )
+            .expect("append project_succeeded");
+        }
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome },
+        )
+        .expect("append round_finished");
+    }
+
+    #[test]
+    fn discover_projects_sorts_by_started_at_and_prefers_short_title() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main_a = write_main(
+            workdir,
+            ".codexpotter/projects/2026/02/28/1",
+            Some("Short A"),
+        );
+        let main_b = write_main(workdir, ".codexpotter/projects/2026/02/28/2", None);
+
+        let rollout_a = workdir.join("a.jsonl");
+        let rollout_b = workdir.join("b.jsonl");
+        write_rollout_with_timestamp(&rollout_a, "2026-02-28T00:00:00.000Z");
+        write_rollout_with_timestamp(&rollout_b, "2026-02-28T00:10:00.000Z");
+
+        write_potter_rollout(
+            main_a.parent().expect("project dir"),
+            main_a.strip_prefix(workdir).expect("rel"),
+            1,
+            10,
+            Path::new("a.jsonl"),
+            PotterRoundOutcome::Interrupted,
+            None,
+        );
+        write_potter_rollout(
+            main_b.parent().expect("project dir"),
+            main_b.strip_prefix(workdir).expect("rel"),
+            10,
+            10,
+            Path::new("b.jsonl"),
+            PotterRoundOutcome::Completed,
+            None,
+        );
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 2);
+
+        // Newest (rollout_b) first.
+        assert_eq!(
+            rows[0].progress_file,
+            PathBuf::from(".codexpotter/projects/2026/02/28/2/MAIN.md")
+        );
+        assert_eq!(rows[0].status, PotterProjectListStatus::BudgetExhausted);
+        assert_eq!(rows[0].rounds, 10);
+        assert_eq!(rows[0].description, "original prompt");
+
+        assert_eq!(
+            rows[1].progress_file,
+            PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md")
+        );
+        assert_eq!(rows[1].status, PotterProjectListStatus::Interrupted);
+        assert_eq!(rows[1].rounds, 1);
+        assert_eq!(rows[1].description, "Short A");
+    }
+
+    #[test]
+    fn discover_projects_marks_failed_and_succeeded_statuses() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main_failed = write_main(workdir, ".codexpotter/projects/2026/03/01/1", None);
+        let main_ok = write_main(workdir, ".codexpotter/projects/2026/03/01/2", None);
+
+        let rollout_failed = workdir.join("failed.jsonl");
+        let rollout_ok = workdir.join("ok.jsonl");
+        write_rollout_with_timestamp(&rollout_failed, "2026-03-01T00:00:00.000Z");
+        write_rollout_with_timestamp(&rollout_ok, "2026-03-01T00:01:00.000Z");
+
+        write_potter_rollout(
+            main_failed.parent().expect("project dir"),
+            main_failed.strip_prefix(workdir).expect("rel"),
+            2,
+            10,
+            Path::new("failed.jsonl"),
+            PotterRoundOutcome::Fatal {
+                message: "boom".to_string(),
+            },
+            None,
+        );
+
+        write_potter_rollout(
+            main_ok.parent().expect("project dir"),
+            main_ok.strip_prefix(workdir).expect("rel"),
+            4,
+            10,
+            Path::new("ok.jsonl"),
+            PotterRoundOutcome::Completed,
+            Some(4),
+        );
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 2);
+
+        let ok = rows
+            .iter()
+            .find(|row| row.project_dir == Path::new(".codexpotter/projects/2026/03/01/2"))
+            .expect("ok row");
+        assert_eq!(ok.status, PotterProjectListStatus::Succeeded);
+        assert_eq!(ok.rounds, 4);
+
+        let failed = rows
+            .iter()
+            .find(|row| row.project_dir == Path::new(".codexpotter/projects/2026/03/01/1"))
+            .expect("failed row");
+        assert_eq!(failed.status, PotterProjectListStatus::Failed);
+        assert_eq!(failed.rounds, 2);
+    }
+
+    #[test]
+    fn discover_projects_marks_unfinished_round_as_incomplete() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/02/1", None);
+        let rollout = workdir.join("live.jsonl");
+        write_rollout_with_timestamp(&rollout, "2026-03-02T00:00:00.000Z");
+
+        let potter_rollout_path = main
+            .parent()
+            .expect("project dir")
+            .join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel").to_path_buf();
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("live prompt".to_string()),
+                user_prompt_file,
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 2,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("live.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
+        assert_eq!(rows[0].rounds, 2);
+    }
+}

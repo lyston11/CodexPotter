@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -162,6 +163,7 @@ pub async fn prompt_user_with_tui(
     options: PromptScreenOptions,
     verbosity: &mut Verbosity,
     prompt_footer: PromptFooterContext,
+    projects_overlay_provider: Option<crate::ProjectsOverlayProviderChannels>,
 ) -> anyhow::Result<Option<String>> {
     let PromptScreenOptions {
         show_startup_banner,
@@ -236,7 +238,22 @@ pub async fn prompt_user_with_tui(
         should_pad_prompt_viewport,
         *verbosity,
     );
-    let _ = app.run(tui, &mut app_event_rx, None, None).await?;
+
+    let (overlay_request_tx, mut overlay_response_rx) = match projects_overlay_provider {
+        Some(provider) => (Some(provider.request_tx), Some(provider.response_rx)),
+        None => (None, None),
+    };
+    app.projects_overlay_request_tx = overlay_request_tx;
+
+    let _ = app
+        .run(
+            tui,
+            &mut app_event_rx,
+            None,
+            None,
+            overlay_response_rx.as_mut(),
+        )
+        .await?;
     *verbosity = app.processor.verbosity;
 
     Ok(match app.prompt_action.take() {
@@ -337,6 +354,8 @@ pub struct RoundBackendChannels {
     pub codex_event_rx: UnboundedReceiver<Event>,
     /// Receives fatal errors from the control plane that should abort the round immediately.
     pub fatal_exit_rx: UnboundedReceiver<String>,
+    /// Provider channels for the projects list overlay.
+    pub projects_overlay_provider: Option<crate::ProjectsOverlayProviderChannels>,
 }
 
 /// Mutable UI state that must persist across rounds.
@@ -388,6 +407,7 @@ pub async fn run_round_with_tui_options_and_queue(
         codex_op_tx,
         mut codex_event_rx,
         mut fatal_exit_rx,
+        projects_overlay_provider,
     } = backend;
 
     let (app_event_tx_raw, mut app_event_rx) = unbounded_channel::<AppEvent>();
@@ -436,12 +456,19 @@ pub async fn run_round_with_tui_options_and_queue(
     app.has_emitted_history_lines = options.pad_before_first_cell;
     app.refresh_queued_user_messages();
 
+    let (overlay_request_tx, mut overlay_response_rx) = match projects_overlay_provider {
+        Some(provider) => (Some(provider.request_tx), Some(provider.response_rx)),
+        None => (None, None),
+    };
+    app.projects_overlay_request_tx = overlay_request_tx;
+
     let result = app
         .run(
             tui,
             &mut app_event_rx,
             Some(&mut codex_event_rx),
             Some(&mut fatal_exit_rx),
+            overlay_response_rx.as_mut(),
         )
         .await;
     *state.queued_user_messages = app.queued_user_messages;
@@ -1393,6 +1420,8 @@ struct RenderAppState {
     processor: AppServerEventProcessor,
     app_event_tx: AppEventSender,
     codex_op_tx: Option<UnboundedSender<Op>>,
+    projects_overlay_request_tx: Option<UnboundedSender<crate::ProjectsOverlayRequest>>,
+    projects_overlay: crate::projects_overlay::ProjectsOverlay,
     bottom_pane: BottomPane,
     prompt_history: crate::prompt_history_store::PromptHistoryStore,
     file_search: FileSearchManager,
@@ -1431,6 +1460,8 @@ impl RenderAppState {
             processor,
             app_event_tx,
             codex_op_tx,
+            projects_overlay_request_tx: None,
+            projects_overlay: crate::projects_overlay::ProjectsOverlay::default(),
             bottom_pane,
             prompt_history,
             file_search,
@@ -1574,11 +1605,18 @@ impl RenderAppState {
         app_event_rx: &mut UnboundedReceiver<AppEvent>,
         codex_event_rx: Option<&mut UnboundedReceiver<Event>>,
         fatal_exit_rx: Option<&mut UnboundedReceiver<String>>,
+        projects_overlay_response_rx: Option<
+            &mut UnboundedReceiver<crate::ProjectsOverlayResponse>,
+        >,
     ) -> anyhow::Result<AppExitInfo> {
         let has_backend = self.codex_op_tx.is_some();
         anyhow::ensure!(
             has_backend == codex_event_rx.is_some() && has_backend == fatal_exit_rx.is_some(),
             "internal error: backend channels must be either all present or all absent",
+        );
+        anyhow::ensure!(
+            self.projects_overlay_request_tx.is_some() == projects_overlay_response_rx.is_some(),
+            "internal error: projects overlay backend channels must be either both present or both absent",
         );
 
         let mut tui_events = tui.event_stream();
@@ -1587,6 +1625,7 @@ impl RenderAppState {
 
         let mut codex_event_rx = codex_event_rx;
         let mut fatal_exit_rx = fatal_exit_rx;
+        let mut projects_overlay_response_rx = projects_overlay_response_rx;
 
         loop {
             tokio::select! {
@@ -1618,6 +1657,14 @@ impl RenderAppState {
                             if let Some(rx) = codex_event_rx.as_mut() {
                                 while let Ok(event) = rx.try_recv() {
                                     self.handle_app_event(tui, AppEvent::CodexEvent(event))?;
+                                }
+                            }
+                            if let Some(rx) = projects_overlay_response_rx.as_mut() {
+                                while let Ok(response) = rx.try_recv() {
+                                    self.handle_projects_overlay_response(
+                                        tui.frame_requester(),
+                                        response,
+                                    );
                                 }
                             }
                             if let Some(rx) = fatal_exit_rx.as_mut() {
@@ -1709,6 +1756,25 @@ impl RenderAppState {
                     };
                     self.handle_app_event(tui, AppEvent::FatalExitRequest(message))?;
                 }
+                maybe_overlay_response = async {
+                    if let Some(rx) = projects_overlay_response_rx.as_mut() {
+                        rx.recv().await
+                    } else {
+                        None
+                    }
+                }, if projects_overlay_response_rx.is_some() => {
+                    match maybe_overlay_response {
+                        Some(response) => {
+                            self.handle_projects_overlay_response(tui.frame_requester(), response);
+                        }
+                        None => {
+                            self.handle_projects_overlay_provider_disconnected(
+                                tui.frame_requester(),
+                            );
+                            projects_overlay_response_rx = None;
+                        }
+                    }
+                }
             }
         }
 
@@ -1718,6 +1784,47 @@ impl RenderAppState {
             thread_id: self.processor.thread_id,
             exit_reason: self.exit_reason.clone(),
         })
+    }
+
+    fn send_projects_overlay_request(&self, request: crate::ProjectsOverlayRequest) {
+        let Some(tx) = self.projects_overlay_request_tx.as_ref() else {
+            return;
+        };
+        let _ = tx.send(request);
+    }
+
+    fn handle_projects_overlay_response(
+        &mut self,
+        frame_requester: crate::tui::FrameRequester,
+        response: crate::ProjectsOverlayResponse,
+    ) {
+        match response {
+            crate::ProjectsOverlayResponse::List { projects, error } => {
+                if let Some(request) = self.projects_overlay.on_projects_list(projects, error) {
+                    self.send_projects_overlay_request(request);
+                }
+                frame_requester.schedule_frame();
+            }
+            crate::ProjectsOverlayResponse::Details { details } => {
+                if self.projects_overlay.is_open() {
+                    self.projects_overlay.on_project_details(details);
+                    frame_requester.schedule_frame();
+                }
+            }
+        }
+    }
+
+    fn handle_projects_overlay_provider_disconnected(
+        &mut self,
+        frame_requester: crate::tui::FrameRequester,
+    ) {
+        self.projects_overlay.close();
+        self.processor
+            .emit_history_cell(Box::new(history_cell::new_error_event(
+                "Projects overlay provider disconnected".to_string(),
+            )));
+        self.projects_overlay_request_tx = None;
+        frame_requester.schedule_frame();
     }
 
     async fn handle_external_editor(&mut self, tui: &mut Tui) -> anyhow::Result<()> {
@@ -1763,6 +1870,33 @@ impl RenderAppState {
         }
 
         let is_press = key_event.kind == crossterm::event::KeyEventKind::Press;
+
+        if self.projects_overlay.is_open() {
+            if let Some(request) = self.projects_overlay.handle_key_event(key_event) {
+                self.send_projects_overlay_request(request);
+            }
+            frame_requester.schedule_frame();
+            return;
+        }
+
+        if is_control_char(&key_event, 'l') && !self.bottom_pane.composer().popup_active() {
+            if !is_press {
+                return;
+            }
+            if self.projects_overlay_request_tx.is_none() {
+                self.processor
+                    .emit_history_cell(Box::new(history_cell::new_error_event(
+                        "ctrl+l projects list is unavailable in this mode.".to_string(),
+                    )));
+                frame_requester.schedule_frame();
+                return;
+            }
+
+            let request = self.projects_overlay.open_or_refresh();
+            self.send_projects_overlay_request(request);
+            frame_requester.schedule_frame();
+            return;
+        }
 
         // Restore the last queued message into the composer for quick edits.
         if key_event.modifiers == crossterm::event::KeyModifiers::ALT
@@ -1890,6 +2024,20 @@ impl RenderAppState {
                     self.bottom_pane.composer_mut().insert_str("@");
                     frame_requester.schedule_frame();
                 }
+                SlashCommand::List => {
+                    if self.projects_overlay_request_tx.is_none() {
+                        self.processor
+                            .emit_history_cell(Box::new(history_cell::new_error_event(
+                                "'/list' is unavailable in this mode.".to_string(),
+                            )));
+                        frame_requester.schedule_frame();
+                        return;
+                    }
+
+                    let request = self.projects_overlay.open_or_refresh();
+                    self.send_projects_overlay_request(request);
+                    frame_requester.schedule_frame();
+                }
                 SlashCommand::CompactKb => {
                     self.bottom_pane
                         .composer_mut()
@@ -1981,6 +2129,17 @@ impl RenderAppState {
     }
 
     fn draw(&mut self, tui: &mut Tui) -> anyhow::Result<()> {
+        if self.projects_overlay.is_open() {
+            tui.draw(u16::MAX, |frame| {
+                let area = frame.area();
+                ratatui::widgets::Clear.render(area, frame.buffer_mut());
+                self.projects_overlay
+                    .render(area, frame.buffer_mut(), SystemTime::now());
+                frame.set_cursor_position((area.x, area.bottom().saturating_sub(1)));
+            })?;
+            return Ok(());
+        }
+
         let width = tui.terminal.last_known_screen_size.width;
         self.processor.last_rendered_width = Some(width);
         let pane_height = self.bottom_pane.desired_height(width).max(1);
@@ -2222,6 +2381,9 @@ impl RenderAppState {
         frame_requester: crate::tui::FrameRequester,
         event: Event,
     ) -> anyhow::Result<()> {
+        let Event { id, msg } = event;
+        let event = Event { id, msg };
+
         match &event.msg {
             EventMsg::PotterStreamRecoveryUpdate {
                 attempt,
@@ -2589,6 +2751,8 @@ mod tests {
     use codex_protocol::protocol::PatchApplyBeginEvent;
     use codex_protocol::protocol::PatchApplyEndEvent;
     use codex_protocol::protocol::PlanDeltaEvent;
+    use codex_protocol::protocol::PotterProjectListEntry;
+    use codex_protocol::protocol::PotterProjectListStatus;
     use codex_protocol::protocol::SessionConfiguredEvent;
     use codex_protocol::protocol::StreamErrorEvent;
     use codex_protocol::protocol::TerminalInteractionEvent;
@@ -3794,6 +3958,326 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_ctrl_l_opens_projects_overlay_and_restores_interrupt_after_close() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected Ctrl+L to open overlay"
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        app.handle_projects_overlay_response(
+            crate::tui::FrameRequester::test_dummy(),
+            crate::ProjectsOverlayResponse::List {
+                projects: vec![
+                    PotterProjectListEntry {
+                        project_dir: first_project_dir.clone(),
+                        progress_file: first_project_dir.join("MAIN.md"),
+                        description: "First overlay project".to_string(),
+                        started_at_unix_secs: Some(1),
+                        rounds: 1,
+                        status: PotterProjectListStatus::Succeeded,
+                    },
+                    PotterProjectListEntry {
+                        project_dir: second_project_dir.clone(),
+                        progress_file: second_project_dir.join("MAIN.md"),
+                        description: "Second overlay project".to_string(),
+                        started_at_unix_secs: Some(2),
+                        rounds: 2,
+                        status: PotterProjectListStatus::Interrupted,
+                    },
+                ],
+                error: None,
+            },
+        );
+
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, first_project_dir);
+            }
+            other => panic!("expected initial details request, got {other:?}"),
+        }
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected selection details request, got {other:?}"),
+        }
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected Ctrl+D to stay inside overlay while open"
+        );
+        assert!(
+            rx_app.try_recv().is_err(),
+            "overlay paging should not request interrupt"
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.projects_overlay.is_open(),
+            "expected Esc to close overlay first"
+        );
+        assert!(
+            rx_app.try_recv().is_err(),
+            "closing overlay should not emit backend ops"
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        match rx_app.try_recv() {
+            Ok(AppEvent::CodexOp(Op::Interrupt)) => {}
+            other => panic!("expected Esc after close to interrupt round, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projects_overlay_ctrl_l_closes_overlay_when_already_open() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected Ctrl+L to open overlay"
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.projects_overlay.is_open(),
+            "expected Ctrl+L to close overlay when already open"
+        );
+        assert!(
+            overlay_request_rx.try_recv().is_err(),
+            "closing overlay should not request another refresh"
+        );
+    }
+
+    #[test]
+    fn projects_overlay_ctrl_c_closes_overlay_without_clearing_composer() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.bottom_pane
+            .composer_mut()
+            .set_text_content("do not clear".to_string());
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+
+        assert!(app.projects_overlay.is_open());
+        assert_eq!(app.bottom_pane.composer().current_text(), "do not clear");
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(!app.projects_overlay.is_open());
+        assert_eq!(app.bottom_pane.composer().current_text(), "do not clear");
+        assert!(
+            overlay_request_rx.try_recv().is_err(),
+            "closing overlay should not request another refresh"
+        );
+        assert!(
+            rx_app.try_recv().is_err(),
+            "closing overlay should not emit backend ops"
+        );
+    }
+
+    #[test]
+    fn projects_overlay_arrow_keys_schedule_redraws() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.projects_overlay.open_or_refresh();
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected overlay to be open for redraw test"
+        );
+
+        let (frame_requester, mut schedule_rx) = crate::tui::FrameRequester::test_recorder();
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            frame_requester,
+            80,
+        );
+
+        assert!(
+            schedule_rx.try_recv().is_ok(),
+            "expected overlay navigation key to schedule a redraw"
+        );
+    }
+
+    #[test]
     fn round_renderer_slash_compact_kb_inserts_prompt_text() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -3841,49 +4325,180 @@ mod tests {
 
             assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
         }
+    }
 
-        {
-            let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
-            let app_event_tx = AppEventSender::new(tx_raw);
+    #[test]
+    fn round_renderer_ctrl_c_closes_projects_overlay_without_exiting() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
 
-            let processor =
-                AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
-            let (op_tx, _op_rx) = unbounded_channel::<Op>();
-            let bottom_pane = BottomPane::new(BottomPaneParams {
-                frame_requester: crate::tui::FrameRequester::test_dummy(),
-                enhanced_keys_supported: false,
-                app_event_tx: app_event_tx.clone(),
-                animations_enabled: false,
-                placeholder_text: "Assign new task to CodexPotter".to_string(),
-                disable_paste_burst: false,
-            });
-            let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
-            let mut app = RenderAppState::new(
-                processor,
-                app_event_tx,
-                Some(op_tx),
-                bottom_pane,
-                crate::prompt_history_store::PromptHistoryStore::new(),
-                file_search,
-                VecDeque::new(),
-            );
+        let (tx_raw, mut rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
 
-            app.bottom_pane.composer_mut().set_disable_paste_burst(true);
-            for ch in "/c".chars() {
-                app.handle_key_event(
-                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                    crate::tui::FrameRequester::test_dummy(),
-                    80,
-                );
-            }
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected Ctrl+L to open overlay"
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.exit_after_next_draw,
+            "expected Ctrl+C to close overlay instead of requesting exit"
+        );
+        assert!(
+            !app.projects_overlay.is_open(),
+            "expected Ctrl+C to close overlay"
+        );
+        assert!(
+            rx_app.try_recv().is_err(),
+            "closing overlay should not request interrupt"
+        );
+    }
+
+    #[test]
+    fn round_renderer_slash_list_opens_projects_overlay() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        bottom_pane.set_task_running(true);
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/list".chars() {
             app.handle_key_event(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
                 crate::tui::FrameRequester::test_dummy(),
                 80,
             );
-
-            assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
         }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected /list to open overlay"
+        );
+        assert_eq!(app.bottom_pane.composer().current_text(), "");
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_renderer_slash_popup_compact_kb_inserts_prompt_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/c".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(app.bottom_pane.composer().current_text(), COMPACT_KB_PROMPT);
     }
 
     #[test]
@@ -4469,6 +5084,178 @@ mod tests {
         assert!(
             !saw_interrupt,
             "did not expect Op::Interrupt in prompt screen"
+        );
+    }
+
+    #[test]
+    fn prompt_screen_ctrl_l_opens_projects_overlay() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.bottom_pane.set_task_running(false);
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected Ctrl+L to open overlay on prompt screen"
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_screen_slash_list_opens_projects_overlay() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.bottom_pane.set_task_running(false);
+        app.bottom_pane.composer_mut().set_disable_paste_burst(true);
+        for ch in "/list".chars() {
+            app.handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                crate::tui::FrameRequester::test_dummy(),
+                80,
+            );
+        }
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected /list to open overlay on prompt screen"
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projects_overlay_provider_disconnect_closes_overlay_and_disables_reopen() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new_prompt_screen(
+            app_event_tx,
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            true,
+            Verbosity::default(),
+        );
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.bottom_pane.set_task_running(false);
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+        assert!(
+            app.projects_overlay.is_open(),
+            "expected Ctrl+L to open overlay before disconnect"
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected list request, got {other:?}"),
+        }
+
+        app.handle_projects_overlay_provider_disconnected(crate::tui::FrameRequester::test_dummy());
+        assert!(
+            !app.projects_overlay.is_open(),
+            "expected disconnect to close overlay"
+        );
+        assert!(
+            app.projects_overlay_request_tx.is_none(),
+            "expected disconnect to clear overlay provider"
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+        assert!(
+            !app.projects_overlay.is_open(),
+            "expected Ctrl+L to stay unavailable after disconnect"
+        );
+        assert!(
+            overlay_request_rx.try_recv().is_err(),
+            "expected no further overlay requests after disconnect"
         );
     }
 

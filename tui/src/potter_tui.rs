@@ -1,5 +1,7 @@
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PotterProjectDetails;
+use codex_protocol::protocol::PotterProjectListEntry;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
@@ -25,6 +27,39 @@ pub struct RenderRoundParams {
     pub codex_op_tx: UnboundedSender<Op>,
     pub codex_event_rx: UnboundedReceiver<Event>,
     pub fatal_exit_rx: UnboundedReceiver<String>,
+    /// Provider for the projects list overlay.
+    pub projects_overlay_provider: Option<ProjectsOverlayProviderChannels>,
+}
+
+/// Requests emitted by the projects list overlay.
+#[derive(Debug)]
+pub enum ProjectsOverlayRequest {
+    /// Discover projects under the current workdir.
+    List,
+    /// Fetch details for a single project directory.
+    Details { project_dir: PathBuf },
+}
+
+/// Responses consumed by the projects list overlay.
+#[derive(Debug)]
+pub enum ProjectsOverlayResponse {
+    List {
+        projects: Vec<PotterProjectListEntry>,
+        error: Option<String>,
+    },
+    Details {
+        details: PotterProjectDetails,
+    },
+}
+
+/// Channels that allow the TUI to render the projects list overlay by querying an external
+/// provider owned by the CLI workflow layer.
+///
+/// The TUI owns the overlay state machine and user interaction, but the filesystem scanning and
+/// parsing logic remains outside the `tui/` crate.
+pub struct ProjectsOverlayProviderChannels {
+    pub request_tx: UnboundedSender<ProjectsOverlayRequest>,
+    pub response_rx: UnboundedReceiver<ProjectsOverlayResponse>,
 }
 
 /// `codex-potter`-specific TUI wrapper:
@@ -221,6 +256,7 @@ impl CodexPotterTui {
     pub async fn prompt_user(
         &mut self,
         prompt_footer: PromptFooterContext,
+        projects_overlay_provider: Option<ProjectsOverlayProviderChannels>,
     ) -> anyhow::Result<Option<String>> {
         let show_startup_banner = !self.has_rendered_round;
         let composer_draft = self.composer_draft.take();
@@ -236,6 +272,7 @@ impl CodexPotterTui {
             },
             &mut self.verbosity,
             prompt_footer,
+            projects_overlay_provider,
         )
         .await
     }
@@ -360,6 +397,7 @@ impl CodexPotterTui {
             codex_op_tx,
             codex_event_rx,
             fatal_exit_rx,
+            projects_overlay_provider,
         } = params;
         let Some(project_started_at) = self.project_started_at else {
             anyhow::bail!(
@@ -378,6 +416,7 @@ impl CodexPotterTui {
             codex_op_tx,
             codex_event_rx,
             fatal_exit_rx,
+            projects_overlay_provider,
         };
         let context = crate::app_server_render::ProjectRenderContext {
             project_started_at,

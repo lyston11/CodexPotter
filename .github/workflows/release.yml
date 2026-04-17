@@ -200,7 +200,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Run packaging tests
-        run: node --test npm/test/*.test.js
+        run: node --test
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4

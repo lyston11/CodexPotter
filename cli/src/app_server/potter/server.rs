@@ -2613,6 +2613,7 @@ git_branch: "main"
             codex_op_tx,
             codex_event_rx,
             fatal_exit_rx,
+            projects_overlay_provider: None,
         };
 
         let render = async move {
