@@ -780,62 +780,62 @@ potter.xmodel: true
     }
 
     #[test]
-    fn progress_file_has_finite_incantatem_true_errors_when_front_matter_header_missing() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let progress = temp.path().join("MAIN.md");
-        std::fs::write(&progress, "status: open\nfinite_incantatem: true\n").expect("write");
+    fn progress_file_has_finite_incantatem_true_errors_on_invalid_front_matter() {
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let progress = temp.path().join("MAIN.md");
+            std::fs::write(&progress, "status: open\nfinite_incantatem: true\n").expect("write");
 
-        let rel = PathBuf::from("MAIN.md");
-        let err = progress_file_has_finite_incantatem_true(temp.path(), &rel).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing YAML front matter delimiter `---` at top")
-        );
-    }
+            let rel = PathBuf::from("MAIN.md");
+            let err = progress_file_has_finite_incantatem_true(temp.path(), &rel).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("missing YAML front matter delimiter `---` at top")
+            );
+        }
 
-    #[test]
-    fn progress_file_has_finite_incantatem_true_errors_when_front_matter_footer_missing() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let progress = temp.path().join("MAIN.md");
-        std::fs::write(
-            &progress,
-            r#"---
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let progress = temp.path().join("MAIN.md");
+            std::fs::write(
+                &progress,
+                r#"---
 status: open
 finite_incantatem: true
 
 # Overall Goal
 "#,
-        )
-        .expect("write");
+            )
+            .expect("write");
 
-        let rel = PathBuf::from("MAIN.md");
-        let err = progress_file_has_finite_incantatem_true(temp.path(), &rel).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("progress file YAML front matter missing closing `---`")
-        );
-    }
+            let rel = PathBuf::from("MAIN.md");
+            let err = progress_file_has_finite_incantatem_true(temp.path(), &rel).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("progress file YAML front matter missing closing `---`")
+            );
+        }
 
-    #[test]
-    fn progress_file_has_finite_incantatem_true_errors_when_front_matter_value_invalid() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let progress = temp.path().join("MAIN.md");
-        std::fs::write(
-            &progress,
-            r#"---
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let progress = temp.path().join("MAIN.md");
+            std::fs::write(
+                &progress,
+                r#"---
 status: open
 finite_incantatem: maybe
 ---
 
 # Overall Goal
 "#,
-        )
-        .expect("write");
+            )
+            .expect("write");
 
-        let rel = PathBuf::from("MAIN.md");
-        let err = progress_file_has_finite_incantatem_true(temp.path(), &rel).unwrap_err();
-        assert!(err.to_string().contains(
-            "progress file front matter key `finite_incantatem` has invalid boolean value"
-        ));
+            let rel = PathBuf::from("MAIN.md");
+            let err = progress_file_has_finite_incantatem_true(temp.path(), &rel).unwrap_err();
+            assert!(err.to_string().contains(
+                "progress file front matter key `finite_incantatem` has invalid boolean value"
+            ));
+        }
     }
 }
