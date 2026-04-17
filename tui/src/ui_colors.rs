@@ -98,43 +98,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn choose_rgb_for_theme_uses_background_when_available() {
-        assert_eq!(
-            choose_rgb_for_theme((1, 2, 3), (4, 5, 6), Some((255, 255, 255)), None),
-            (1, 2, 3)
-        );
-        assert_eq!(
-            choose_rgb_for_theme((1, 2, 3), (4, 5, 6), Some((0, 0, 0)), None),
-            (4, 5, 6)
-        );
+    fn choose_rgb_for_theme_prefers_detected_theme_and_defaults_to_dark() {
+        for (background, foreground, expected) in [
+            (Some((255, 255, 255)), None, (1, 2, 3)),
+            (Some((0, 0, 0)), None, (4, 5, 6)),
+            (None, Some((255, 255, 255)), (4, 5, 6)),
+            (None, Some((0, 0, 0)), (1, 2, 3)),
+            (None, None, (4, 5, 6)),
+        ] {
+            assert_eq!(
+                choose_rgb_for_theme((1, 2, 3), (4, 5, 6), background, foreground),
+                expected,
+                "background={background:?}, foreground={foreground:?}"
+            );
+        }
     }
 
     #[test]
-    fn choose_rgb_for_theme_inferrs_background_from_foreground() {
-        assert_eq!(
-            choose_rgb_for_theme((1, 2, 3), (4, 5, 6), None, Some((255, 255, 255))),
-            (4, 5, 6)
-        );
-        assert_eq!(
-            choose_rgb_for_theme((1, 2, 3), (4, 5, 6), None, Some((0, 0, 0))),
-            (1, 2, 3)
-        );
-    }
-
-    #[test]
-    fn choose_rgb_for_theme_defaults_to_dark_palette() {
-        assert_eq!(
-            choose_rgb_for_theme((1, 2, 3), (4, 5, 6), None, None),
-            (4, 5, 6)
-        );
-    }
-
-    #[test]
-    fn parse_hex_rgb_parses_rrggbb() {
-        assert_eq!(parse_hex_rgb("#000000"), Some((0, 0, 0)));
-        assert_eq!(parse_hex_rgb("#D68C27"), Some((0xD6, 0x8C, 0x27)));
-        assert_eq!(parse_hex_rgb("F5A742"), Some((0xF5, 0xA7, 0x42)));
-        assert_eq!(parse_hex_rgb("#nope"), None);
-        assert_eq!(parse_hex_rgb("#12345"), None);
+    fn parse_hex_rgb_accepts_rrggbb_and_rejects_invalid_inputs() {
+        for (input, expected) in [
+            ("#000000", Some((0, 0, 0))),
+            ("#D68C27", Some((0xD6, 0x8C, 0x27))),
+            ("F5A742", Some((0xF5, 0xA7, 0x42))),
+            ("#nope", None),
+            ("#12345", None),
+        ] {
+            assert_eq!(parse_hex_rgb(input), expected, "input: {input}");
+        }
     }
 }

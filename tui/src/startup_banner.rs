@@ -202,64 +202,52 @@ mod tests {
     }
 
     #[test]
-    fn startup_banner_snapshot() {
+    fn startup_banner_snapshots_cover_default_and_fast_modes() {
         let dir = Path::new("/Users/example/repo");
-        let lines = build_startup_banner_lines(120, "0.0.1", "gpt-5.2 xhigh", dir);
-        assert_snapshot!("startup_banner_snapshot", to_plain_text(&lines));
+        for (snapshot, model_label) in [
+            ("startup_banner_snapshot", "gpt-5.2 xhigh"),
+            ("startup_banner_fast_snapshot", "gpt-5.2 xhigh [fast]"),
+        ] {
+            let lines = build_startup_banner_lines(120, "0.0.1", model_label, dir);
+            assert_snapshot!(snapshot, to_plain_text(&lines));
+        }
     }
 
     #[test]
-    fn startup_banner_fast_snapshot() {
-        let dir = Path::new("/Users/example/repo");
-        let lines = build_startup_banner_lines(120, "0.0.1", "gpt-5.2 xhigh [fast]", dir);
-        assert_snapshot!("startup_banner_fast_snapshot", to_plain_text(&lines));
-    }
-
-    #[test]
-    fn startup_banner_truncates_ascii_art_without_wrapping_and_keeps_version_visible() {
+    fn startup_banner_truncation_keeps_required_suffixes_visible() {
         let dir = Path::new("/Users/example/repo");
         let width: u16 = 30;
-        let lines = build_startup_banner_lines(width, "0.0.1", "", dir);
 
-        for (idx, line) in lines.iter().enumerate() {
-            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        for (model_label, target_line, suffix) in [
+            ("", POTTER_ASCII_ART.len() - 1, "v0.0.1"),
+            (
+                "gpt-5.2 xhigh [fast]",
+                POTTER_ASCII_ART.len() + 1,
+                "gpt-5.2 [fast]",
+            ),
+        ] {
+            let lines = build_startup_banner_lines(width, "0.0.1", model_label, dir);
+            for (idx, line) in lines.iter().enumerate() {
+                let text: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                assert!(
+                    UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
+                    "line {idx} must fit within {width} cols: {text:?}",
+                );
+            }
+
+            let text: String = lines[target_line]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
             assert!(
-                UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
-                "line {idx} must fit within {width} cols: {text:?}",
+                text.ends_with(suffix),
+                "expected suffix {suffix:?} to remain visible: {text:?}",
             );
         }
-
-        let version_line = &lines[POTTER_ASCII_ART.len() - 1];
-        let text: String = version_line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(
-            text.ends_with("v0.0.1"),
-            "version line must end with version label: {text:?}",
-        );
-    }
-
-    #[test]
-    fn startup_banner_truncates_directory_line_and_keeps_fast_suffix_visible() {
-        let dir = Path::new("/Users/example/repo");
-        let width: u16 = 30;
-        let lines = build_startup_banner_lines(width, "0.0.1", "gpt-5.2 xhigh [fast]", dir);
-
-        let directory_line = &lines[POTTER_ASCII_ART.len() + 1];
-        let text: String = directory_line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert!(
-            UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
-            "directory line must fit within {width} cols: {text:?}",
-        );
-        assert!(
-            text.ends_with("gpt-5.2 [fast]"),
-            "expected fast suffix to remain visible after truncation: {text:?}",
-        );
     }
 }

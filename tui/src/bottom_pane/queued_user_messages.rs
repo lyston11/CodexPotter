@@ -80,13 +80,9 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn desired_height_empty() {
+    fn desired_height_tracks_empty_and_single_message_queues() {
         let queue = QueuedUserMessages::new();
         assert_eq!(queue.desired_height(40), 0);
-    }
-
-    #[test]
-    fn desired_height_one_message() {
         let mut queue = QueuedUserMessages::new();
         queue.messages.push("Hello, world!".to_string());
         assert_eq!(queue.desired_height(40), 2);
@@ -100,61 +96,51 @@ mod tests {
     }
 
     #[test]
-    fn render_one_message() {
-        let mut queue = QueuedUserMessages::new();
-        queue.messages.push("Hello, world!".to_string());
-        assert_snapshot!(
-            "queued_user_messages_one_message",
-            render_to_debug(&queue, 40)
-        );
+    fn render_snapshots_cover_message_count_variants() {
+        for (snapshot, messages) in [
+            ("queued_user_messages_one_message", &["Hello, world!"][..]),
+            (
+                "queued_user_messages_two_messages",
+                &["Hello, world!", "This is another message"][..],
+            ),
+            (
+                "queued_user_messages_more_than_three_messages",
+                &[
+                    "Hello, world!",
+                    "This is another message",
+                    "This is a third message",
+                    "This is a fourth message",
+                ][..],
+            ),
+        ] {
+            let mut queue = QueuedUserMessages::new();
+            queue
+                .messages
+                .extend(messages.iter().map(|message| (*message).to_string()));
+            assert_snapshot!(snapshot, render_to_debug(&queue, 40));
+        }
     }
 
     #[test]
-    fn render_two_messages() {
-        let mut queue = QueuedUserMessages::new();
-        queue.messages.push("Hello, world!".to_string());
-        queue.messages.push("This is another message".to_string());
-        assert_snapshot!(
-            "queued_user_messages_two_messages",
-            render_to_debug(&queue, 40)
-        );
-    }
-
-    #[test]
-    fn render_more_than_three_messages() {
-        let mut queue = QueuedUserMessages::new();
-        queue.messages.push("Hello, world!".to_string());
-        queue.messages.push("This is another message".to_string());
-        queue.messages.push("This is a third message".to_string());
-        queue.messages.push("This is a fourth message".to_string());
-        assert_snapshot!(
-            "queued_user_messages_more_than_three_messages",
-            render_to_debug(&queue, 40)
-        );
-    }
-
-    #[test]
-    fn render_wrapped_message() {
-        let mut queue = QueuedUserMessages::new();
-        queue
-            .messages
-            .push("This is a longer message that should be wrapped".to_string());
-        queue.messages.push("This is another message".to_string());
-        assert_snapshot!(
-            "queued_user_messages_wrapped_message",
-            render_to_debug(&queue, 40)
-        );
-    }
-
-    #[test]
-    fn render_many_line_message() {
-        let mut queue = QueuedUserMessages::new();
-        queue
-            .messages
-            .push("This is\na message\nwith many\nlines".to_string());
-        assert_snapshot!(
-            "queued_user_messages_many_line_message",
-            render_to_debug(&queue, 40)
-        );
+    fn render_snapshots_cover_wrapped_and_multiline_messages() {
+        for (snapshot, messages) in [
+            (
+                "queued_user_messages_wrapped_message",
+                &[
+                    "This is a longer message that should be wrapped",
+                    "This is another message",
+                ][..],
+            ),
+            (
+                "queued_user_messages_many_line_message",
+                &["This is\na message\nwith many\nlines"][..],
+            ),
+        ] {
+            let mut queue = QueuedUserMessages::new();
+            queue
+                .messages
+                .extend(messages.iter().map(|message| (*message).to_string()));
+            assert_snapshot!(snapshot, render_to_debug(&queue, 40));
+        }
     }
 }
