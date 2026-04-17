@@ -51,43 +51,20 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn normalize_local_path_text_strips_windows_verbatim_drive_prefix() {
-        assert_eq!(
-            normalize_local_path_text(r"\\?\C:\Users\me\repo\file.txt"),
-            "C:/Users/me/repo/file.txt"
-        );
-    }
-
-    #[test]
-    fn normalize_local_path_text_strips_windows_verbatim_unc_prefix() {
-        assert_eq!(
-            normalize_local_path_text(r"\\?\UNC\server\share\file.txt"),
-            "//server/share/file.txt"
-        );
-    }
-
-    #[test]
-    fn normalize_local_path_text_strips_markdown_decoded_windows_verbatim_prefixes() {
-        assert_eq!(
-            normalize_local_path_text(r"\?\C:\Users\me\repo\file.txt"),
-            "C:/Users/me/repo/file.txt"
-        );
-        assert_eq!(
-            normalize_local_path_text(r"\?\UNC\server\share\file.txt"),
-            "//server/share/file.txt"
-        );
-    }
-
-    #[test]
-    fn normalize_local_path_text_strips_mixed_separator_windows_verbatim_prefixes() {
-        assert_eq!(
-            normalize_local_path_text(r"\?/C:/Users/me/repo/file.txt"),
-            "C:/Users/me/repo/file.txt"
-        );
-        assert_eq!(
-            normalize_local_path_text(r"\?/UNC/server/share/file.txt"),
-            "//server/share/file.txt"
-        );
+    fn normalize_local_path_text_strips_supported_windows_verbatim_prefixes() {
+        for (input, expected) in [
+            (
+                r"\\?\C:\Users\me\repo\file.txt",
+                "C:/Users/me/repo/file.txt",
+            ),
+            (r"\\?\UNC\server\share\file.txt", "//server/share/file.txt"),
+            (r"\?\C:\Users\me\repo\file.txt", "C:/Users/me/repo/file.txt"),
+            (r"\?\UNC\server\share\file.txt", "//server/share/file.txt"),
+            (r"\?/C:/Users/me/repo/file.txt", "C:/Users/me/repo/file.txt"),
+            (r"\?/UNC/server/share/file.txt", "//server/share/file.txt"),
+        ] {
+            assert_eq!(normalize_local_path_text(input), expected, "input: {input}");
+        }
     }
 
     #[test]

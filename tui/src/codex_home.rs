@@ -110,60 +110,43 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn codex_home_from_env_or_home_uses_default_home_when_env_missing() {
+    fn codex_home_from_env_or_home_supports_default_and_home_relative_env_paths() {
         let home_dir = tempfile::tempdir().expect("home dir");
+        let mut cases = vec![
+            (None, home_dir.path().join(".codex")),
+            (Some("~/custom-codex"), home_dir.path().join("custom-codex")),
+        ];
+        if cfg!(windows) {
+            cases.push((
+                Some("~\\custom-codex"),
+                home_dir.path().join("custom-codex"),
+            ));
+        }
 
-        assert_eq!(
-            codex_home_from_env_or_home_with_env(Some(home_dir.path()), None),
-            Some(home_dir.path().join(".codex"))
-        );
+        for (input, expected) in cases {
+            assert_eq!(
+                codex_home_from_env_or_home_with_env(Some(home_dir.path()), input),
+                Some(expected),
+                "input: {input:?}"
+            );
+        }
     }
 
     #[test]
-    fn codex_home_from_env_or_home_expands_home_relative_env_path_without_validation() {
-        let home_dir = tempfile::tempdir().expect("home dir");
-
-        assert_eq!(
-            codex_home_from_env_or_home_with_env(Some(home_dir.path()), Some("~/custom-codex")),
-            Some(home_dir.path().join("custom-codex"))
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn codex_home_from_env_or_home_expands_windows_style_home_relative_env_path() {
-        let home_dir = tempfile::tempdir().expect("home dir");
-
-        assert_eq!(
-            codex_home_from_env_or_home_with_env(Some(home_dir.path()), Some("~\\custom-codex")),
-            Some(home_dir.path().join("custom-codex"))
-        );
-    }
-
-    #[test]
-    fn find_codex_home_from_env_expands_home_relative_env_path_before_canonicalizing() {
+    fn find_codex_home_from_env_expands_supported_home_relative_env_paths_before_canonicalizing() {
         let home_dir = tempfile::tempdir().expect("home dir");
         let codex_home = home_dir.path().join("custom-codex");
         std::fs::create_dir_all(&codex_home).expect("create codex home");
-
-        let resolved = find_codex_home_from_env(Some(home_dir.path()), Some("~/custom-codex"))
-            .expect("resolve codex home");
         let expected = codex_home.canonicalize().expect("canonicalize codex home");
+        let mut inputs = vec!["~/custom-codex"];
+        if cfg!(windows) {
+            inputs.push("~\\custom-codex");
+        }
 
-        assert_eq!(resolved, expected);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn find_codex_home_from_env_expands_windows_style_home_relative_env_path() {
-        let home_dir = tempfile::tempdir().expect("home dir");
-        let codex_home = home_dir.path().join("custom-codex");
-        std::fs::create_dir_all(&codex_home).expect("create codex home");
-
-        let resolved = find_codex_home_from_env(Some(home_dir.path()), Some("~\\custom-codex"))
-            .expect("resolve codex home");
-        let expected = codex_home.canonicalize().expect("canonicalize codex home");
-
-        assert_eq!(resolved, expected);
+        for input in inputs {
+            let resolved = find_codex_home_from_env(Some(home_dir.path()), Some(input))
+                .expect("resolve codex home");
+            assert_eq!(resolved, expected, "input: {input}");
+        }
     }
 }
