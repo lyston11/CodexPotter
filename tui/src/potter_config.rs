@@ -305,8 +305,8 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn parse_fallback_reads_last_value() {
-        let contents = r#"
+    fn fallback_parsers_read_last_value_for_supported_settings() {
+        let verbosity_contents = r#"
 garbage
 
 [tui]
@@ -317,52 +317,12 @@ something = else
 [tui]
 verbosity = "simple"
 "#;
-
         assert_eq!(
-            parse_tui_verbosity_fallback(contents),
+            parse_tui_verbosity_fallback(verbosity_contents),
             Some(Verbosity::Simple)
         );
-    }
 
-    #[test]
-    fn persist_and_load_roundtrip() -> io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
-
-        persist_tui_verbosity_to_path(&path, Verbosity::Minimal)?;
-        assert_eq!(
-            load_tui_verbosity_from_path(&path)?,
-            Some(Verbosity::Minimal)
-        );
-
-        persist_tui_verbosity_to_path(&path, Verbosity::Simple)?;
-        assert_eq!(
-            load_tui_verbosity_from_path(&path)?,
-            Some(Verbosity::Simple)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn persist_appends_when_toml_invalid() -> io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
-
-        std::fs::write(&path, "[tui\nverbosity = \"minimal\"\n")?;
-        persist_tui_verbosity_to_path(&path, Verbosity::Simple)?;
-
-        let contents = std::fs::read_to_string(&path)?;
-        assert!(contents.contains("[tui]"));
-        assert_eq!(
-            parse_tui_verbosity_fallback(&contents),
-            Some(Verbosity::Simple)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn parse_yolo_fallback_reads_last_value() {
-        let contents = r#"
+        let yolo_contents = r#"
 garbage
 
 [potter]
@@ -373,34 +333,53 @@ something = else
 [potter]
 yolo = false
 "#;
-
-        assert_eq!(parse_yolo_fallback(contents), Some(false));
+        assert_eq!(parse_yolo_fallback(yolo_contents), Some(false));
     }
 
     #[test]
-    fn persist_and_load_yolo_roundtrip() -> io::Result<()> {
+    fn persist_and_load_roundtrip_for_supported_settings() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
+        let verbosity_path = dir.path().join("verbosity.toml");
 
-        persist_yolo_to_path(&path, true)?;
-        assert_eq!(load_yolo_from_path(&path)?, true);
+        persist_tui_verbosity_to_path(&verbosity_path, Verbosity::Minimal)?;
+        assert_eq!(
+            load_tui_verbosity_from_path(&verbosity_path)?,
+            Some(Verbosity::Minimal)
+        );
+        persist_tui_verbosity_to_path(&verbosity_path, Verbosity::Simple)?;
+        assert_eq!(
+            load_tui_verbosity_from_path(&verbosity_path)?,
+            Some(Verbosity::Simple)
+        );
 
-        persist_yolo_to_path(&path, false)?;
-        assert_eq!(load_yolo_from_path(&path)?, false);
+        let yolo_path = dir.path().join("yolo.toml");
+        persist_yolo_to_path(&yolo_path, true)?;
+        assert_eq!(load_yolo_from_path(&yolo_path)?, true);
+        persist_yolo_to_path(&yolo_path, false)?;
+        assert_eq!(load_yolo_from_path(&yolo_path)?, false);
         Ok(())
     }
 
     #[test]
-    fn persist_yolo_appends_when_toml_invalid() -> io::Result<()> {
+    fn persist_appends_when_toml_is_invalid_for_supported_settings() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
+        let verbosity_path = dir.path().join("verbosity.toml");
 
-        std::fs::write(&path, "[potter\nx = 1\n")?;
-        persist_yolo_to_path(&path, true)?;
+        std::fs::write(&verbosity_path, "[tui\nverbosity = \"minimal\"\n")?;
+        persist_tui_verbosity_to_path(&verbosity_path, Verbosity::Simple)?;
+        let verbosity_contents = std::fs::read_to_string(&verbosity_path)?;
+        assert!(verbosity_contents.contains("[tui]"));
+        assert_eq!(
+            parse_tui_verbosity_fallback(&verbosity_contents),
+            Some(Verbosity::Simple)
+        );
 
-        let contents = std::fs::read_to_string(&path)?;
-        assert!(contents.contains("[potter]"));
-        assert_eq!(parse_yolo_fallback(&contents), Some(true));
+        let yolo_path = dir.path().join("yolo.toml");
+        std::fs::write(&yolo_path, "[potter\nx = 1\n")?;
+        persist_yolo_to_path(&yolo_path, true)?;
+        let yolo_contents = std::fs::read_to_string(&yolo_path)?;
+        assert!(yolo_contents.contains("[potter]"));
+        assert_eq!(parse_yolo_fallback(&yolo_contents), Some(true));
         Ok(())
     }
 }
