@@ -28,6 +28,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - No Esc-driven rewind/backtrack UX; `Esc` interrupts running project and otherwise dismisses popups.
 - No steer mode (always queue).
 - Hardens non-bracketed paste bursts against delayed trailing `Enter` key events: after a burst flush, keep Enter suppression alive briefly so they insert a newline instead of submit/queue.
+- Uses a slightly longer non-Windows paste-burst idle timeout (16ms) to avoid splitting large pastes under scheduler jitter.
 - No image pasting support.
 - Bottom pane prompt footer shows the ctrl+g editor hint first, then the optional git branch + working dir (`<branch> ❯ <dir>`). When YOLO is active, it prefixes the footer with a red bold `▲YOLO`.
 - Better word jump by using ICU4X word segmentation, plus grouping consecutive identical ASCII separators as a single segment (e.g. `====` one jump; `+-` splits).

@@ -60,6 +60,9 @@
 //! - `PASTE_BURST_ACTIVE_IDLE_TIMEOUT`: once buffering is active, how long to wait after the last
 //!   char before flushing the accumulated buffer as a paste.
 //!
+//! Divergence (codex-potter): we use a slightly longer non-Windows active idle timeout than
+//! upstream to reduce the chance of large paste bursts being split under scheduler jitter.
+//!
 //! `flush_if_due()` intentionally uses `>` (not `>=`) when comparing elapsed time, so tests and UI
 //! ticks should cross the threshold by at least 1ms (see `recommended_flush_delay()`).
 //!
@@ -163,8 +166,11 @@ const PASTE_BURST_CHAR_INTERVAL: Duration = Duration::from_millis(30);
 
 // Idle timeout before flushing buffered paste content.
 // Slower paste bursts have been observed in Windows environments.
+//
+// Divergence (codex-potter): upstream uses 8ms for non-Windows, but codex-potter uses a slightly
+// longer timeout to reduce the chance of large paste bursts flushing mid-stream on loaded machines.
 #[cfg(not(windows))]
-const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(8);
+const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(16);
 #[cfg(windows)]
 const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(60);
 

@@ -73,6 +73,24 @@ Successful submit paths and bare slash-command dispatch both clear the visible d
 `TextArea::set_text_clearing_elements("")`. That reset intentionally preserves the textarea kill
 buffer, so `Ctrl+Y` can still restore the most recent `Ctrl+K` span into the next draft.
 
+## PasteBurst (Non-bracketed Paste)
+
+Some terminals deliver paste operations as a rapid stream of `KeyCode::Char` / `KeyCode::Enter`
+events (instead of a single bracketed-paste payload). `ChatComposer` uses `PasteBurst` to classify
+these streams and turn them into a single explicit paste (`handle_paste(String)`).
+
+Key timing knobs (see `tui/src/bottom_pane/paste_burst.rs`):
+
+- `PASTE_BURST_CHAR_INTERVAL`: max delay between consecutive "plain" chars for them to be treated
+  as part of the same burst (8ms on non-Windows, 30ms on Windows).
+- `PASTE_BURST_ACTIVE_IDLE_TIMEOUT`: once buffering is active, how long to wait after the last
+  char before flushing the buffered payload as a paste (16ms on non-Windows, 60ms on Windows).
+- `PASTE_ENTER_SUPPRESS_WINDOW`: how long Enter should keep inserting newlines after burst activity
+  (120ms).
+
+Divergence (codex-potter): the non-Windows active idle timeout is slightly longer than upstream to
+reduce the chance of large pastes being split under scheduler jitter on loaded machines.
+
 ## Prompt History (Up/Down, Ctrl+P/Ctrl+N)
 
 History navigation is only activated when it is unlikely the user is trying to move the cursor:
