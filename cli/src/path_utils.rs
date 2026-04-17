@@ -95,13 +95,9 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn expand_tilde_returns_original_when_no_tilde_prefix() {
+    fn expand_tilde_handles_non_tilde_and_home_relative_paths() {
         let path = PathBuf::from("foo").join("bar");
         assert_eq!(expand_tilde(&path), path);
-    }
-
-    #[test]
-    fn expand_tilde_expands_home_when_available() {
         let Some(home) = dirs::home_dir() else {
             assert_eq!(expand_tilde(Path::new("~")), PathBuf::from("~"));
             return;
@@ -112,49 +108,40 @@ mod tests {
     }
 
     #[test]
-    fn expand_tilde_from_home_uses_explicit_home_directory() {
+    fn expand_tilde_from_home_expands_supported_forms() {
         let home = Path::new("/tmp/example-home");
 
+        assert_eq!(expand_tilde_from_home(Path::new("~"), Some(home)), home);
         assert_eq!(
             expand_tilde_from_home(Path::new("~/nested"), Some(home)),
             home.join("nested")
         );
+        if cfg!(windows) {
+            assert_eq!(
+                expand_tilde_from_home(Path::new("~\\nested\\file"), Some(home)),
+                home.join("nested").join("file")
+            );
+        }
     }
 
     #[test]
-    fn is_home_relative_path_text_recognizes_unix_forms() {
+    fn is_home_relative_path_text_recognizes_supported_forms() {
         assert!(is_home_relative_path_text("~"));
         assert!(is_home_relative_path_text("~/nested/file"));
+        if cfg!(windows) {
+            assert!(is_home_relative_path_text("~\\nested\\file"));
+        }
         assert!(!is_home_relative_path_text("~someone/file"));
     }
 
     #[test]
-    #[cfg(windows)]
-    fn expand_tilde_expands_windows_style_home_when_available() {
-        let Some(home) = dirs::home_dir() else {
-            return;
-        };
-
+    fn display_with_tilde_handles_paths_inside_and_outside_home() {
+        let outside_home = PathBuf::from("foo").join("bar");
         assert_eq!(
-            expand_tilde(Path::new("~\\nested\\file")),
-            home.join("nested").join("file")
+            display_with_tilde(&outside_home),
+            outside_home.display().to_string()
         );
-    }
 
-    #[test]
-    #[cfg(windows)]
-    fn is_home_relative_path_text_recognizes_windows_form() {
-        assert!(is_home_relative_path_text("~\\nested\\file"));
-    }
-
-    #[test]
-    fn display_with_tilde_returns_original_when_not_under_home_or_home_missing() {
-        let path = PathBuf::from("foo").join("bar");
-        assert_eq!(display_with_tilde(&path), path.display().to_string());
-    }
-
-    #[test]
-    fn display_with_tilde_uses_tilde_for_home_paths_when_available() {
         let Some(home) = dirs::home_dir() else {
             return;
         };
