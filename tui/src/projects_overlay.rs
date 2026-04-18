@@ -152,15 +152,8 @@ impl ProjectsOverlay {
             return None;
         }
 
-        if self.is_ctrl_char(key_event, 'l')
-            && matches!(key_event.kind, crossterm::event::KeyEventKind::Press)
-        {
-            self.close();
-            return None;
-        }
-
-        if self.is_ctrl_char(key_event, 'c')
-            && matches!(key_event.kind, crossterm::event::KeyEventKind::Press)
+        if matches!(key_event.kind, crossterm::event::KeyEventKind::Press)
+            && (self.is_ctrl_char(key_event, 'l') || self.is_ctrl_char(key_event, 'c'))
         {
             self.close();
             return None;
