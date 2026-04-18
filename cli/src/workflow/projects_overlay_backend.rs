@@ -170,7 +170,8 @@ async fn serve_projects_overlay_requests(
                     Err(_) => return,
                 };
 
-                let should_send = match &in_flight.as_ref().map(|in_flight| &in_flight.kind) {
+                let in_flight_kind = in_flight.as_ref().map(|in_flight| &in_flight.kind);
+                let should_send = match in_flight_kind {
                     Some(InFlightKind::List) => true,
                     Some(InFlightKind::Details { project_dir }) => {
                         !pending_list && pending_details.as_ref().is_none_or(|pending| pending == project_dir)
@@ -184,8 +185,7 @@ async fn serve_projects_overlay_requests(
 
                 // If a duplicate details request arrived while we were parsing, clear it so we do
                 // not immediately re-run the same filesystem work.
-                if let Some(InFlightKind::Details { project_dir }) =
-                    in_flight.as_ref().map(|in_flight| &in_flight.kind)
+                if let Some(InFlightKind::Details { project_dir }) = in_flight_kind
                     && pending_details
                         .as_ref()
                         .is_some_and(|pending| pending == project_dir)
