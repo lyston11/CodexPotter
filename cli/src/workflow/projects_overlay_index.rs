@@ -65,13 +65,8 @@ fn discover_projects_for_overlay_internal(workdir: &Path) -> Vec<DiscoveredOverl
     let mut projects = Vec::new();
 
     for progress_file in super::project_progress_files::discover_project_progress_files(workdir) {
-        match project_entry_for_progress_file(workdir, &progress_file) {
-            Ok(Some(project)) => projects.push(project),
-            Ok(None) => {}
-            Err(_) => {
-                // Keep discovery best-effort: the overlay should still open even if individual
-                // projects are malformed.
-            }
+        if let Ok(project) = project_entry_for_progress_file(workdir, &progress_file) {
+            projects.push(project);
         }
     }
 
@@ -81,7 +76,7 @@ fn discover_projects_for_overlay_internal(workdir: &Path) -> Vec<DiscoveredOverl
 fn project_entry_for_progress_file(
     workdir: &Path,
     progress_file_abs: &Path,
-) -> anyhow::Result<Option<DiscoveredOverlayProject>> {
+) -> anyhow::Result<DiscoveredOverlayProject> {
     let project_dir_abs = progress_file_abs
         .parent()
         .context("derive project_dir from progress file path")?;
@@ -98,7 +93,7 @@ fn project_entry_for_progress_file(
 
     let Some(index) = resume_index else {
         let description = read_project_description(progress_file_abs, None).unwrap_or_default();
-        return Ok(Some(DiscoveredOverlayProject {
+        return Ok(DiscoveredOverlayProject {
             row: PotterProjectListEntry {
                 project_dir,
                 progress_file,
@@ -108,7 +103,7 @@ fn project_entry_for_progress_file(
                 status: PotterProjectListStatus::Incomplete,
             },
             resume_index: None,
-        }));
+        });
     };
 
     let status = project_list_status(&index);
@@ -120,7 +115,7 @@ fn project_entry_for_progress_file(
     let rounds = project_list_rounds(&status, &index);
     let started_at_unix_secs = project_started_at_unix_secs(workdir, &index);
 
-    Ok(Some(DiscoveredOverlayProject {
+    Ok(DiscoveredOverlayProject {
         row: PotterProjectListEntry {
             project_dir,
             progress_file,
@@ -130,7 +125,7 @@ fn project_entry_for_progress_file(
             status,
         },
         resume_index: Some(index),
-    }))
+    })
 }
 
 fn relativize_path(workdir: &Path, path: &Path) -> PathBuf {
