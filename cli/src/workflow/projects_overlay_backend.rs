@@ -6,12 +6,21 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use codex_tui::ProjectsOverlayRequest;
 use codex_tui::ProjectsOverlayResponse;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
+
+/// Debounce window for details parsing requests.
+///
+/// The projects overlay enables "alternate scroll" (mouse wheel emits ↑/↓ escape codes in many
+/// terminals). When a user scrolls quickly, the TUI can generate a burst of selection changes.
+/// Parsing project details is filesystem-heavy, so we debounce/coalesce `Details` requests to
+/// avoid building a long backlog of redundant work.
+const DETAILS_DEBOUNCE_WINDOW: Duration = Duration::from_millis(40);
 
 /// Spawn a background task that serves projects overlay requests for the given `workdir`.
 pub fn spawn_projects_overlay_provider(
@@ -38,25 +47,137 @@ pub fn spawn_projects_overlay_provider(
     }
 }
 
+#[derive(Debug)]
+enum InFlightKind {
+    List,
+    Details { project_dir: PathBuf },
+}
+
+struct InFlight {
+    kind: InFlightKind,
+    handle: tokio::task::JoinHandle<ProjectsOverlayResponse>,
+}
+
 async fn serve_projects_overlay_requests(
     workdir: PathBuf,
     mut request_rx: UnboundedReceiver<ProjectsOverlayRequest>,
     response_tx: UnboundedSender<ProjectsOverlayResponse>,
 ) {
-    while let Some(request) = request_rx.recv().await {
-        // Discovery/detail parsing is synchronous and can touch the filesystem, so run it on the
-        // blocking pool instead of stalling the async runtime.
-        let workdir = workdir.clone();
-        let response = match tokio::task::spawn_blocking(move || {
-            response_for_projects_overlay_request(&workdir, request)
-        })
-        .await
-        {
-            Ok(response) => response,
-            Err(_) => return,
-        };
-        if response_tx.send(response).is_err() {
-            return;
+    let mut pending_list = false;
+    let mut pending_details: Option<PathBuf> = None;
+    let mut details_debounce_until: Option<tokio::time::Instant> = None;
+    let mut in_flight: Option<InFlight> = None;
+
+    loop {
+        // Start work if we're idle and either:
+        // - a list request is pending, or
+        // - a details request is pending and past its debounce window.
+        if in_flight.is_none() {
+            if pending_list {
+                pending_list = false;
+                pending_details = None;
+                details_debounce_until = None;
+
+                let workdir = workdir.clone();
+                in_flight = Some(InFlight {
+                    kind: InFlightKind::List,
+                    handle: tokio::task::spawn_blocking(move || {
+                        response_for_projects_overlay_request(
+                            &workdir,
+                            ProjectsOverlayRequest::List,
+                        )
+                    }),
+                });
+            } else if let Some(project_dir) = pending_details.take() {
+                let now = tokio::time::Instant::now();
+                if details_debounce_until.is_some_and(|deadline| deadline > now) {
+                    // Not ready yet; put it back and wait for the debounce timer to fire.
+                    pending_details = Some(project_dir);
+                } else {
+                    details_debounce_until = None;
+                    let workdir = workdir.clone();
+                    let project_dir_for_kind = project_dir.clone();
+                    in_flight = Some(InFlight {
+                        kind: InFlightKind::Details {
+                            project_dir: project_dir_for_kind,
+                        },
+                        handle: tokio::task::spawn_blocking(move || {
+                            response_for_projects_overlay_request(
+                                &workdir,
+                                ProjectsOverlayRequest::Details { project_dir },
+                            )
+                        }),
+                    });
+                }
+            }
+        }
+
+        let debounce_deadline = details_debounce_until;
+        tokio::select! {
+            maybe_request = request_rx.recv() => {
+                let Some(request) = maybe_request else {
+                    return;
+                };
+
+                match request {
+                    ProjectsOverlayRequest::List => {
+                        pending_list = true;
+                        pending_details = None;
+                        details_debounce_until = None;
+                    }
+                    ProjectsOverlayRequest::Details { project_dir } => {
+                        pending_details = Some(project_dir);
+                        details_debounce_until = Some(tokio::time::Instant::now() + DETAILS_DEBOUNCE_WINDOW);
+                    }
+                }
+            }
+            result = async {
+                let handle = &mut in_flight.as_mut()?.handle;
+                Some(handle.await)
+            }, if in_flight.is_some() => {
+                let Some(result) = result else {
+                    return;
+                };
+                let response = match result {
+                    Ok(response) => response,
+                    Err(_) => return,
+                };
+
+                let should_send = match &in_flight.as_ref().map(|in_flight| &in_flight.kind) {
+                    Some(InFlightKind::List) => true,
+                    Some(InFlightKind::Details { project_dir }) => {
+                        !pending_list && pending_details.as_ref().is_none_or(|pending| pending == project_dir)
+                    }
+                    None => false,
+                };
+
+                if should_send && response_tx.send(response).is_err() {
+                    return;
+                }
+
+                // If a duplicate details request arrived while we were parsing, clear it so we do
+                // not immediately re-run the same filesystem work.
+                if let Some(InFlightKind::Details { project_dir }) =
+                    in_flight.as_ref().map(|in_flight| &in_flight.kind)
+                    && pending_details
+                        .as_ref()
+                        .is_some_and(|pending| pending == project_dir)
+                {
+                    pending_details = None;
+                    details_debounce_until = None;
+                }
+
+                in_flight = None;
+            }
+            _ = async {
+                let Some(deadline) = debounce_deadline else {
+                    return;
+                };
+                tokio::time::sleep_until(deadline).await;
+            }, if in_flight.is_none() && !pending_list && pending_details.is_some() && debounce_deadline.is_some() => {
+                // Debounce fired; start the pending details work on the next loop iteration.
+                details_debounce_until = None;
+            }
         }
     }
 }
@@ -81,5 +202,47 @@ fn response_for_projects_overlay_request(
             );
             ProjectsOverlayResponse::Details { details }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn coalesces_details_requests_into_latest_after_burst() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut backend = spawn_projects_overlay_provider(temp.path().to_path_buf());
+
+        let project_dirs = [
+            PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            PathBuf::from(".codexpotter/projects/2026/04/16/2"),
+            PathBuf::from(".codexpotter/projects/2026/04/16/3"),
+        ];
+        for project_dir in &project_dirs {
+            backend
+                .request_tx
+                .send(ProjectsOverlayRequest::Details {
+                    project_dir: project_dir.clone(),
+                })
+                .expect("send details request");
+        }
+
+        let response = tokio::time::timeout(Duration::from_secs(1), backend.response_rx.recv())
+            .await
+            .expect("timed out waiting for response")
+            .expect("receive response");
+        match response {
+            ProjectsOverlayResponse::Details { details } => {
+                assert_eq!(details.project_dir, project_dirs[2]);
+            }
+            other => panic!("expected details response, got {other:?}"),
+        }
+
+        let followup =
+            tokio::time::timeout(Duration::from_millis(100), backend.response_rx.recv()).await;
+        assert!(followup.is_err(), "expected no extra details responses");
     }
 }

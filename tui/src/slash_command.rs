@@ -27,7 +27,7 @@ impl SlashCommand {
     pub fn description(self) -> &'static str {
         match self {
             SlashCommand::Mention => "mention a file",
-            SlashCommand::List => "open the projects list overlay",
+            SlashCommand::List => "(ctrl+l) open the projects list overlay",
             SlashCommand::CompactKb => "compact CodexPotter's knowledge base",
             SlashCommand::Yolo => "configure whether to enable YOLO by default",
             SlashCommand::PotterXModel => {
