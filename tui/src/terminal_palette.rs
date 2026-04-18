@@ -10,6 +10,23 @@ fn bump_palette_version() {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DefaultColorSlots {
+    fg: Option<(u8, u8, u8)>,
+    bg: Option<(u8, u8, u8)>,
+}
+
+fn build_default_color_slots(
+    fg: Option<(u8, u8, u8)>,
+    bg: Option<(u8, u8, u8)>,
+) -> Option<DefaultColorSlots> {
+    if fg.is_none() && bg.is_none() {
+        None
+    } else {
+        Some(DefaultColorSlots { fg, bg })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StdoutColorLevel {
     TrueColor,
     Ansi256,
@@ -59,22 +76,12 @@ pub fn requery_default_colors() {
     bump_palette_version();
 }
 
-#[derive(Clone, Copy)]
-pub struct DefaultColors {
-    fg: (u8, u8, u8),
-    bg: (u8, u8, u8),
-}
-
-pub fn default_colors() -> Option<DefaultColors> {
-    imp::default_colors()
-}
-
 pub fn default_fg() -> Option<(u8, u8, u8)> {
-    default_colors().map(|c| c.fg)
+    imp::default_color_slots()?.fg
 }
 
 pub fn default_bg() -> Option<(u8, u8, u8)> {
-    default_colors().map(|c| c.bg)
+    imp::default_color_slots()?.bg
 }
 
 /// Returns a monotonic counter that increments whenever `requery_default_colors()` runs.
@@ -88,7 +95,8 @@ pub fn palette_version() -> u64 {
 
 #[cfg(all(unix, not(test)))]
 mod imp {
-    use super::DefaultColors;
+    use super::DefaultColorSlots;
+    use super::build_default_color_slots;
     use crossterm::style::Color as CrosstermColor;
     use crossterm::style::query_background_color;
     use crossterm::style::query_foreground_color;
@@ -125,15 +133,15 @@ mod imp {
         }
     }
 
-    fn default_colors_cache() -> &'static Mutex<Cache<DefaultColors>> {
-        static CACHE: OnceLock<Mutex<Cache<DefaultColors>>> = OnceLock::new();
+    fn default_colors_cache() -> &'static Mutex<Cache<DefaultColorSlots>> {
+        static CACHE: OnceLock<Mutex<Cache<DefaultColorSlots>>> = OnceLock::new();
         CACHE.get_or_init(|| Mutex::new(Cache::default()))
     }
 
-    pub fn default_colors() -> Option<DefaultColors> {
+    pub fn default_color_slots() -> Option<DefaultColorSlots> {
         let cache = default_colors_cache();
         let mut cache = cache.lock().ok()?;
-        cache.get_or_init_with(|| query_default_colors().unwrap_or_default())
+        cache.get_or_init_with(query_default_color_slots)
     }
 
     pub fn requery_default_colors() {
@@ -142,14 +150,20 @@ mod imp {
             if cache.attempted && cache.value.is_none() {
                 return;
             }
-            cache.refresh_with(|| query_default_colors().unwrap_or_default());
+            cache.refresh_with(query_default_color_slots);
         }
     }
 
-    fn query_default_colors() -> std::io::Result<Option<DefaultColors>> {
-        let fg = query_foreground_color()?.and_then(color_to_tuple);
-        let bg = query_background_color()?.and_then(color_to_tuple);
-        Ok(fg.zip(bg).map(|(fg, bg)| DefaultColors { fg, bg }))
+    fn query_default_color_slots() -> Option<DefaultColorSlots> {
+        let fg = query_foreground_color()
+            .ok()
+            .flatten()
+            .and_then(color_to_tuple);
+        let bg = query_background_color()
+            .ok()
+            .flatten()
+            .and_then(color_to_tuple);
+        build_default_color_slots(fg, bg)
     }
 
     fn color_to_tuple(color: CrosstermColor) -> Option<(u8, u8, u8)> {
@@ -162,9 +176,9 @@ mod imp {
 
 #[cfg(not(all(unix, not(test))))]
 mod imp {
-    use super::DefaultColors;
+    use super::DefaultColorSlots;
 
-    pub fn default_colors() -> Option<DefaultColors> {
+    pub fn default_color_slots() -> Option<DefaultColorSlots> {
         None
     }
 
@@ -438,3 +452,29 @@ pub const XTERM_COLORS: [(u8, u8, u8); 256] = [
     (228, 228, 228), // 254 Grey89
     (238, 238, 238), // 255 Grey93
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn default_color_slots_preserve_partial_query_results() {
+        let fg = Some((1, 2, 3));
+        let bg = Some((4, 5, 6));
+
+        assert_eq!(
+            build_default_color_slots(fg, None),
+            Some(DefaultColorSlots { fg, bg: None })
+        );
+        assert_eq!(
+            build_default_color_slots(None, bg),
+            Some(DefaultColorSlots { fg: None, bg })
+        );
+        assert_eq!(
+            build_default_color_slots(fg, bg),
+            Some(DefaultColorSlots { fg, bg })
+        );
+        assert_eq!(build_default_color_slots(None, None), None);
+    }
+}

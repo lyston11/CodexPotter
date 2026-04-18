@@ -266,7 +266,8 @@ impl Tui {
         let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
         // Cache this to avoid contention with the event reader.
         supports_color::on_cached(supports_color::Stream::Stdout);
-        let _ = crate::terminal_palette::default_colors();
+        let _ = crate::terminal_palette::default_fg();
+        let _ = crate::terminal_palette::default_bg();
 
         Self {
             frame_requester,
