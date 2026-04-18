@@ -41,13 +41,15 @@ The workflow template defines:
   - **Not currently parsed by the `codex-potter` runner** (the CLI does not read it).
 - `short_title`: short human-readable title for the project
   - Set during the first round (when `status: initial`).
-  - Used by the resume picker UI when present (`cli/src/workflow/resume_picker_index.rs`).
+  - Used by the projects overlay (`/list`, `ctrl+l`, and the resume picker) when present
+    (`cli/src/workflow/projects_overlay_index.rs`).
 - `git_commit`: git commit SHA captured when the project is created
   - Empty when the working directory is not a git repo (or HEAD cannot be resolved).
   - Used in the project-success summary (`cli/src/app_server/potter/server.rs`).
 - `git_branch`: git branch name captured when the project is created
   - Empty when not on a branch (detached HEAD) or when the working directory is not a git repo.
-  - Used by the resume picker UI when present (`cli/src/workflow/resume_picker_index.rs`).
+  - Used by the projects overlay details pane when present
+    (`cli/src/workflow/projects_overlay_details.rs` + `tui/src/projects_overlay.rs`).
 - `finite_incantatem`: `true` | `false`
   - When `true`, the CLI stops running additional rounds for the current project
     (`cli/src/workflow/round_runner.rs`).
