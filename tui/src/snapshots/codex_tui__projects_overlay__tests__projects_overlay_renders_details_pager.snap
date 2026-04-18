@@ -13,4 +13,4 @@ expression: terminal.backend()
 "                                                                                "
 "                                Done                                            "
 "                                                                                "
-"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page                      ▪▫  "
+"  Esc close  Tab maximize  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page        ▪▫  "

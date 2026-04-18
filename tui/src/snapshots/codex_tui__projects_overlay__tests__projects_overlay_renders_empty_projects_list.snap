@@ -9,4 +9,4 @@ expression: terminal.backend()
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page                          "
+"  Esc close  Tab maximize  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page            "

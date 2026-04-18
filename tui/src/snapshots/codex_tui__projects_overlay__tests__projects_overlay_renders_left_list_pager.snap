@@ -13,4 +13,4 @@ expression: terminal.backend()
 "    Paged project 3                                         "
 "                                                            "
 "         ▪▫▫                                                "
-"  Esc close  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page      "
+"  Esc  Tab maximize  ↑↓ switch ⇧↑↓ scroll ^U/^D page        "

@@ -42,10 +42,13 @@ struct OverlayMetrics {
 #[derive(Debug, Default)]
 /// UI-only state machine for the inline projects list overlay (`Ctrl+L` / `/list`).
 ///
+/// Press `Tab` to toggle a maximized details view (hides the left projects list).
+///
 /// This struct intentionally contains no filesystem/business logic; the CLI workflow layer owns
 /// discovery/detail loading and feeds results back through the provider channels.
 pub struct ProjectsOverlay {
     open: bool,
+    maximized: bool,
 
     list_loading: bool,
     list_error: Option<String>,
@@ -74,6 +77,9 @@ impl ProjectsOverlay {
             None
         };
         self.open = true;
+        if !was_open {
+            self.maximized = false;
+        }
         self.list_loading = true;
         self.list_error = None;
         self.projects.clear();
@@ -88,6 +94,7 @@ impl ProjectsOverlay {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.maximized = false;
     }
 
     pub fn on_projects_list(
@@ -158,6 +165,10 @@ impl ProjectsOverlay {
                     self.close();
                     return None;
                 }
+                KeyCode::Tab if matches!(key_event.kind, crossterm::event::KeyEventKind::Press) => {
+                    self.maximized = !self.maximized;
+                    return None;
+                }
                 KeyCode::Up => return self.bump_selection(-1),
                 KeyCode::Down => return self.bump_selection(1),
                 _ => {}
@@ -213,7 +224,7 @@ impl ProjectsOverlay {
         let right_width = available_width.saturating_sub(left_width);
 
         let left_area = Rect::new(body_area.x, body_area.y, left_width, body_area.height);
-        let right_area = Rect::new(
+        let list_right_area = Rect::new(
             body_area
                 .x
                 .saturating_add(left_width)
@@ -222,6 +233,11 @@ impl ProjectsOverlay {
             right_width,
             body_area.height,
         );
+        let right_area = if self.maximized {
+            body_area
+        } else {
+            list_right_area
+        };
 
         let left_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -237,12 +253,21 @@ impl ProjectsOverlay {
             left_list_area.height.saturating_sub(1),
         );
 
-        let right_content_area = Rect::new(
-            right_area.x,
-            right_area.y.saturating_add(1),
-            right_area.width.saturating_sub(2),
-            right_area.height.saturating_sub(2),
-        );
+        let right_content_area = if self.maximized {
+            Rect::new(
+                right_area.x.saturating_add(2),
+                right_area.y.saturating_add(1),
+                right_area.width.saturating_sub(4),
+                right_area.height.saturating_sub(2),
+            )
+        } else {
+            Rect::new(
+                right_area.x,
+                right_area.y.saturating_add(1),
+                right_area.width.saturating_sub(2),
+                right_area.height.saturating_sub(2),
+            )
+        };
 
         self.metrics = OverlayMetrics {
             left_inner_width: left_content_area.width,
@@ -251,9 +276,13 @@ impl ProjectsOverlay {
             right_total_lines: 0,
         };
 
-        let left_lines = self.render_left_lines(left_content_area, now);
-        Paragraph::new(Text::from(left_lines)).render(left_content_area, buf);
-        self.render_left_pager(left_pager_area, buf);
+        if self.maximized {
+            self.ensure_selected_visible();
+        } else {
+            let left_lines = self.render_left_lines(left_content_area, now);
+            Paragraph::new(Text::from(left_lines)).render(left_content_area, buf);
+            self.render_left_pager(left_pager_area, buf);
+        }
 
         let right_lines = self.build_right_lines(right_content_area, now);
         self.metrics.right_total_lines = right_lines.len();
@@ -324,10 +353,19 @@ impl ProjectsOverlay {
     }
 
     fn footer_hint_variants(&self) -> Vec<Line<'static>> {
+        let tab_hint = if self.maximized {
+            " exit maximize"
+        } else {
+            " maximize"
+        };
+
         vec![
             Line::from(vec![
                 "Esc".into(),
                 " close".dim(),
+                "  ".into(),
+                "Tab".into(),
+                tab_hint.dim(),
                 "  ".into(),
                 "↑↓".into(),
                 " switch".dim(),
@@ -341,6 +379,9 @@ impl ProjectsOverlay {
             Line::from(vec![
                 "Esc".into(),
                 "  ".into(),
+                "Tab".into(),
+                tab_hint.dim(),
+                "  ".into(),
                 "↑↓".into(),
                 " switch".dim(),
                 " ".into(),
@@ -352,6 +393,9 @@ impl ProjectsOverlay {
             ]),
             Line::from(vec![
                 "Esc".into(),
+                "  ".into(),
+                "Tab".into(),
+                tab_hint.dim(),
                 "  ".into(),
                 "↑↓".into(),
                 " ".into(),
@@ -999,6 +1043,80 @@ mod tests {
         let terminal =
             render_overlay_to_terminal(&mut overlay, 80, 18, UNIX_EPOCH + Duration::from_secs(120));
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_renders_maximized_details_full_width() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Maximized projects overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 4,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 4,
+                final_message_unix_secs: Some(1),
+                final_message: Some(String::from("Done")),
+            }],
+            error: None,
+        });
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        let terminal =
+            render_overlay_to_terminal(&mut overlay, 80, 18, UNIX_EPOCH + Duration::from_secs(120));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_maximized_still_switches_selection() {
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: first_project_dir,
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                    description: "First project".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: second_project_dir.clone(),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/2/MAIN.md"),
+                    description: "Second project".to_string(),
+                    started_at_unix_secs: Some(2),
+                    rounds: 2,
+                    status: PotterProjectListStatus::Interrupted,
+                },
+            ],
+            None,
+        );
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        match overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)) {
+            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected details request after moving selection, got {other:?}"),
+        }
     }
 
     #[test]
