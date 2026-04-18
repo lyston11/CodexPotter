@@ -25,21 +25,6 @@ use crate::key_hint;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
 
-/// A single row in the resume picker UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResumePickerRow {
-    /// A project path accepted by `codex-potter resume <PROJECT_PATH>`.
-    pub project_path: PathBuf,
-    /// The user-facing prompt/title to render in the picker.
-    pub user_request: String,
-    /// The created timestamp, used for display and sorting.
-    pub created_at: SystemTime,
-    /// The last updated timestamp, used for display and sorting (newest first).
-    pub updated_at: SystemTime,
-    /// Git branch recorded in the project progress file front matter.
-    pub git_branch: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResumePickerOutcome {
     StartFresh,

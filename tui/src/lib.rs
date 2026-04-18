@@ -88,7 +88,6 @@ pub use potter_tui::ProjectsOverlayRequest;
 pub use potter_tui::ProjectsOverlayResponse;
 pub use potter_tui::RenderRoundParams;
 pub use resume_picker_prompt::ResumePickerOutcome;
-pub use resume_picker_prompt::ResumePickerRow;
 pub use update_action::UpdateAction;
 pub use version::CODEX_POTTER_VERSION;
 
