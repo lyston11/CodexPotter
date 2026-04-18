@@ -4,6 +4,7 @@
 //! is owned by the CLI workflow layer. This helper keeps the control-plane logic consistent
 //! across the live project render loop and the prompt screen (when no project is running).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -26,6 +27,29 @@ const DETAILS_DEBOUNCE_WINDOW: Duration = Duration::from_millis(40);
 pub fn spawn_projects_overlay_provider(
     workdir: PathBuf,
 ) -> codex_tui::ProjectsOverlayProviderChannels {
+    spawn_projects_overlay_provider_with_mode(workdir, OverlayListMode::AllProjects)
+}
+
+/// Spawn a background task that serves projects overlay requests for `codex-potter resume`.
+///
+/// Unlike the normal `/list` overlay provider, this only returns projects that are resumable
+/// without missing upstream rollout files.
+pub fn spawn_resumable_projects_overlay_provider(
+    workdir: PathBuf,
+) -> codex_tui::ProjectsOverlayProviderChannels {
+    spawn_projects_overlay_provider_with_mode(workdir, OverlayListMode::ResumableProjects)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayListMode {
+    AllProjects,
+    ResumableProjects,
+}
+
+fn spawn_projects_overlay_provider_with_mode(
+    workdir: PathBuf,
+    mode: OverlayListMode,
+) -> codex_tui::ProjectsOverlayProviderChannels {
     let (request_tx, request_rx): (
         UnboundedSender<ProjectsOverlayRequest>,
         UnboundedReceiver<ProjectsOverlayRequest>,
@@ -37,6 +61,7 @@ pub fn spawn_projects_overlay_provider(
 
     tokio::spawn(serve_projects_overlay_requests(
         workdir,
+        mode,
         request_rx,
         response_tx,
     ));
@@ -60,6 +85,7 @@ struct InFlight {
 
 async fn serve_projects_overlay_requests(
     workdir: PathBuf,
+    mode: OverlayListMode,
     mut request_rx: UnboundedReceiver<ProjectsOverlayRequest>,
     response_tx: UnboundedSender<ProjectsOverlayResponse>,
 ) {
@@ -84,6 +110,7 @@ async fn serve_projects_overlay_requests(
                     handle: tokio::task::spawn_blocking(move || {
                         response_for_projects_overlay_request(
                             &workdir,
+                            mode,
                             ProjectsOverlayRequest::List,
                         )
                     }),
@@ -104,6 +131,7 @@ async fn serve_projects_overlay_requests(
                         handle: tokio::task::spawn_blocking(move || {
                             response_for_projects_overlay_request(
                                 &workdir,
+                                mode,
                                 ProjectsOverlayRequest::Details { project_dir },
                             )
                         }),
@@ -184,15 +212,20 @@ async fn serve_projects_overlay_requests(
 
 fn response_for_projects_overlay_request(
     workdir: &Path,
+    mode: OverlayListMode,
     request: ProjectsOverlayRequest,
 ) -> ProjectsOverlayResponse {
     match request {
         ProjectsOverlayRequest::List => {
-            let (projects, error) =
+            let (mut projects, error) =
                 match super::projects_overlay_index::discover_projects_for_overlay(workdir) {
                     Ok(projects) => (projects, None),
                     Err(err) => (Vec::new(), Some(format!("{err:#}"))),
                 };
+            if mode == OverlayListMode::ResumableProjects {
+                let resumable = resumable_project_dirs_for_overlay(workdir);
+                projects.retain(|project| resumable.contains(&project.project_dir));
+            }
             ProjectsOverlayResponse::List { projects, error }
         }
         ProjectsOverlayRequest::Details { project_dir } => {
@@ -203,6 +236,69 @@ fn response_for_projects_overlay_request(
             ProjectsOverlayResponse::Details { details }
         }
     }
+}
+
+fn resumable_project_dirs_for_overlay(workdir: &Path) -> HashSet<PathBuf> {
+    let mut out = HashSet::new();
+    for progress_file in super::project_progress_files::discover_project_progress_files(workdir) {
+        let Some(project_dir_abs) = progress_file.parent() else {
+            continue;
+        };
+        if !project_dir_is_resumable(workdir, project_dir_abs) {
+            continue;
+        }
+        let project_dir = project_dir_abs
+            .strip_prefix(workdir)
+            .unwrap_or(project_dir_abs)
+            .to_path_buf();
+        out.insert(project_dir);
+    }
+    out
+}
+
+fn project_dir_is_resumable(workdir: &Path, project_dir_abs: &Path) -> bool {
+    let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(project_dir_abs);
+    if !potter_rollout_path.is_file() {
+        return false;
+    }
+
+    let potter_lines = match crate::workflow::rollout::read_lines(&potter_rollout_path) {
+        Ok(lines) => lines,
+        Err(_) => return false,
+    };
+    if potter_lines.is_empty() {
+        return false;
+    }
+
+    let index = match crate::workflow::rollout_resume_index::build_resume_index(&potter_lines) {
+        Ok(index) => index,
+        Err(_) => return false,
+    };
+
+    all_referenced_rollouts_exist(workdir, &index)
+}
+
+fn all_referenced_rollouts_exist(
+    workdir: &Path,
+    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
+) -> bool {
+    let mut all_paths: Vec<&Path> = Vec::new();
+    for round in &index.completed_rounds {
+        if let Some(configured) = &round.configured {
+            all_paths.push(configured.rollout_path.as_path());
+        }
+    }
+    if let Some(unfinished) = &index.unfinished_round {
+        all_paths.push(unfinished.rollout_path.as_path());
+    }
+
+    all_paths.into_iter().all(|rollout_path| {
+        let resolved = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            workdir,
+            rollout_path,
+        );
+        resolved.is_file()
+    })
 }
 
 #[cfg(test)]

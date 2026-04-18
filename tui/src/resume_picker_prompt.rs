@@ -2,9 +2,8 @@
 //!
 //! # Divergence from upstream Codex TUI
 //!
-//! - The final column is `User Request` (CodexPotter project prompt/title) instead of upstream
-//!   `Conversation`.
-//! - The picker operates on an in-memory list provided by the CLI (no pagination / fork action).
+//! `codex-potter` reuses the `/list` projects overlay UI for `codex-potter resume` selection.
+//! The overlay provider is owned by the CLI workflow layer, so this module remains UI-only.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -14,23 +13,15 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Constraint;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget as _;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
-use unicode_width::UnicodeWidthStr;
 
-use crate::human_time::human_time_ago;
 use crate::key_hint;
-use crate::text_formatting::truncate_text;
-use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
 
@@ -58,35 +49,55 @@ pub enum ResumePickerOutcome {
 
 pub async fn run_resume_picker_prompt_with_tui(
     tui: &mut Tui,
-    rows: Vec<ResumePickerRow>,
+    projects_overlay_provider: crate::ProjectsOverlayProviderChannels,
 ) -> anyhow::Result<ResumePickerOutcome> {
     let alt = AltScreenGuard::enter(tui);
 
-    let mut screen = ResumePickerScreen::new(alt.tui.frame_requester(), rows, SystemTime::now());
-    if let Ok(size) = alt.tui.terminal.size() {
-        screen.set_view_rows(size.height.saturating_sub(4) as usize);
-    }
+    let mut response_rx = projects_overlay_provider.response_rx;
+    let request_tx = projects_overlay_provider.request_tx;
+
+    let now = SystemTime::now();
+    let (mut screen, request) = ResumePickerOverlay::new(now);
+    let _ = request_tx.send(request);
+
     alt.tui.draw(u16::MAX, |frame| {
-        frame.render_widget_ref(&screen, frame.area());
+        screen.set_now(SystemTime::now());
+        screen.render(frame.area(), frame.buffer_mut());
     })?;
 
     let events = alt.tui.event_stream();
     tokio::pin!(events);
 
     while !screen.is_done() {
-        let Some(event) = events.next().await else {
-            break;
-        };
-        match event {
-            TuiEvent::Key(key_event) => screen.handle_key(key_event),
-            TuiEvent::Paste(_) => {}
-            TuiEvent::Draw => {
-                if let Ok(size) = alt.tui.terminal.size() {
-                    screen.set_view_rows(size.height.saturating_sub(4) as usize);
+        tokio::select! {
+            maybe_event = events.next() => {
+                let Some(event) = maybe_event else {
+                    break;
+                };
+                match event {
+                    TuiEvent::Key(key_event) => {
+                        if let Some(request) = screen.handle_key(key_event) {
+                            let _ = request_tx.send(request);
+                        }
+                        alt.tui.frame_requester().schedule_frame();
+                    }
+                    TuiEvent::Paste(_) => {}
+                    TuiEvent::Draw => {
+                        alt.tui.draw(u16::MAX, |frame| {
+                            screen.set_now(SystemTime::now());
+                            screen.render(frame.area(), frame.buffer_mut());
+                        })?;
+                    }
                 }
-                alt.tui.draw(u16::MAX, |frame| {
-                    frame.render_widget_ref(&screen, frame.area());
-                })?;
+            }
+            maybe_response = response_rx.recv() => {
+                let Some(response) = maybe_response else {
+                    break;
+                };
+                if let Some(request) = screen.handle_overlay_response(response) {
+                    let _ = request_tx.send(request);
+                }
+                alt.tui.frame_requester().schedule_frame();
             }
         }
     }
@@ -114,91 +125,28 @@ impl Drop for AltScreenGuard<'_> {
     }
 }
 
-#[derive(Clone)]
-struct ColumnMetrics {
-    max_created_width: usize,
-    max_updated_width: usize,
-    max_branch_width: usize,
-    labels: Vec<(String, String, String)>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResumeSortKey {
-    CreatedAt,
-    UpdatedAt,
-}
-
-impl ResumeSortKey {
-    fn toggle(self) -> Self {
-        match self {
-            Self::CreatedAt => Self::UpdatedAt,
-            Self::UpdatedAt => Self::CreatedAt,
-        }
-    }
-}
-
-fn sort_key_label(sort_key: ResumeSortKey) -> &'static str {
-    match sort_key {
-        ResumeSortKey::CreatedAt => "Created",
-        ResumeSortKey::UpdatedAt => "Updated",
-    }
-}
-
-struct ResumePickerScreen {
-    request_frame: FrameRequester,
+struct ResumePickerOverlay {
+    overlay: crate::projects_overlay::ProjectsOverlay,
     now: SystemTime,
-
-    all_rows: Vec<ResumePickerRow>,
-    all_rows_lower: Vec<String>,
-
-    query: String,
-    sort_key: ResumeSortKey,
-    selected: usize,
-    scroll_top: usize,
-    view_rows: usize,
-
-    filtered_indices: Vec<usize>,
-    filtered_metrics: ColumnMetrics,
-
     outcome: Option<ResumePickerOutcome>,
 }
 
-impl ResumePickerScreen {
-    fn new(request_frame: FrameRequester, rows: Vec<ResumePickerRow>, now: SystemTime) -> Self {
-        let all_rows_lower = rows
-            .iter()
-            .map(|row| {
-                format!(
-                    "{}\n{}\n{}",
-                    row.user_request,
-                    row.git_branch.as_deref().unwrap_or_default(),
-                    row.project_path.to_string_lossy(),
-                )
-                .to_lowercase()
-            })
-            .collect();
-
-        let mut screen = Self {
-            request_frame,
-            now,
-            all_rows: rows,
-            all_rows_lower,
-            query: String::new(),
-            sort_key: ResumeSortKey::UpdatedAt,
-            selected: 0,
-            scroll_top: 0,
-            view_rows: 0,
-            filtered_indices: Vec::new(),
-            filtered_metrics: ColumnMetrics {
-                max_created_width: UnicodeWidthStr::width("Created"),
-                max_updated_width: UnicodeWidthStr::width("Updated"),
-                max_branch_width: UnicodeWidthStr::width("Branch"),
-                labels: Vec::new(),
+impl ResumePickerOverlay {
+    fn new(now: SystemTime) -> (Self, crate::ProjectsOverlayRequest) {
+        let mut overlay = crate::projects_overlay::ProjectsOverlay::default();
+        let request = overlay.open_or_refresh();
+        (
+            Self {
+                overlay,
+                now,
+                outcome: None,
             },
-            outcome: None,
-        };
-        screen.recompute_filter();
-        screen
+            request,
+        )
+    }
+
+    fn set_now(&mut self, now: SystemTime) {
+        self.now = now;
     }
 
     fn is_done(&self) -> bool {
@@ -209,481 +157,256 @@ impl ResumePickerScreen {
         self.outcome.take()
     }
 
-    fn handle_key(&mut self, key_event: KeyEvent) {
+    fn handle_overlay_response(
+        &mut self,
+        response: crate::ProjectsOverlayResponse,
+    ) -> Option<crate::ProjectsOverlayRequest> {
+        match response {
+            crate::ProjectsOverlayResponse::List { projects, error } => {
+                self.overlay.on_projects_list(projects, error)
+            }
+            crate::ProjectsOverlayResponse::Details { details } => {
+                if self.overlay.is_open() {
+                    self.overlay.on_project_details(details);
+                }
+                None
+            }
+        }
+    }
+
+    fn handle_key(&mut self, key_event: KeyEvent) -> Option<crate::ProjectsOverlayRequest> {
         if key_event.kind == KeyEventKind::Release {
-            return;
+            return None;
         }
 
         if key_event.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key_event.code, KeyCode::Char('c'))
         {
             self.outcome = Some(ResumePickerOutcome::Exit);
-            self.request_frame.schedule_frame();
-            return;
+            return None;
         }
 
-        if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+        // Keep Ctrl+L reserved for the live overlay toggle; do not close the resume picker.
+        if key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key_event.code, KeyCode::Char('l'))
+        {
+            return None;
+        }
+
+        if key_event.modifiers == KeyModifiers::NONE {
             match key_event.code {
-                KeyCode::Char('p') | KeyCode::Char('P') => {
-                    self.move_selection(-1);
-                    return;
+                KeyCode::Esc => {
+                    self.outcome = Some(ResumePickerOutcome::StartFresh);
+                    return None;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') => {
-                    self.move_selection(1);
-                    return;
+                KeyCode::Enter => {
+                    if let Some(project_dir) = self.overlay.selected_project_dir() {
+                        self.outcome = Some(ResumePickerOutcome::Resume(project_dir));
+                    }
+                    return None;
                 }
                 _ => {}
             }
         }
 
-        match key_event.code {
-            KeyCode::Esc => {
-                self.outcome = Some(ResumePickerOutcome::StartFresh);
-                self.request_frame.schedule_frame();
-            }
-            KeyCode::Enter => {
-                if let Some(row) = self.selected_row() {
-                    self.outcome = Some(ResumePickerOutcome::Resume(row.project_path.clone()));
-                    self.request_frame.schedule_frame();
-                }
-            }
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
-            KeyCode::PageUp => self.page_selection(-1),
-            KeyCode::PageDown => self.page_selection(1),
-            KeyCode::Tab => self.toggle_sort_key(),
-            KeyCode::Backspace => {
-                if self.query.pop().is_some() {
-                    self.recompute_filter();
-                }
-            }
-            KeyCode::Char(ch) => {
-                if !key_hint::has_ctrl_or_alt(key_event.modifiers) {
-                    self.query.push(ch);
-                    self.recompute_filter();
-                }
-            }
-            _ => {}
-        }
+        self.overlay.handle_key_event(key_event)
     }
 
-    fn selected_row(&self) -> Option<&ResumePickerRow> {
-        let row_index = self.filtered_indices.get(self.selected).copied()?;
-        self.all_rows.get(row_index)
-    }
-
-    fn set_view_rows(&mut self, view_rows: usize) {
-        let view_rows = view_rows.max(1);
-        if self.view_rows != view_rows {
-            self.view_rows = view_rows;
-            self.ensure_selected_visible();
-        }
-    }
-
-    fn move_selection(&mut self, delta: i32) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-
-        let new_selected = if delta < 0 {
-            self.selected
-                .saturating_sub(usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX))
-        } else {
-            let delta = usize::try_from(delta).unwrap_or(usize::MAX);
-            self.selected.saturating_add(delta)
-        };
-        let max = self.filtered_indices.len().saturating_sub(1);
-        let clamped = new_selected.min(max);
-        if clamped != self.selected {
-            self.selected = clamped;
-            self.ensure_selected_visible();
-            self.request_frame.schedule_frame();
-        }
-    }
-
-    fn page_selection(&mut self, pages: i32) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-
-        let view = self.view_rows.max(1);
-        let delta =
-            view.saturating_mul(usize::try_from(pages.unsigned_abs()).unwrap_or(usize::MAX));
-        self.move_selection(if pages < 0 {
-            -i32::try_from(delta).unwrap_or(i32::MAX)
-        } else {
-            i32::try_from(delta).unwrap_or(i32::MAX)
-        });
-    }
-
-    fn ensure_selected_visible(&mut self) {
-        let view = self.view_rows.max(1);
-        if self.selected < self.scroll_top {
-            self.scroll_top = self.selected;
-            return;
-        }
-        if self.selected >= self.scroll_top.saturating_add(view) {
-            self.scroll_top = self.selected.saturating_add(1).saturating_sub(view);
-        }
-    }
-
-    fn recompute_filter(&mut self) {
-        self.recompute_filter_preserving_selection(None);
-    }
-
-    fn toggle_sort_key(&mut self) {
-        let selected = self.selected_row().map(|row| row.project_path.clone());
-        self.sort_key = self.sort_key.toggle();
-        self.recompute_filter_preserving_selection(selected.as_ref());
-    }
-
-    fn recompute_filter_preserving_selection(&mut self, selected: Option<&PathBuf>) {
-        let needle = self.query.to_lowercase();
-        let mut filtered: Vec<usize> = Vec::new();
-        if needle.is_empty() {
-            filtered.extend(0..self.all_rows.len());
-        } else {
-            for (idx, value) in self.all_rows_lower.iter().enumerate() {
-                if value.contains(needle.as_str()) {
-                    filtered.push(idx);
-                }
-            }
-        }
-
-        filtered.sort_by(|a, b| match self.sort_key {
-            ResumeSortKey::CreatedAt => self
-                .all_rows
-                .get(*b)
-                .map(|row| row.created_at)
-                .cmp(&self.all_rows.get(*a).map(|row| row.created_at))
-                .then_with(|| a.cmp(b)),
-            ResumeSortKey::UpdatedAt => self
-                .all_rows
-                .get(*b)
-                .map(|row| row.updated_at)
-                .cmp(&self.all_rows.get(*a).map(|row| row.updated_at))
-                .then_with(|| a.cmp(b)),
-        });
-
-        self.filtered_indices = filtered;
-        self.selected = selected
-            .and_then(|selected| {
-                self.filtered_indices.iter().position(|idx| {
-                    self.all_rows
-                        .get(*idx)
-                        .is_some_and(|row| row.project_path == *selected)
-                })
-            })
-            .unwrap_or(0);
-        self.scroll_top = 0;
-        self.ensure_selected_visible();
-        self.filtered_metrics =
-            calculate_column_metrics(&self.all_rows, &self.filtered_indices, self.now);
-        self.request_frame.schedule_frame();
+    fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        Clear.render(area, buf);
+        self.overlay.render(area, buf, self.now);
+        render_resume_picker_footer(area, buf);
     }
 }
 
-impl WidgetRef for &ResumePickerScreen {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        Clear.render(area, buf);
+fn render_resume_picker_footer(area: Rect, buf: &mut Buffer) {
+    if area.height == 0 {
+        return;
+    }
 
-        let [header, search, columns, list, hint] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(area.height.saturating_sub(4)),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+    let footer_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    if footer_area.is_empty() {
+        return;
+    }
 
-        // Header
-        let header_line: Line = vec![
-            "Resume a previous session".bold().cyan(),
-            "  ".into(),
-            "Sort:".dim(),
-            " ".into(),
-            sort_key_label(self.sort_key).magenta(),
-        ]
-        .into();
-        Paragraph::new(header_line).render(header, buf);
+    Clear.render(footer_area, buf);
 
-        // Search line
-        let q = if self.query.is_empty() {
-            "Type to search".dim().to_string()
-        } else {
-            format!("Search: {}", self.query)
-        };
-        Paragraph::new(Line::from(q)).render(search, buf);
+    let inset_area = Rect::new(
+        footer_area.x.saturating_add(2),
+        footer_area.y,
+        footer_area.width.saturating_sub(4),
+        footer_area.height,
+    );
+    if inset_area.is_empty() {
+        return;
+    }
 
-        render_column_headers(buf, columns, &self.filtered_metrics);
-        render_list(buf, list, self, &self.filtered_metrics);
+    let hint_line = resume_picker_footer_hint_line(inset_area.width);
+    Paragraph::new(hint_line).render(inset_area, buf);
+}
 
-        // Hint line
-        let hint_line: Line = vec![
+fn resume_picker_footer_hint_line(width: u16) -> Line<'static> {
+    let variants = resume_picker_footer_hint_variants();
+    let fallback = variants.last().cloned().unwrap_or_default();
+    variants
+        .into_iter()
+        .find(|line| line.width() <= usize::from(width))
+        .unwrap_or(fallback)
+}
+
+fn resume_picker_footer_hint_variants() -> Vec<Line<'static>> {
+    vec![
+        Line::from(vec![
             key_hint::plain(KeyCode::Enter).into(),
             " resume ".dim(),
-            "  ".dim(),
+            "  ".into(),
             key_hint::plain(KeyCode::Esc).into(),
             " new ".dim(),
-            "  ".dim(),
+            "  ".into(),
             key_hint::ctrl(KeyCode::Char('c')).into(),
             " quit ".dim(),
-            "  ".dim(),
+            "  ".into(),
             key_hint::plain(KeyCode::Tab).into(),
-            " sort ".dim(),
-            "  ".dim(),
+            " maximize ".dim(),
+            "  ".into(),
             key_hint::plain(KeyCode::Up).into(),
             "/".dim(),
             key_hint::plain(KeyCode::Down).into(),
             " browse".dim(),
-        ]
-        .into();
-        Paragraph::new(hint_line).render(hint, buf);
-    }
-}
-
-fn calculate_column_metrics(
-    all_rows: &[ResumePickerRow],
-    filtered_indices: &[usize],
-    now: SystemTime,
-) -> ColumnMetrics {
-    fn right_elide(s: &str, max: usize) -> String {
-        if s.chars().count() <= max {
-            return s.to_string();
-        }
-        if max <= 1 {
-            return "…".to_string();
-        }
-        let tail_len = max - 1;
-        let tail: String = s
-            .chars()
-            .rev()
-            .take(tail_len)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        format!("…{tail}")
-    }
-
-    let mut labels: Vec<(String, String, String)> = Vec::with_capacity(filtered_indices.len());
-    let mut max_created_width = UnicodeWidthStr::width("Created");
-    let mut max_updated_width = UnicodeWidthStr::width("Updated");
-    let mut max_branch_width = UnicodeWidthStr::width("Branch");
-
-    for &idx in filtered_indices {
-        let row = &all_rows[idx];
-        let created = human_time_ago(row.created_at, now);
-        let updated = human_time_ago(row.updated_at, now);
-        let branch_raw = row.git_branch.clone().unwrap_or_default();
-        let branch = right_elide(&branch_raw, 24);
-        max_created_width = max_created_width.max(UnicodeWidthStr::width(created.as_str()));
-        max_updated_width = max_updated_width.max(UnicodeWidthStr::width(updated.as_str()));
-        max_branch_width = max_branch_width.max(UnicodeWidthStr::width(branch.as_str()));
-        labels.push((created, updated, branch));
-    }
-
-    ColumnMetrics {
-        max_created_width,
-        max_updated_width,
-        max_branch_width,
-        labels,
-    }
-}
-
-fn render_column_headers(buf: &mut Buffer, area: Rect, metrics: &ColumnMetrics) {
-    if area.height == 0 {
-        return;
-    }
-
-    let mut spans: Vec<Span> = vec!["  ".into()];
-    let created_label = format!(
-        "{text:<width$}",
-        text = "Created",
-        width = metrics.max_created_width
-    );
-    spans.push(Span::from(created_label).bold());
-    spans.push("  ".into());
-
-    let updated_label = format!(
-        "{text:<width$}",
-        text = "Updated",
-        width = metrics.max_updated_width
-    );
-    spans.push(Span::from(updated_label).bold());
-    spans.push("  ".into());
-
-    let branch_label = format!(
-        "{text:<width$}",
-        text = "Branch",
-        width = metrics.max_branch_width
-    );
-    spans.push(Span::from(branch_label).bold());
-    spans.push("  ".into());
-
-    spans.push("User Request".bold());
-
-    Paragraph::new(Line::from(spans)).render(area, buf);
-}
-
-fn render_list(buf: &mut Buffer, area: Rect, screen: &ResumePickerScreen, metrics: &ColumnMetrics) {
-    if area.height == 0 {
-        return;
-    }
-
-    let rows = &screen.filtered_indices;
-    if rows.is_empty() {
-        let message = if screen.query.is_empty() {
-            "No sessions yet".italic().dim()
-        } else {
-            "No results for your search".italic().dim()
-        };
-        Paragraph::new(Line::from(vec![message])).render(area, buf);
-        return;
-    }
-
-    let capacity = area.height as usize;
-    let start = screen.scroll_top.min(rows.len().saturating_sub(1));
-    let end = rows.len().min(start + capacity);
-
-    let max_created_width = metrics.max_created_width;
-    let max_updated_width = metrics.max_updated_width;
-    let max_branch_width = metrics.max_branch_width;
-
-    let mut y = area.y;
-    for (idx, (&row_idx, (created_label, updated_label, branch_label))) in rows[start..end]
-        .iter()
-        .zip(metrics.labels[start..end].iter())
-        .enumerate()
-    {
-        let row = &screen.all_rows[row_idx];
-        let is_sel = start + idx == screen.selected;
-        let marker = if is_sel { "> ".bold() } else { "  ".into() };
-        let marker_width = 2usize;
-
-        let created_span = Span::from(format!("{created_label:<max_created_width$}")).dim();
-        let updated_span = Span::from(format!("{updated_label:<max_updated_width$}")).dim();
-        let branch_span = if branch_label.is_empty() {
-            Span::from(format!(
-                "{empty:<width$}",
-                empty = "-",
-                width = max_branch_width
-            ))
-            .dim()
-        } else {
-            Span::from(format!("{branch_label:<max_branch_width$}")).cyan()
-        };
-
-        let mut preview_width = area.width as usize;
-        preview_width = preview_width.saturating_sub(marker_width);
-        preview_width = preview_width.saturating_sub(max_created_width + 2);
-        preview_width = preview_width.saturating_sub(max_updated_width + 2);
-        preview_width = preview_width.saturating_sub(max_branch_width + 2);
-
-        let preview = truncate_text(row.user_request.as_str(), preview_width);
-        let line: Line = vec![
-            marker,
-            created_span,
+        ]),
+        Line::from(vec![
+            key_hint::plain(KeyCode::Enter).into(),
+            " resume ".dim(),
             "  ".into(),
-            updated_span,
+            key_hint::plain(KeyCode::Esc).into(),
+            " new ".dim(),
             "  ".into(),
-            branch_span,
+            key_hint::ctrl(KeyCode::Char('c')).into(),
+            " quit ".dim(),
             "  ".into(),
-            preview.into(),
-        ]
-        .into();
-
-        Paragraph::new(line).render(Rect::new(area.x, y, area.width, 1), buf);
-        y = y.saturating_add(1);
-    }
+            key_hint::plain(KeyCode::Up).into(),
+            "/".dim(),
+            key_hint::plain(KeyCode::Down).into(),
+            " browse".dim(),
+        ]),
+        Line::from(vec![
+            key_hint::plain(KeyCode::Enter).into(),
+            " resume ".dim(),
+            "  ".into(),
+            key_hint::plain(KeyCode::Esc).into(),
+            " new ".dim(),
+            "  ".into(),
+            key_hint::ctrl(KeyCode::Char('c')).into(),
+            " quit ".dim(),
+        ]),
+        Line::from(vec![
+            key_hint::plain(KeyCode::Enter).into(),
+            " resume ".dim(),
+            "  ".into(),
+            key_hint::plain(KeyCode::Esc).into(),
+            " new ".dim(),
+        ]),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_backend::VT100Backend;
-    use insta::assert_snapshot;
+
+    use codex_protocol::protocol::PotterProjectDetails;
+    use codex_protocol::protocol::PotterProjectListEntry;
     use pretty_assertions::assert_eq;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use std::time::Duration;
+    use std::time::UNIX_EPOCH;
 
-    fn sample_rows(now: SystemTime) -> Vec<ResumePickerRow> {
-        vec![
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/a"),
-                user_request: "Fix resume picker timestamps".to_string(),
-                created_at: now - Duration::from_secs(3 * 24 * 60 * 60),
-                updated_at: now - Duration::from_secs(42),
-                git_branch: None,
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/b"),
-                user_request: "Investigate lazy pagination cap".to_string(),
-                created_at: now - Duration::from_secs(24 * 60 * 60),
-                updated_at: now - Duration::from_secs(35 * 60),
-                git_branch: Some("feature/resume".to_string()),
-            },
-            ResumePickerRow {
-                project_path: PathBuf::from("/tmp/c"),
-                user_request: "Explain the codebase".to_string(),
-                created_at: now - Duration::from_secs(2 * 60 * 60),
-                updated_at: now - Duration::from_secs(2 * 60 * 60),
+    #[test]
+    fn resume_picker_overlay_renders_projects_overlay_with_resume_footer() {
+        let now = UNIX_EPOCH + Duration::from_secs(120);
+        let (mut screen, _) = ResumePickerOverlay::new(now);
+
+        screen.handle_overlay_response(crate::ProjectsOverlayResponse::List {
+            projects: vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Resume picker uses /list overlay".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 4,
+                status: codex_protocol::protocol::PotterProjectListStatus::Succeeded,
+            }],
+            error: None,
+        });
+
+        screen.handle_overlay_response(crate::ProjectsOverlayResponse::Details {
+            details: PotterProjectDetails {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
                 git_branch: Some("main".to_string()),
+                rounds: vec![codex_protocol::protocol::PotterProjectRoundSummary {
+                    round_current: 1,
+                    round_total: 4,
+                    final_message_unix_secs: Some(1),
+                    final_message: Some(String::from("**Done**")),
+                }],
+                error: None,
             },
-        ]
-    }
+        });
 
-    fn render_screen_vt100(screen: &ResumePickerScreen) -> String {
-        let backend = VT100Backend::new(80, 9);
-        let mut terminal = Terminal::new(backend).expect("create terminal");
+        let mut terminal = Terminal::new(TestBackend::new(80, 18)).expect("terminal");
         terminal
             .draw(|frame| {
-                WidgetRef::render_ref(&screen, frame.area(), frame.buffer_mut());
+                let area = frame.area();
+                screen.render(area, frame.buffer_mut());
             })
             .expect("draw");
-        terminal.backend().vt100().screen().contents()
+
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]
-    fn resume_picker_screen_snapshots_cover_empty_default_and_created_sort() {
-        let screen =
-            ResumePickerScreen::new(FrameRequester::test_dummy(), vec![], SystemTime::UNIX_EPOCH);
-        assert_snapshot!("resume_picker_empty_vt100", render_screen_vt100(&screen));
+    fn resume_picker_overlay_esc_starts_fresh() {
+        let (mut screen, _) = ResumePickerOverlay::new(SystemTime::UNIX_EPOCH);
+        screen.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(screen.take_outcome(), Some(ResumePickerOutcome::StartFresh));
+    }
 
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let mut screen =
-            ResumePickerScreen::new(FrameRequester::test_dummy(), sample_rows(now), now);
-        screen.set_view_rows(5);
-        screen.selected = 1;
-        screen.ensure_selected_visible();
-        assert_snapshot!("resume_picker_table_vt100", render_screen_vt100(&screen));
+    #[test]
+    fn resume_picker_overlay_ctrl_c_exits() {
+        let (mut screen, _) = ResumePickerOverlay::new(SystemTime::UNIX_EPOCH);
+        screen.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(screen.take_outcome(), Some(ResumePickerOutcome::Exit));
+    }
 
-        screen.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_snapshot!(
-            "resume_picker_table_created_sort_vt100",
-            render_screen_vt100(&screen)
+    #[test]
+    fn resume_picker_overlay_ctrl_l_does_not_close() {
+        let (mut screen, _) = ResumePickerOverlay::new(SystemTime::UNIX_EPOCH);
+        assert!(screen.overlay.is_open(), "expected overlay to start open");
+        screen.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(screen.overlay.is_open(), "expected Ctrl+L not to close");
+    }
+
+    #[test]
+    fn resume_picker_overlay_enter_resumes_selected_project_dir() {
+        let (mut screen, _) = ResumePickerOverlay::new(SystemTime::UNIX_EPOCH);
+        screen.handle_overlay_response(crate::ProjectsOverlayResponse::List {
+            projects: vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Project".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: codex_protocol::protocol::PotterProjectListStatus::Succeeded,
+            }],
+            error: None,
+        });
+
+        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            screen.take_outcome(),
+            Some(ResumePickerOutcome::Resume(PathBuf::from(
+                ".codexpotter/projects/2026/04/16/1"
+            )))
         );
-    }
-
-    #[test]
-    fn resume_picker_ctrl_p_ctrl_n_moves_selection() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let mut screen =
-            ResumePickerScreen::new(FrameRequester::test_dummy(), sample_rows(now), now);
-        screen.set_view_rows(5);
-        screen.selected = 1;
-
-        screen.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
-        assert_eq!(screen.selected, 0);
-
-        screen.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
-        assert_eq!(screen.selected, 1);
-
-        screen.selected = 2;
-        screen.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
-        assert_eq!(screen.selected, 2);
-
-        screen.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
-        assert_eq!(screen.selected, 1);
     }
 }

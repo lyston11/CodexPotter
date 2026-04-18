@@ -352,15 +352,20 @@ impl CodexPotterTui {
 
     /// Prompt the user to select a resumable CodexPotter project to resume.
     ///
+    /// This reuses the same full-screen projects overlay UI as `/list`.
+    ///
+    /// `Enter` returns [`crate::ResumePickerOutcome::Resume`].
     /// `Esc` returns [`crate::ResumePickerOutcome::StartFresh`] (do not exit the app).
     /// `Ctrl+C` returns [`crate::ResumePickerOutcome::Exit`].
     pub async fn prompt_resume_picker(
         &mut self,
-        rows: Vec<crate::ResumePickerRow>,
+        projects_overlay_provider: ProjectsOverlayProviderChannels,
     ) -> anyhow::Result<crate::ResumePickerOutcome> {
-        let result =
-            crate::resume_picker_prompt::run_resume_picker_prompt_with_tui(&mut self.tui, rows)
-                .await;
+        let result = crate::resume_picker_prompt::run_resume_picker_prompt_with_tui(
+            &mut self.tui,
+            projects_overlay_provider,
+        )
+        .await;
 
         self.reset_event_stream_after_prompt();
 

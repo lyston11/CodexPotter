@@ -30,7 +30,6 @@ pub mod projects_overlay_index;
 pub mod prompt_queue;
 pub mod replay_session_config;
 pub mod resume;
-pub mod resume_picker_index;
 pub mod rollout;
 pub mod rollout_resume_index;
 mod round_event_bridge;

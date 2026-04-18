@@ -1,0 +1,22 @@
+---
+source: tui/src/resume_picker_prompt.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"┃ ✓ 4 rounds · 1 minute ago     main  .codexpotter/projects/2026/04/16/1/       "
+"┃   Resume picker uses /list    MAIN.md                                         "
+"┃   overlay                                                                     "
+"                                ROUND 1 @ 1 minute ago                          "
+"                                                                                "
+"                                Done                                            "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"  enter resume   esc new   ctrl + c quit   tab maximize   ↑/↓ browse            "

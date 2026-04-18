@@ -411,41 +411,8 @@ async fn main() -> anyhow::Result<()> {
         let project_path = match project_path {
             Some(project_path) => Some(project_path.clone()),
             None => {
-                let rows = {
-                    let mut buffered_events = Vec::new();
-                    let response = potter_app_server
-                        .project_list(
-                            crate::app_server::potter::ProjectListParams::default(),
-                            &mut buffered_events,
-                        )
-                        .await
-                        .context("project/list via potter app-server")?;
-                    anyhow::ensure!(
-                        buffered_events.is_empty(),
-                        "internal error: unexpected events during project/list"
-                    );
-
-                    response
-                        .projects
-                        .into_iter()
-                        .filter_map(|project| {
-                            let created_at = std::time::UNIX_EPOCH.checked_add(
-                                std::time::Duration::from_secs(project.created_at_unix_secs),
-                            )?;
-                            let updated_at = std::time::UNIX_EPOCH.checked_add(
-                                std::time::Duration::from_secs(project.updated_at_unix_secs),
-                            )?;
-                            Some(codex_tui::ResumePickerRow {
-                                project_path: project.project_path,
-                                user_request: project.user_request,
-                                created_at,
-                                updated_at,
-                                git_branch: project.git_branch,
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                };
-                match ui.prompt_resume_picker(rows).await? {
+                let projects_overlay_provider = crate::workflow::projects_overlay_backend::spawn_resumable_projects_overlay_provider(workdir.clone());
+                match ui.prompt_resume_picker(projects_overlay_provider).await? {
                     codex_tui::ResumePickerOutcome::StartFresh => None,
                     codex_tui::ResumePickerOutcome::Resume(project_path) => Some(project_path),
                     codex_tui::ResumePickerOutcome::Exit => return Ok(()),

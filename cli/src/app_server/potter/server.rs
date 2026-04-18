@@ -15,8 +15,6 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use chrono::Local;
@@ -43,9 +41,6 @@ use crate::app_server::potter::PotterAppServerClientNotification;
 use crate::app_server::potter::PotterAppServerClientRequest;
 use crate::app_server::potter::PotterEventMode;
 use crate::app_server::potter::ProjectInterruptParams;
-use crate::app_server::potter::ProjectListEntry;
-use crate::app_server::potter::ProjectListParams;
-use crate::app_server::potter::ProjectListResponse;
 use crate::app_server::potter::ProjectResolveInterruptParams;
 use crate::app_server::potter::ProjectResolveInterruptResponse;
 use crate::app_server::potter::ProjectResumeParams;
@@ -305,12 +300,6 @@ async fn handle_request(
         PotterAppServerClientRequest::Initialize { request_id, .. } => {
             send_response(writer_tx, request_id, serde_json::json!({}));
         }
-        PotterAppServerClientRequest::ProjectList {
-            request_id, params, ..
-        } => match project_list(&state.config.default_workdir, params) {
-            Ok(response) => send_response(writer_tx, request_id, response),
-            Err(err) => send_error(writer_tx, request_id, -32000, format!("{err:#}")),
-        },
         PotterAppServerClientRequest::ProjectStart { request_id, params } => {
             if state.running.is_some() {
                 send_error(
@@ -411,36 +400,6 @@ fn clear_finished_running_project(state: &mut ServerState) {
     {
         state.running = None;
     }
-}
-
-fn project_list(
-    default_workdir: &Path,
-    params: ProjectListParams,
-) -> anyhow::Result<ProjectListResponse> {
-    let ProjectListParams { cwd } = params;
-    let workdir = cwd.unwrap_or_else(|| default_workdir.to_path_buf());
-
-    let rows = crate::workflow::resume_picker_index::discover_resumable_projects(&workdir)
-        .with_context(|| format!("discover resumable projects under {}", workdir.display()))?;
-
-    let mut projects = Vec::new();
-    for row in rows {
-        let Some(created_at) = system_time_to_unix_secs(row.created_at) else {
-            continue;
-        };
-        let Some(updated_at) = system_time_to_unix_secs(row.updated_at) else {
-            continue;
-        };
-        projects.push(ProjectListEntry {
-            project_path: row.project_path,
-            user_request: row.user_request,
-            created_at_unix_secs: created_at,
-            updated_at_unix_secs: updated_at,
-            git_branch: row.git_branch,
-        });
-    }
-
-    Ok(ProjectListResponse { projects })
 }
 
 async fn start_project(
@@ -851,10 +810,6 @@ fn emit_potter_event(writer_tx: UnboundedSender<JSONRPCMessage>, event: Event) {
         method: POTTER_EVENT_NOTIFICATION_METHOD.to_string(),
         params: Some(params),
     }));
-}
-
-fn system_time_to_unix_secs(time: SystemTime) -> Option<u64> {
-    time.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
 fn load_potter_rollout_lines(

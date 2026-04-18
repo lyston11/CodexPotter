@@ -4,7 +4,7 @@
 //! multi-round orchestration. This module defines that app-server:
 //!
 //! - **Server** (`server`): a JSON-RPC server that exposes project-level methods like
-//!   `project/start`, `project/resume`, `project/start_rounds`, and `project/list`.
+//!   `project/start`, `project/resume`, and `project/start_rounds`.
 //! - **Client** (`client`): a small helper for spawning the server (as a subprocess) and
 //!   consuming the event stream.
 //! - **Protocol** (`protocol`): request/response and event wire types. The message envelope mirrors

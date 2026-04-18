@@ -39,14 +39,6 @@ pub enum PotterAppServerClientRequest {
         params: InitializeParams,
     },
 
-    #[serde(rename = "project/list")]
-    ProjectList {
-        #[serde(rename = "id")]
-        request_id: RequestId,
-        #[serde(default)]
-        params: ProjectListParams,
-    },
-
     #[serde(rename = "project/start")]
     ProjectStart {
         #[serde(rename = "id")]
@@ -127,34 +119,6 @@ pub enum PotterEventMode {
     /// enforce closure invariants (`turn.*` / `potter.round.*`) without depending on interactive
     /// suppression rules.
     ExecJson,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectListParams {
-    /// Optional working directory to search for `.codexpotter/projects`.
-    ///
-    /// When omitted, the server default workdir is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectListResponse {
-    pub projects: Vec<ProjectListEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectListEntry {
-    /// Path passed back to `project/resume`.
-    pub project_path: PathBuf,
-    pub user_request: String,
-    pub created_at_unix_secs: u64,
-    pub updated_at_unix_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

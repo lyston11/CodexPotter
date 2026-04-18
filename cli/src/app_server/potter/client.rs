@@ -33,8 +33,6 @@ use super::protocol::POTTER_EVENT_NOTIFICATION_METHOD;
 use super::protocol::PotterAppServerClientNotification;
 use super::protocol::PotterAppServerClientRequest;
 use super::protocol::ProjectInterruptParams;
-use super::protocol::ProjectListParams;
-use super::protocol::ProjectListResponse;
 use super::protocol::ProjectResolveInterruptParams;
 use super::protocol::ProjectResolveInterruptResponse;
 use super::protocol::ProjectResumeParams;
@@ -123,20 +121,6 @@ impl PotterAppServerClient {
         self.send_notification(PotterAppServerClientNotification::Initialized)
             .await?;
         Ok(())
-    }
-
-    pub async fn project_list(
-        &mut self,
-        params: ProjectListParams,
-        buffered_events: &mut Vec<Event>,
-    ) -> anyhow::Result<ProjectListResponse> {
-        let request_id = self.next_request_id();
-        self.send_request(
-            request_id.clone(),
-            PotterAppServerClientRequest::ProjectList { request_id, params },
-            buffered_events,
-        )
-        .await
     }
 
     pub async fn project_start(

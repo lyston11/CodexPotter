@@ -77,7 +77,7 @@ Behavior related
   - If no `[tui].verbosity` is configured yet, prompt for a default verbosity level.
   - When both prompts are shown, they render `Setup 1/2` and `Setup 2/2` markers.
 - Multi-agent collab is transcript-only: no agent thread picker UI (no per-agent transcript view).
-- Resume picker UI uses a `User Request` column for picking CodexPotter projects instead of upstream `Conversation`.
+- Resume picker UI reuses the projects overlay UI (same as `Ctrl+L` / `/list`) with `Enter` to resume and `Esc` to start a new project.
 - Auto retry on errors (successful recoveries are transient-only; unrecoverable errors are surfaced).
 - Customized update notification / self-update (and on-disk state under `~/.codexpotter/`).
 - No desktop notifications when the terminal is unfocused.

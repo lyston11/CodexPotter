@@ -69,6 +69,13 @@ impl ProjectsOverlay {
         self.open
     }
 
+    /// Returns the currently highlighted project's directory, if any.
+    pub fn selected_project_dir(&self) -> Option<PathBuf> {
+        self.projects
+            .get(self.selected)
+            .map(|p| p.project_dir.clone())
+    }
+
     pub fn open_or_refresh(&mut self) -> crate::ProjectsOverlayRequest {
         let was_open = self.open;
         self.refresh_selected_project_dir = if was_open {
@@ -727,12 +734,6 @@ impl ProjectsOverlay {
     fn max_right_scroll(&self) -> usize {
         let height = usize::from(self.metrics.right_inner_height);
         self.metrics.right_total_lines.saturating_sub(height)
-    }
-
-    fn selected_project_dir(&self) -> Option<PathBuf> {
-        self.projects
-            .get(self.selected)
-            .map(|p| p.project_dir.clone())
     }
 
     fn is_ctrl_char(&self, key_event: KeyEvent, expected: char) -> bool {
