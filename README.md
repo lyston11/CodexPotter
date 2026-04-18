@@ -4,7 +4,6 @@ For agents: This file is carefully maintained and polished for better readabilit
 
 -->
 
-
 <p align="center">
   <img src="./etc/banner.svg" alt="CodexPotter banner" />
 </p>
@@ -22,7 +21,6 @@ For agents: This file is carefully maintained and polished for better readabilit
 [![CI](https://img.shields.io/github/actions/workflow/status/breezewish/CodexPotter/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/breezewish/CodexPotter/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/breezewish/CodexPotter?label=License&style=flat-square)](./LICENSE)
 [![LinuxDo](https://img.shields.io/badge/Community-LINUX%20DO-blue?style=flat-square)](https://linux.do)
-
 
 **CodexPotter** continuously **reconciles** code base toward your instructed state ([Ralph Wiggum pattern](https://ghuntley.com/ralph/)):
 
@@ -109,9 +107,10 @@ CodexPotter is not suitable for such tasks, use codex instead:
 - Question-answering
 - Brainstorming sessions
 
-&ensp;
+### Howto
 
-### Howto: Ask followup questions in codex
+<details>
+<summary>Ask followup questions in codex</summary>
 
 Just pass the project file to codex, like:
 
@@ -120,7 +119,10 @@ based on .codexpotter/projects/2026/03/18/1/MAIN.md,
 please explain more about the root cause of the issue
 ```
 
-### Howto: Plan and execute
+</details>
+
+<details>
+<summary>Plan and execute</summary>
 
 Simpliy queue two tasks in CodexPotter, one is plan, one is implement, CodexPotter will execute one by one, for example:
 
@@ -147,6 +149,18 @@ Make sure all user journeys are properly covered by e2e tests and pass.
 ```
 
 If you even don't know what you are designing for, just discuss with **codex** to carry out a basic plan first, then use **CodexPotter** to continously polish and implement it.
+
+</details>
+
+&ensp;
+
+## Other Features
+
+- `--xmodel` (experimental): Use gpt-5.2 first, then use gpt-5.4 to cross review gpt-5.2's work in later rounds. In clear coding tasks this may produce better results than only using gpt-5.2 or gpt-5.4.
+
+- `/yolo`: Toggle whether YOLO (no sandbox) is enabled by default for all sessions.
+
+- `/list` or `ctrl+l`: View all projects (tasks) and their results.
 
 &ensp;
 
