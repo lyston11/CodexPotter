@@ -3,7 +3,7 @@ source: tui/src/projects_overlay.rs
 expression: terminal.backend()
 ---
 "                                        "
-"┃ ✓ 12 rounds    .codexpotter/          "
+"┃ ✓ 12 rounds    main  .codexpotter/    "
 "┃   Add          projects/2026/04/16/1  "
 "┃   projects…    23456/MAIN.md          "
 "                                        "

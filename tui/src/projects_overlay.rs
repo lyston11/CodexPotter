@@ -604,15 +604,19 @@ impl ProjectsOverlay {
             );
         }
 
-        let mut lines = wrap_plain_lines(
-            vec![
-                Line::from(vec![
-                    Span::from(details.progress_file.to_string_lossy().to_string()).dim(),
-                ]),
-                Line::from(""),
-            ],
-            wrap_width,
-        );
+        let mut header_spans: Vec<Span<'static>> = Vec::new();
+        if let Some(branch) = details
+            .git_branch
+            .as_deref()
+            .filter(|branch| !branch.trim().is_empty())
+        {
+            header_spans.push(Span::from(branch.to_string()).cyan().dim());
+            header_spans.push("  ".dim());
+        }
+        header_spans.push(Span::from(details.progress_file.to_string_lossy().to_string()).dim());
+
+        let mut lines =
+            wrap_plain_lines(vec![Line::from(header_spans), Line::from("")], wrap_width);
         for round in &details.rounds {
             append_round_details(&mut lines, round, wrap_width, now);
             lines.push(Line::from(""));
@@ -1031,6 +1035,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
             progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            git_branch: Some("main".to_string()),
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 4,
@@ -1065,6 +1070,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
             progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            git_branch: Some("main".to_string()),
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 4,
@@ -1192,6 +1198,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir,
             progress_file,
+            git_branch: None,
             rounds: Vec::new(),
             error: Some("malformed potter-rollout.jsonl".to_string()),
         });
@@ -1292,6 +1299,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir,
             progress_file,
+            git_branch: Some("main".to_string()),
             rounds: vec![
                 PotterProjectRoundSummary {
                     round_current: 1,
@@ -1378,6 +1386,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/123456"),
             progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/123456/MAIN.md"),
+            git_branch: Some("main".to_string()),
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 12,
@@ -1468,6 +1477,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: project_dir.clone(),
             progress_file: progress_file.clone(),
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1523,6 +1533,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: project_dir.clone(),
             progress_file: progress_file.clone(),
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1539,6 +1550,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: project_dir.clone(),
             progress_file: progress_file.clone(),
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1678,6 +1690,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: first_project_dir.clone(),
             progress_file: first_project_dir.join("MAIN.md"),
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 2,
@@ -1697,6 +1710,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir: second_project_dir.clone(),
             progress_file: second_project_dir.join("MAIN.md"),
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 2,
                 round_total: 2,
@@ -1792,6 +1806,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir,
             progress_file,
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1848,6 +1863,7 @@ mod tests {
         overlay.on_project_details(PotterProjectDetails {
             project_dir,
             progress_file,
+            git_branch: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,

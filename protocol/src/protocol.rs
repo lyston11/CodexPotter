@@ -379,6 +379,9 @@ pub struct PotterProjectRoundSummary {
 pub struct PotterProjectDetails {
     pub project_dir: PathBuf,
     pub progress_file: PathBuf,
+    /// Git branch recorded in the progress file front matter, when available.
+    #[serde(default)]
+    pub git_branch: Option<String>,
     pub rounds: Vec<PotterProjectRoundSummary>,
     /// A user-facing error message when the details payload could not be constructed.
     pub error: Option<String>,

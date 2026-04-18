@@ -20,6 +20,7 @@ pub fn build_project_details_for_overlay(
         Err(err) => PotterProjectDetails {
             project_dir: project_dir.to_path_buf(),
             progress_file: project_dir.join("MAIN.md"),
+            git_branch: None,
             rounds: Vec::new(),
             error: Some(format!("{err:#}")),
         },
@@ -42,6 +43,8 @@ fn build_project_details_for_overlay_inner(
         "progress file missing: {}",
         progress_file_abs.display()
     );
+    let git_branch = crate::workflow::project::progress_file_git_branch(&progress_file_abs)
+        .context("read git_branch from progress file")?;
 
     let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
     let potter_lines = crate::workflow::rollout::read_lines(&potter_rollout_path)
@@ -93,6 +96,7 @@ fn build_project_details_for_overlay_inner(
     Ok(PotterProjectDetails {
         project_dir: project_dir.to_path_buf(),
         progress_file,
+        git_branch,
         rounds,
         error: None,
     })

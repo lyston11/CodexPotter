@@ -3,14 +3,14 @@ source: tui/src/projects_overlay.rs
 expression: terminal.backend()
 ---
 "                                                                                "
-"┃ ✓ 4 rounds · 1 minute ago     .codexpotter/projects/2026/04/16/1/MAIN.md      "
-"┃   Details pager state                                                         "
+"┃ ✓ 4 rounds · 1 minute ago     main  .codexpotter/projects/2026/04/16/1/       "
+"┃   Details pager state         MAIN.md                                         "
+"                                                                                "
 "                                ROUND 1 @ 1 minute ago                          "
 "                                                                                "
 "                                Done                                            "
 "                                                                                "
 "                                ROUND 2 @ 1 minute ago                          "
 "                                                                                "
-"                                Done                                            "
 "                                                                                "
-"  Esc close  Tab maximize  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page        ▪▫  "
+"  Esc close  Tab maximize  ↑↓ switch  shift+↑↓ scroll  ctrl+u/d page       ▪▫▫  "
