@@ -19,4 +19,4 @@ expression: terminal.backend()
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"  enter resume   esc new   ctrl + c quit   tab maximize   ↑/↓ browse            "
+"  Enter resume  Esc start new  Tab maximize  ↑↓ switch  ⇧↑↓ scroll  ^U/^D page  "

@@ -1422,6 +1422,11 @@ struct RenderAppState {
     codex_op_tx: Option<UnboundedSender<Op>>,
     projects_overlay_request_tx: Option<UnboundedSender<crate::ProjectsOverlayRequest>>,
     projects_overlay: crate::projects_overlay::ProjectsOverlay,
+    /// True when the projects overlay has switched the TUI into alt-screen mode.
+    ///
+    /// This keeps the wheel from scrolling the terminal scrollback while the overlay is open,
+    /// and ensures any transcript output is deferred until we return to the inline viewport.
+    projects_overlay_alt_screen_active: bool,
     bottom_pane: BottomPane,
     prompt_history: crate::prompt_history_store::PromptHistoryStore,
     file_search: FileSearchManager,
@@ -1462,6 +1467,7 @@ impl RenderAppState {
             codex_op_tx,
             projects_overlay_request_tx: None,
             projects_overlay: crate::projects_overlay::ProjectsOverlay::default(),
+            projects_overlay_alt_screen_active: false,
             bottom_pane,
             prompt_history,
             file_search,
@@ -2130,6 +2136,10 @@ impl RenderAppState {
 
     fn draw(&mut self, tui: &mut Tui) -> anyhow::Result<()> {
         if self.projects_overlay.is_open() {
+            if !self.projects_overlay_alt_screen_active && !tui.is_alt_screen_active() {
+                let _ = tui.enter_alt_screen();
+                self.projects_overlay_alt_screen_active = tui.is_alt_screen_active();
+            }
             tui.draw(u16::MAX, |frame| {
                 let area = frame.area();
                 ratatui::widgets::Clear.render(area, frame.buffer_mut());
@@ -2138,6 +2148,11 @@ impl RenderAppState {
                 // No input in the projects overlay; keep the terminal cursor hidden.
             })?;
             return Ok(());
+        }
+
+        if self.projects_overlay_alt_screen_active {
+            let _ = tui.leave_alt_screen();
+            self.projects_overlay_alt_screen_active = false;
         }
 
         let width = tui.terminal.last_known_screen_size.width;

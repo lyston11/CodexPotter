@@ -129,6 +129,9 @@ fn restore_common(should_disable_raw_mode: bool) -> Result<()> {
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     execute!(stdout(), DisableBracketedPaste)?;
     let _ = execute!(stdout(), DisableFocusChange);
+    // Best-effort: leave alt-screen even if the caller exits early while an overlay is open.
+    let _ = execute!(stdout(), DisableAlternateScroll);
+    let _ = execute!(stdout(), LeaveAlternateScreen);
     if should_disable_raw_mode {
         disable_raw_mode()?;
     }
@@ -463,7 +466,9 @@ impl Tui {
                 terminal.set_viewport_area(area);
             }
 
-            if !self.pending_history_lines.is_empty() {
+            if !self.pending_history_lines.is_empty()
+                && !self.alt_screen_active.load(Ordering::Relaxed)
+            {
                 crate::insert_history::insert_history_lines(
                     terminal,
                     self.pending_history_lines.clone(),

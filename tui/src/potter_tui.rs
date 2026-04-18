@@ -451,6 +451,9 @@ impl CodexPotterTui {
 
 impl Drop for CodexPotterTui {
     fn drop(&mut self) {
+        // Best-effort: if an overlay exited early, ensure we return to the inline screen first.
+        let _ = self.tui.leave_alt_screen();
+
         // Best-effort: clear any leftover inline UI so the user's shell prompt is clean.
         let _ = crate::terminal_cleanup::clear_inline_viewport_for_exit(&mut self.tui.terminal);
 
