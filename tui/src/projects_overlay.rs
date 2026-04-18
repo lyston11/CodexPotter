@@ -897,13 +897,9 @@ fn user_task_preview_lines(user_message: Option<&str>, wrap_width: usize) -> Vec
         .map(|line| Line::from(line.to_string()))
         .collect();
     let wrapped = wrap_plain_lines(lines, wrap_width);
-    let mut out: Vec<Line<'static>> = wrapped
-        .iter()
-        .take(USER_TASK_PREVIEW_MAX_LINES)
-        .cloned()
-        .collect();
-
-    let remaining = wrapped.len().saturating_sub(out.len());
+    let preview_len = USER_TASK_PREVIEW_MAX_LINES.min(wrapped.len());
+    let remaining = wrapped.len().saturating_sub(preview_len);
+    let mut out: Vec<Line<'static>> = wrapped.into_iter().take(preview_len).collect();
     if remaining > 0 {
         out.push(Line::from(format!("... ({remaining} more lines)")));
     }
