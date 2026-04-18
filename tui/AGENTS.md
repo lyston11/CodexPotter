@@ -71,7 +71,7 @@ Behavior related
 - A customized banner on startup; the first-screen model label appends `[fast]` when layered Codex config resolves `service_tier = "fast"` and `features.fast_mode` remains enabled
 - Home-relative `CODEX_HOME` values are expanded before resolving TUI config, themes, and skill roots (including Windows-native `~\...`)
 - Additionally shows gitignore startup hint
-- Hide the cursor while emitting frame diffs to avoid visible cursor movement; restore it after each draw.
+- When a frame does not request a cursor position, hide the cursor before flushing frame diffs to avoid visible cursor movement (the cursor may be visible in the previous frame).
 - Startup onboarding prompts:
   - Suggest adding `.codexpotter/` to the global gitignore.
   - If no `[tui].verbosity` is configured yet, prompt for a default verbosity level.

@@ -359,14 +359,19 @@ where
         // Buffer. Thus, we're taking the important data out of the Frame and dropping it.
         let cursor_position = frame.cursor_position;
 
-        // Hide the cursor while drawing so users don't see it jump around while we emit the diff.
-        //
-        // Always hide, even when `hidden_cursor` is already true, because code paths that bypass
-        // `Terminal` (e.g. terminal restore or Ctrl-Z suspend/resume) can make the cursor visible
-        // again without updating our internal state.
-        //
-        // We'll restore it after flushing the frame based on `cursor_position`.
-        self.hide_cursor()?;
+        if cursor_position.is_none() {
+            // Hide the cursor while drawing so users don't see it jump around while we emit the
+            // diff.
+            //
+            // Only do this when the frame does *not* set a cursor position. When the cursor is
+            // meant to remain visible (e.g. while typing during shimmer animation), hiding and
+            // re-showing it every redraw causes visible blinking.
+            //
+            // Always hide, even when `hidden_cursor` is already true, because code paths that
+            // bypass `Terminal` (e.g. terminal restore or Ctrl-Z suspend/resume) can make the
+            // cursor visible again without updating our internal state.
+            self.hide_cursor()?;
+        }
 
         // Draw to stdout
         self.flush()?;
@@ -902,10 +907,14 @@ mod tests {
     }
 
     #[test]
-    fn try_draw_hides_cursor_before_emitting_diff() {
+    fn try_draw_does_not_hide_cursor_when_frame_sets_cursor_position() {
         let backend = RecordingBackend::new(3, 1);
         let mut terminal = Terminal::with_options(backend).expect("terminal");
         terminal.set_viewport_area(Rect::new(0, 0, 3, 1));
+
+        // Simulate stale internal state: other code may mutate cursor visibility without updating
+        // `Terminal::hidden_cursor`.
+        terminal.hidden_cursor = true;
 
         terminal
             .draw(|frame| {
@@ -915,10 +924,6 @@ mod tests {
             .expect("draw");
 
         let events = &terminal.backend().events;
-        let hide_idx = events
-            .iter()
-            .position(|event| *event == RecordingEvent::HideCursor)
-            .expect("expected hide cursor event");
         let first_write_idx = events
             .iter()
             .position(|event| *event == RecordingEvent::Write)
@@ -928,9 +933,13 @@ mod tests {
             .position(|event| *event == RecordingEvent::ShowCursor)
             .expect("expected show cursor event");
 
-        assert!(
-            hide_idx < first_write_idx,
-            "expected cursor to hide before flushing updates; events: {events:?}",
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == RecordingEvent::HideCursor)
+                .count(),
+            0,
+            "expected cursor not to be hidden when a cursor position is set; events: {events:?}",
         );
         assert!(
             show_idx > first_write_idx,
@@ -951,7 +960,6 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.buffer_mut().set_string(0, 0, "X", Style::default());
-                frame.set_cursor_position((0, 0));
             })
             .expect("draw");
 
@@ -964,18 +972,18 @@ mod tests {
             .iter()
             .position(|event| *event == RecordingEvent::Write)
             .expect("expected at least one write event");
-        let show_idx = events
-            .iter()
-            .position(|event| *event == RecordingEvent::ShowCursor)
-            .expect("expected show cursor event");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == RecordingEvent::ShowCursor)
+                .count(),
+            0,
+            "expected cursor not to be shown without an explicit cursor position; events: {events:?}",
+        );
 
         assert!(
             hide_idx < first_write_idx,
             "expected cursor to hide before flushing updates; events: {events:?}",
-        );
-        assert!(
-            show_idx > first_write_idx,
-            "expected cursor to be shown after flushing updates; events: {events:?}",
         );
     }
 }
