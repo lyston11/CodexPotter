@@ -2135,7 +2135,7 @@ impl RenderAppState {
                 ratatui::widgets::Clear.render(area, frame.buffer_mut());
                 self.projects_overlay
                     .render(area, frame.buffer_mut(), SystemTime::now());
-                frame.set_cursor_position((area.x, area.bottom().saturating_sub(1)));
+                // No input in the projects overlay; keep the terminal cursor hidden.
             })?;
             return Ok(());
         }
