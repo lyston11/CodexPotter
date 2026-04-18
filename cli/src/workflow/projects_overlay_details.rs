@@ -21,6 +21,7 @@ pub fn build_project_details_for_overlay(
             project_dir: project_dir.to_path_buf(),
             progress_file: project_dir.join("MAIN.md"),
             git_branch: None,
+            user_message: None,
             rounds: Vec::new(),
             error: Some(format!("{err:#}")),
         },
@@ -52,6 +53,7 @@ fn build_project_details_for_overlay_inner(
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_lines)
         .with_context(|| format!("parse {}", potter_rollout_path.display()))?;
 
+    let user_message = index.project_started.user_message.clone();
     let mut rounds = Vec::new();
 
     for round in index.completed_rounds {
@@ -97,6 +99,7 @@ fn build_project_details_for_overlay_inner(
         project_dir: project_dir.to_path_buf(),
         progress_file,
         git_branch,
+        user_message,
         rounds,
         error: None,
     })
@@ -191,7 +194,10 @@ fn read_final_agent_message_from_rollout(
 mod tests {
     use super::*;
 
+    use crate::workflow::rollout::PotterRolloutLine;
+    use codex_protocol::protocol::PotterRoundOutcome;
     use pretty_assertions::assert_eq;
+    use std::path::PathBuf;
 
     #[test]
     fn final_agent_message_prefers_final_answer_phase() {
@@ -241,5 +247,51 @@ mod tests {
         let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
         assert_eq!(secs, None);
         assert_eq!(message, None);
+    }
+
+    #[test]
+    fn overlay_details_include_user_task_message_from_potter_rollout() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let project_dir_abs = workdir.path().join(&project_dir);
+        std::fs::create_dir_all(&project_dir_abs).expect("create project dir");
+
+        let progress_file_abs = project_dir_abs.join("MAIN.md");
+        std::fs::write(&progress_file_abs, "---\ngit_branch: \"main\"\n---\n").expect("write MAIN");
+
+        let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello task".to_string()),
+                user_prompt_file: project_dir.join("MAIN.md"),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 1,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Interrupted,
+            },
+        )
+        .expect("append round_finished");
+
+        let details = build_project_details_for_overlay(workdir.path(), &project_dir);
+        assert_eq!(details.error, None);
+        assert_eq!(details.project_dir, project_dir);
+        assert_eq!(
+            details.user_message.as_deref(),
+            Some("hello task"),
+            "expected details to surface the original user task message"
+        );
+        assert_eq!(details.git_branch.as_deref(), Some("main"));
     }
 }

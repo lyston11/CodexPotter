@@ -382,6 +382,9 @@ pub struct PotterProjectDetails {
     /// Git branch recorded in the progress file front matter, when available.
     #[serde(default)]
     pub git_branch: Option<String>,
+    /// Original user task message recorded at project start, when available.
+    #[serde(default)]
+    pub user_message: Option<String>,
     pub rounds: Vec<PotterProjectRoundSummary>,
     /// A user-facing error message when the details payload could not be constructed.
     pub error: Option<String>,

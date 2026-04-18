@@ -31,6 +31,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::human_time::human_time_ago;
 use crate::ui_colors::orange_color;
 
+const USER_TASK_PREVIEW_MAX_LINES: usize = 5;
+
 #[derive(Debug, Default, Clone, Copy)]
 struct OverlayMetrics {
     left_inner_width: u16,
@@ -691,6 +693,10 @@ impl ProjectsOverlay {
 
         let mut lines =
             wrap_plain_lines(vec![Line::from(header_spans), Line::from("")], wrap_width);
+        lines.extend(user_task_preview_lines(
+            details.user_message.as_deref(),
+            wrap_width,
+        ));
         for round in &details.rounds {
             append_round_details(&mut lines, round, wrap_width, now);
             lines.push(Line::from(""));
@@ -876,6 +882,33 @@ fn wrap_plain_lines(lines: Vec<Line<'static>>, wrap_width: usize) -> Vec<Line<'s
     }
 
     crate::wrapping::word_wrap_lines(lines.iter(), wrap_width)
+}
+
+fn user_task_preview_lines(user_message: Option<&str>, wrap_width: usize) -> Vec<Line<'static>> {
+    let user_message = user_message.unwrap_or_default();
+    if user_message.trim().is_empty() {
+        return vec![Line::from(vec![
+            Span::from("(no user task recorded)").dim(),
+        ])];
+    }
+
+    let lines = user_message
+        .lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect();
+    let wrapped = wrap_plain_lines(lines, wrap_width);
+    let mut out: Vec<Line<'static>> = wrapped
+        .iter()
+        .take(USER_TASK_PREVIEW_MAX_LINES)
+        .cloned()
+        .collect();
+
+    let remaining = wrapped.len().saturating_sub(out.len());
+    if remaining > 0 {
+        out.push(Line::from(format!("... ({remaining} more lines)")));
+    }
+
+    out
 }
 
 fn render_project_list_item(
@@ -1140,6 +1173,9 @@ mod tests {
             project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
             progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
             git_branch: Some("main".to_string()),
+            user_message: Some(String::from(
+                "Task line 1\nTask line 2\nTask line 3\nTask line 4\nTask line 5\nTask line 6\nTask line 7\nTask line 8\nTask line 9\nTask line 10\nTask line 11\nTask line 12\nTask line 13\nTask line 14\nTask line 15",
+            )),
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 4,
@@ -1175,6 +1211,7 @@ mod tests {
             project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
             progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
             git_branch: Some("main".to_string()),
+            user_message: Some(String::from("Task line")),
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 4,
@@ -1303,6 +1340,7 @@ mod tests {
             project_dir,
             progress_file,
             git_branch: None,
+            user_message: None,
             rounds: Vec::new(),
             error: Some("malformed potter-rollout.jsonl".to_string()),
         });
@@ -1404,6 +1442,7 @@ mod tests {
             project_dir,
             progress_file,
             git_branch: Some("main".to_string()),
+            user_message: Some("Task line".to_string()),
             rounds: vec![
                 PotterProjectRoundSummary {
                     round_current: 1,
@@ -1491,6 +1530,7 @@ mod tests {
             project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/123456"),
             progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/123456/MAIN.md"),
             git_branch: Some("main".to_string()),
+            user_message: Some("Task line".to_string()),
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 12,
@@ -1582,6 +1622,7 @@ mod tests {
             project_dir: project_dir.clone(),
             progress_file: progress_file.clone(),
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1638,6 +1679,7 @@ mod tests {
             project_dir: project_dir.clone(),
             progress_file: progress_file.clone(),
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1655,6 +1697,7 @@ mod tests {
             project_dir: project_dir.clone(),
             progress_file: progress_file.clone(),
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1795,6 +1838,7 @@ mod tests {
             project_dir: first_project_dir.clone(),
             progress_file: first_project_dir.join("MAIN.md"),
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 2,
@@ -1815,6 +1859,7 @@ mod tests {
             project_dir: second_project_dir.clone(),
             progress_file: second_project_dir.join("MAIN.md"),
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 2,
                 round_total: 2,
@@ -1911,6 +1956,7 @@ mod tests {
             project_dir,
             progress_file,
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
@@ -1968,6 +2014,7 @@ mod tests {
             project_dir,
             progress_file,
             git_branch: None,
+            user_message: None,
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,

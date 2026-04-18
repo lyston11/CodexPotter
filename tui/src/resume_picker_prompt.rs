@@ -234,6 +234,7 @@ mod tests {
                 project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
                 progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
                 git_branch: Some("main".to_string()),
+                user_message: Some("Task line".to_string()),
                 rounds: vec![codex_protocol::protocol::PotterProjectRoundSummary {
                     round_current: 1,
                     round_total: 4,
@@ -277,6 +278,7 @@ mod tests {
                 project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
                 progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
                 git_branch: Some("main".to_string()),
+                user_message: Some("Task line".to_string()),
                 rounds: vec![
                     codex_protocol::protocol::PotterProjectRoundSummary {
                         round_current: 1,
