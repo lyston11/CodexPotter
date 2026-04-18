@@ -663,22 +663,10 @@ impl ProjectsOverlay {
             return;
         }
 
-        let mut start = self.selected;
-        loop {
-            let mut total = 0usize;
-            for project in &self.projects[start..=self.selected] {
-                total += project_list_item_height(project, wrap_width);
-            }
-            if total <= height {
-                self.scroll_top = start;
-                return;
-            }
-            if start == 0 {
-                self.scroll_top = 0;
-                return;
-            }
-            start -= 1;
-        }
+        // Scrolling keeps the selection visible by snapping it to the top when it moves past the
+        // viewport. (If a single list item is taller than the viewport, no earlier `scroll_top`
+        // can make it fully visible, so snapping remains the least surprising behavior.)
+        self.scroll_top = self.selected;
     }
 
     fn bump_selection(&mut self, delta: i32) -> Option<crate::ProjectsOverlayRequest> {
@@ -1014,6 +1002,54 @@ mod tests {
             })
             .expect("draw");
         terminal
+    }
+
+    #[test]
+    fn projects_overlay_scrolls_by_item_when_selection_moves_past_viewport() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                    description: "Item 1".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Incomplete,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/2"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/2/MAIN.md"),
+                    description: "Item 2".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Incomplete,
+                },
+                PotterProjectListEntry {
+                    project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/3"),
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/3/MAIN.md"),
+                    description: "Item 3".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Incomplete,
+                },
+            ],
+            None,
+        );
+
+        let _terminal = render_overlay_to_terminal(&mut overlay, 60, 9, UNIX_EPOCH);
+
+        assert_eq!(overlay.selected, 0);
+        assert_eq!(overlay.scroll_top, 0);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(overlay.selected, 1);
+        assert_eq!(overlay.scroll_top, 0);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(overlay.selected, 2);
+        assert_eq!(overlay.scroll_top, 2);
     }
 
     #[test]
