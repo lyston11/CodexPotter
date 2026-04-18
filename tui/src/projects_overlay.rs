@@ -697,9 +697,14 @@ impl ProjectsOverlay {
             details.user_message.as_deref(),
             wrap_width,
         ));
-        for round in &details.rounds {
-            append_round_details(&mut lines, round, wrap_width, now);
+        if !details.rounds.is_empty() {
             lines.push(Line::from(""));
+        }
+        for (idx, round) in details.rounds.iter().enumerate() {
+            append_round_details(&mut lines, round, wrap_width, now);
+            if idx + 1 < details.rounds.len() {
+                lines.push(Line::from(""));
+            }
         }
 
         lines
@@ -1222,6 +1227,64 @@ mod tests {
         let terminal =
             render_overlay_to_terminal(&mut overlay, 80, 18, UNIX_EPOCH + Duration::from_secs(120));
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_inserts_blank_line_between_task_preview_and_first_round() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Task preview spacing".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            git_branch: Some("main".to_string()),
+            user_message: Some("Task line".to_string()),
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("Done".to_string()),
+            }],
+            error: None,
+        });
+
+        let lines = overlay.build_right_lines(
+            Rect::new(0, 0, 80, 18),
+            UNIX_EPOCH + Duration::from_secs(120),
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        let task_idx = rendered
+            .iter()
+            .position(|line| line == "Task line")
+            .unwrap_or_else(|| panic!("missing task preview line: {rendered:?}"));
+        let round_idx = rendered
+            .iter()
+            .position(|line| line == "ROUND 1 @ 1 minute ago")
+            .unwrap_or_else(|| panic!("missing round heading line: {rendered:?}"));
+
+        assert_eq!(round_idx, task_idx + 2);
+        assert_eq!(rendered[task_idx + 1], "");
     }
 
     #[test]
