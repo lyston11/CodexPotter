@@ -39,6 +39,13 @@ struct OverlayMetrics {
     right_total_lines: usize,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectsOverlayFooterMode {
+    #[default]
+    ListOverlay,
+    ResumePicker,
+}
+
 #[derive(Debug, Default)]
 /// UI-only state machine for the inline projects list overlay (`Ctrl+L` / `/list`).
 ///
@@ -49,6 +56,7 @@ struct OverlayMetrics {
 pub struct ProjectsOverlay {
     open: bool,
     maximized: bool,
+    footer_mode: ProjectsOverlayFooterMode,
 
     list_loading: bool,
     list_error: Option<String>,
@@ -65,6 +73,10 @@ pub struct ProjectsOverlay {
 }
 
 impl ProjectsOverlay {
+    pub fn set_footer_mode(&mut self, mode: ProjectsOverlayFooterMode) {
+        self.footer_mode = mode;
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -359,52 +371,114 @@ impl ProjectsOverlay {
             " maximize"
         };
 
-        vec![
-            Line::from(vec![
-                "Esc".into(),
-                " close".dim(),
-                "  ".into(),
-                "Tab".into(),
-                tab_hint.dim(),
-                "  ".into(),
-                "↑↓".into(),
-                " switch".dim(),
-                "  ".into(),
-                "shift+↑↓".into(),
-                " scroll".dim(),
-                "  ".into(),
-                "ctrl+u/d".into(),
-                " page".dim(),
-            ]),
-            Line::from(vec![
-                "Esc".into(),
-                "  ".into(),
-                "Tab".into(),
-                tab_hint.dim(),
-                "  ".into(),
-                "↑↓".into(),
-                " switch".dim(),
-                " ".into(),
-                "⇧↑↓".into(),
-                " scroll".dim(),
-                " ".into(),
-                "^U/^D".into(),
-                " page".dim(),
-            ]),
-            Line::from(vec![
-                "Esc".into(),
-                "  ".into(),
-                "Tab".into(),
-                tab_hint.dim(),
-                "  ".into(),
-                "↑↓".into(),
-                " ".into(),
-                "⇧↑↓".into(),
-                " ".into(),
-                "^U/^D".into(),
-            ]),
-            Line::from(vec!["Esc".into()]),
-        ]
+        match self.footer_mode {
+            ProjectsOverlayFooterMode::ListOverlay => vec![
+                Line::from(vec![
+                    "Esc".into(),
+                    " close".dim(),
+                    "  ".into(),
+                    "Tab".into(),
+                    tab_hint.dim(),
+                    "  ".into(),
+                    "↑↓".into(),
+                    " switch".dim(),
+                    "  ".into(),
+                    "shift+↑↓".into(),
+                    " scroll".dim(),
+                    "  ".into(),
+                    "ctrl+u/d".into(),
+                    " page".dim(),
+                ]),
+                Line::from(vec![
+                    "Esc".into(),
+                    "  ".into(),
+                    "Tab".into(),
+                    tab_hint.dim(),
+                    "  ".into(),
+                    "↑↓".into(),
+                    " switch".dim(),
+                    " ".into(),
+                    "⇧↑↓".into(),
+                    " scroll".dim(),
+                    " ".into(),
+                    "^U/^D".into(),
+                    " page".dim(),
+                ]),
+                Line::from(vec![
+                    "Esc".into(),
+                    "  ".into(),
+                    "Tab".into(),
+                    tab_hint.dim(),
+                    "  ".into(),
+                    "↑↓".into(),
+                    " ".into(),
+                    "⇧↑↓".into(),
+                    " ".into(),
+                    "^U/^D".into(),
+                ]),
+                Line::from(vec!["Esc".into()]),
+            ],
+            ProjectsOverlayFooterMode::ResumePicker => vec![
+                Line::from(vec![
+                    "Enter".into(),
+                    " resume".dim(),
+                    "  ".into(),
+                    "Esc".into(),
+                    " start new".dim(),
+                    "  ".into(),
+                    "Tab".into(),
+                    tab_hint.dim(),
+                    "  ".into(),
+                    "↑↓".into(),
+                    " switch".dim(),
+                    "  ".into(),
+                    "shift+↑↓".into(),
+                    " scroll".dim(),
+                    "  ".into(),
+                    "ctrl+u/d".into(),
+                    " page".dim(),
+                ]),
+                Line::from(vec![
+                    "Enter".into(),
+                    " resume".dim(),
+                    "  ".into(),
+                    "Esc".into(),
+                    " start new".dim(),
+                    "  ".into(),
+                    "Tab".into(),
+                    tab_hint.dim(),
+                    "  ".into(),
+                    "↑↓".into(),
+                    " switch".dim(),
+                    "  ".into(),
+                    "⇧↑↓".into(),
+                    " scroll".dim(),
+                    "  ".into(),
+                    "^U/^D".into(),
+                    " page".dim(),
+                ]),
+                Line::from(vec![
+                    "Enter".into(),
+                    " resume".dim(),
+                    "  ".into(),
+                    "Esc".into(),
+                    " start new".dim(),
+                    "  ".into(),
+                    "Tab".into(),
+                    tab_hint.dim(),
+                    "  ".into(),
+                    "↑↓".into(),
+                    " switch".dim(),
+                ]),
+                Line::from(vec![
+                    "Enter".into(),
+                    " resume".dim(),
+                    "  ".into(),
+                    "Esc".into(),
+                    " start new".dim(),
+                ]),
+            ],
+        }
     }
 
     fn render_left_pager(&self, area: Rect, buf: &mut Buffer) {

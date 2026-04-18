@@ -15,10 +15,7 @@ use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget as _;
-use ratatui::style::Stylize as _;
-use ratatui::text::Line;
 use ratatui::widgets::Clear;
-use ratatui::widgets::Paragraph;
 use tokio_stream::StreamExt;
 
 use crate::tui::Tui;
@@ -118,6 +115,7 @@ struct ResumePickerOverlay {
 impl ResumePickerOverlay {
     fn new(now: SystemTime) -> (Self, crate::ProjectsOverlayRequest) {
         let mut overlay = crate::projects_overlay::ProjectsOverlay::default();
+        overlay.set_footer_mode(crate::projects_overlay::ProjectsOverlayFooterMode::ResumePicker);
         let request = overlay.open_or_refresh();
         (
             Self {
@@ -199,106 +197,7 @@ impl ResumePickerOverlay {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         self.overlay.render(area, buf, self.now);
-        render_resume_picker_footer(area, buf);
     }
-}
-
-fn render_resume_picker_footer(area: Rect, buf: &mut Buffer) {
-    if area.height == 0 {
-        return;
-    }
-
-    let footer_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    if footer_area.is_empty() {
-        return;
-    }
-
-    Clear.render(footer_area, buf);
-
-    let inset_area = Rect::new(
-        footer_area.x.saturating_add(2),
-        footer_area.y,
-        footer_area.width.saturating_sub(4),
-        footer_area.height,
-    );
-    if inset_area.is_empty() {
-        return;
-    }
-
-    let hint_line = resume_picker_footer_hint_line(inset_area.width);
-    Paragraph::new(hint_line).render(inset_area, buf);
-}
-
-fn resume_picker_footer_hint_line(width: u16) -> Line<'static> {
-    let variants = resume_picker_footer_hint_variants();
-    let fallback = variants.last().cloned().unwrap_or_default();
-    variants
-        .into_iter()
-        .find(|line| line.width() <= usize::from(width))
-        .unwrap_or(fallback)
-}
-
-fn resume_picker_footer_hint_variants() -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![
-            "Enter".into(),
-            " resume".dim(),
-            "  ".into(),
-            "Esc".into(),
-            " start new".dim(),
-            "  ".into(),
-            "Tab".into(),
-            " maximize".dim(),
-            "  ".into(),
-            "↑↓".into(),
-            " switch".dim(),
-            "  ".into(),
-            "shift+↑↓".into(),
-            " scroll".dim(),
-            "  ".into(),
-            "ctrl+u/d".into(),
-            " page".dim(),
-        ]),
-        Line::from(vec![
-            "Enter".into(),
-            " resume".dim(),
-            "  ".into(),
-            "Esc".into(),
-            " start new".dim(),
-            "  ".into(),
-            "Tab".into(),
-            " maximize".dim(),
-            "  ".into(),
-            "↑↓".into(),
-            " switch".dim(),
-            "  ".into(),
-            "⇧↑↓".into(),
-            " scroll".dim(),
-            "  ".into(),
-            "^U/^D".into(),
-            " page".dim(),
-        ]),
-        Line::from(vec![
-            "Enter".into(),
-            " resume".dim(),
-            "  ".into(),
-            "Esc".into(),
-            " start new".dim(),
-            "  ".into(),
-            "Tab".into(),
-            " maximize".dim(),
-            "  ".into(),
-            "↑↓".into(),
-            " switch".dim(),
-        ]),
-        Line::from(vec![
-            "Enter".into(),
-            " resume".dim(),
-            "  ".into(),
-            "Esc".into(),
-            " start new".dim(),
-        ]),
-    ]
 }
 
 #[cfg(test)]
@@ -346,6 +245,69 @@ mod tests {
         });
 
         let mut terminal = Terminal::new(TestBackend::new(80, 18)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                screen.render(area, frame.buffer_mut());
+            })
+            .expect("draw");
+
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn resume_picker_overlay_renders_details_pager() {
+        let now = UNIX_EPOCH + Duration::from_secs(120);
+        let (mut screen, _) = ResumePickerOverlay::new(now);
+
+        screen.handle_overlay_response(crate::ProjectsOverlayResponse::List {
+            projects: vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Details pager state".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 4,
+                status: codex_protocol::protocol::PotterProjectListStatus::Succeeded,
+            }],
+            error: None,
+        });
+
+        screen.handle_overlay_response(crate::ProjectsOverlayResponse::Details {
+            details: PotterProjectDetails {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                git_branch: Some("main".to_string()),
+                rounds: vec![
+                    codex_protocol::protocol::PotterProjectRoundSummary {
+                        round_current: 1,
+                        round_total: 4,
+                        final_message_unix_secs: Some(1),
+                        final_message: Some(String::from("Done")),
+                    },
+                    codex_protocol::protocol::PotterProjectRoundSummary {
+                        round_current: 2,
+                        round_total: 4,
+                        final_message_unix_secs: Some(1),
+                        final_message: Some(String::from("Done")),
+                    },
+                    codex_protocol::protocol::PotterProjectRoundSummary {
+                        round_current: 3,
+                        round_total: 4,
+                        final_message_unix_secs: Some(1),
+                        final_message: Some(String::from("Done")),
+                    },
+                    codex_protocol::protocol::PotterProjectRoundSummary {
+                        round_current: 4,
+                        round_total: 4,
+                        final_message_unix_secs: Some(1),
+                        final_message: Some(String::from("Done")),
+                    },
+                ],
+                error: None,
+            },
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("terminal");
         terminal
             .draw(|frame| {
                 let area = frame.area();
