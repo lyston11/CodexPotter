@@ -4,7 +4,6 @@
 //! is owned by the CLI workflow layer. This helper keeps the control-plane logic consistent
 //! across the live project render loop and the prompt screen (when no project is running).
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -217,15 +216,19 @@ fn response_for_projects_overlay_request(
 ) -> ProjectsOverlayResponse {
     match request {
         ProjectsOverlayRequest::List => {
-            let (mut projects, error) =
-                match super::projects_overlay_index::discover_projects_for_overlay(workdir) {
-                    Ok(projects) => (projects, None),
-                    Err(err) => (Vec::new(), Some(format!("{err:#}"))),
-                };
-            if mode == OverlayListMode::ResumableProjects {
-                let resumable = resumable_project_dirs_for_overlay(workdir);
-                projects.retain(|project| resumable.contains(&project.project_dir));
-            }
+            let result = match mode {
+                OverlayListMode::AllProjects => {
+                    super::projects_overlay_index::discover_projects_for_overlay(workdir)
+                }
+                OverlayListMode::ResumableProjects => {
+                    super::projects_overlay_index::discover_resumable_projects_for_overlay(workdir)
+                }
+            };
+
+            let (projects, error) = match result {
+                Ok(projects) => (projects, None),
+                Err(err) => (Vec::new(), Some(format!("{err:#}"))),
+            };
             ProjectsOverlayResponse::List { projects, error }
         }
         ProjectsOverlayRequest::Details { project_dir } => {
@@ -236,69 +239,6 @@ fn response_for_projects_overlay_request(
             ProjectsOverlayResponse::Details { details }
         }
     }
-}
-
-fn resumable_project_dirs_for_overlay(workdir: &Path) -> HashSet<PathBuf> {
-    let mut out = HashSet::new();
-    for progress_file in super::project_progress_files::discover_project_progress_files(workdir) {
-        let Some(project_dir_abs) = progress_file.parent() else {
-            continue;
-        };
-        if !project_dir_is_resumable(workdir, project_dir_abs) {
-            continue;
-        }
-        let project_dir = project_dir_abs
-            .strip_prefix(workdir)
-            .unwrap_or(project_dir_abs)
-            .to_path_buf();
-        out.insert(project_dir);
-    }
-    out
-}
-
-fn project_dir_is_resumable(workdir: &Path, project_dir_abs: &Path) -> bool {
-    let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(project_dir_abs);
-    if !potter_rollout_path.is_file() {
-        return false;
-    }
-
-    let potter_lines = match crate::workflow::rollout::read_lines(&potter_rollout_path) {
-        Ok(lines) => lines,
-        Err(_) => return false,
-    };
-    if potter_lines.is_empty() {
-        return false;
-    }
-
-    let index = match crate::workflow::rollout_resume_index::build_resume_index(&potter_lines) {
-        Ok(index) => index,
-        Err(_) => return false,
-    };
-
-    all_referenced_rollouts_exist(workdir, &index)
-}
-
-fn all_referenced_rollouts_exist(
-    workdir: &Path,
-    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
-) -> bool {
-    let mut all_paths: Vec<&Path> = Vec::new();
-    for round in &index.completed_rounds {
-        if let Some(configured) = &round.configured {
-            all_paths.push(configured.rollout_path.as_path());
-        }
-    }
-    if let Some(unfinished) = &index.unfinished_round {
-        all_paths.push(unfinished.rollout_path.as_path());
-    }
-
-    all_paths.into_iter().all(|rollout_path| {
-        let resolved = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            workdir,
-            rollout_path,
-        );
-        resolved.is_file()
-    })
 }
 
 #[cfg(test)]

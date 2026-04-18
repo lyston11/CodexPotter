@@ -14,6 +14,14 @@ use codex_protocol::protocol::PotterProjectListEntry;
 use codex_protocol::protocol::PotterProjectListStatus;
 use codex_protocol::protocol::PotterRoundOutcome;
 
+use crate::workflow::rollout_resume_index::PotterRolloutResumeIndex;
+
+#[derive(Debug)]
+struct DiscoveredOverlayProject {
+    row: PotterProjectListEntry,
+    resume_index: Option<PotterRolloutResumeIndex>,
+}
+
 /// Discover CodexPotter project progress files under `workdir` and build overlay list entries.
 ///
 /// Discovery is best-effort: malformed or incomplete projects are treated as `Incomplete` so the
@@ -21,11 +29,44 @@ use codex_protocol::protocol::PotterRoundOutcome;
 pub fn discover_projects_for_overlay(
     workdir: &Path,
 ) -> anyhow::Result<Vec<PotterProjectListEntry>> {
+    let mut rows: Vec<PotterProjectListEntry> = discover_projects_for_overlay_internal(workdir)
+        .into_iter()
+        .map(|project| project.row)
+        .collect();
+
+    sort_rows(&mut rows);
+    Ok(rows)
+}
+
+/// Discover resumable CodexPotter projects under `workdir`.
+///
+/// Resumable projects are those whose progress and rollout logs reference only rollout files that
+/// still exist on disk. This powers `codex-potter resume` so the picker avoids projects that
+/// would error immediately.
+pub fn discover_resumable_projects_for_overlay(
+    workdir: &Path,
+) -> anyhow::Result<Vec<PotterProjectListEntry>> {
     let mut rows = Vec::new();
+    for project in discover_projects_for_overlay_internal(workdir) {
+        let Some(index) = project.resume_index.as_ref() else {
+            continue;
+        };
+        if !all_referenced_rollouts_exist(workdir, index) {
+            continue;
+        }
+        rows.push(project.row);
+    }
+
+    sort_rows(&mut rows);
+    Ok(rows)
+}
+
+fn discover_projects_for_overlay_internal(workdir: &Path) -> Vec<DiscoveredOverlayProject> {
+    let mut projects = Vec::new();
 
     for progress_file in super::project_progress_files::discover_project_progress_files(workdir) {
         match project_entry_for_progress_file(workdir, &progress_file) {
-            Ok(Some(row)) => rows.push(row),
+            Ok(Some(project)) => projects.push(project),
             Ok(None) => {}
             Err(_) => {
                 // Keep discovery best-effort: the overlay should still open even if individual
@@ -34,14 +75,13 @@ pub fn discover_projects_for_overlay(
         }
     }
 
-    sort_rows(&mut rows);
-    Ok(rows)
+    projects
 }
 
 fn project_entry_for_progress_file(
     workdir: &Path,
     progress_file_abs: &Path,
-) -> anyhow::Result<Option<PotterProjectListEntry>> {
+) -> anyhow::Result<Option<DiscoveredOverlayProject>> {
     let project_dir_abs = progress_file_abs
         .parent()
         .context("derive project_dir from progress file path")?;
@@ -51,20 +91,23 @@ fn project_entry_for_progress_file(
 
     let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(project_dir_abs);
     let rollout_lines = crate::workflow::rollout::read_lines(&potter_rollout_path).ok();
-    let index = rollout_lines
+    let resume_index = rollout_lines
         .as_deref()
         .filter(|lines| !lines.is_empty())
         .and_then(|lines| crate::workflow::rollout_resume_index::build_resume_index(lines).ok());
 
-    let Some(index) = index else {
+    let Some(index) = resume_index else {
         let description = read_project_description(progress_file_abs, None).unwrap_or_default();
-        return Ok(Some(PotterProjectListEntry {
-            project_dir,
-            progress_file,
-            description,
-            started_at_unix_secs: None,
-            rounds: 0,
-            status: PotterProjectListStatus::Incomplete,
+        return Ok(Some(DiscoveredOverlayProject {
+            row: PotterProjectListEntry {
+                project_dir,
+                progress_file,
+                description,
+                started_at_unix_secs: None,
+                rounds: 0,
+                status: PotterProjectListStatus::Incomplete,
+            },
+            resume_index: None,
         }));
     };
 
@@ -77,13 +120,16 @@ fn project_entry_for_progress_file(
     let rounds = project_list_rounds(&status, &index);
     let started_at_unix_secs = project_started_at_unix_secs(workdir, &index);
 
-    Ok(Some(PotterProjectListEntry {
-        project_dir,
-        progress_file,
-        description,
-        started_at_unix_secs,
-        rounds,
-        status,
+    Ok(Some(DiscoveredOverlayProject {
+        row: PotterProjectListEntry {
+            project_dir,
+            progress_file,
+            description,
+            started_at_unix_secs,
+            rounds,
+            status,
+        },
+        resume_index: Some(index),
     }))
 }
 
@@ -91,9 +137,7 @@ fn relativize_path(workdir: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(workdir).unwrap_or(path).to_path_buf()
 }
 
-fn project_list_status(
-    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
-) -> PotterProjectListStatus {
+fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListStatus {
     if index
         .completed_rounds
         .iter()
@@ -129,10 +173,7 @@ fn project_list_status(
     }
 }
 
-fn project_list_rounds(
-    status: &PotterProjectListStatus,
-    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
-) -> u32 {
+fn project_list_rounds(status: &PotterProjectListStatus, index: &PotterRolloutResumeIndex) -> u32 {
     if *status == PotterProjectListStatus::Succeeded
         && let Some(rounds) = index.completed_rounds.iter().rev().find_map(|round| {
             round
@@ -155,10 +196,7 @@ fn project_list_rounds(
         .unwrap_or_default()
 }
 
-fn project_started_at_unix_secs(
-    workdir: &Path,
-    index: &crate::workflow::rollout_resume_index::PotterRolloutResumeIndex,
-) -> Option<u64> {
+fn project_started_at_unix_secs(workdir: &Path, index: &PotterRolloutResumeIndex) -> Option<u64> {
     let rollout_path = index
         .completed_rounds
         .iter()
@@ -180,6 +218,31 @@ fn project_started_at_unix_secs(
         &rollout_path,
     );
     read_first_rollout_timestamp_unix_secs(&rollout_path).ok()
+}
+
+fn all_referenced_rollouts_exist(workdir: &Path, index: &PotterRolloutResumeIndex) -> bool {
+    let unfinished = index
+        .unfinished_round
+        .as_ref()
+        .map(|round| round.rollout_path.as_path());
+
+    index
+        .completed_rounds
+        .iter()
+        .filter_map(|round| {
+            round
+                .configured
+                .as_ref()
+                .map(|configured| configured.rollout_path.as_path())
+        })
+        .chain(unfinished)
+        .all(|rollout_path| {
+            let resolved = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+                workdir,
+                rollout_path,
+            );
+            resolved.is_file()
+        })
 }
 
 fn read_first_rollout_timestamp_unix_secs(rollout_path: &Path) -> anyhow::Result<u64> {
@@ -532,5 +595,43 @@ original goal line
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
         assert_eq!(rows[0].rounds, 2);
+    }
+
+    #[test]
+    fn discover_resumable_projects_filters_missing_rollout_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let ok_main = write_main(workdir, ".codexpotter/projects/2026/03/03/1", None);
+        let missing_main = write_main(workdir, ".codexpotter/projects/2026/03/03/2", None);
+
+        let ok_rollout = workdir.join("ok.jsonl");
+        write_rollout_with_timestamp(&ok_rollout, "2026-03-03T00:00:00.000Z");
+
+        write_potter_rollout(
+            ok_main.parent().expect("project dir"),
+            ok_main.strip_prefix(workdir).expect("rel"),
+            1,
+            10,
+            Path::new("ok.jsonl"),
+            PotterRoundOutcome::Interrupted,
+            None,
+        );
+        write_potter_rollout(
+            missing_main.parent().expect("project dir"),
+            missing_main.strip_prefix(workdir).expect("rel"),
+            1,
+            10,
+            Path::new("missing.jsonl"),
+            PotterRoundOutcome::Interrupted,
+            None,
+        );
+
+        let rows = discover_resumable_projects_for_overlay(workdir).expect("discover resumable");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].project_dir,
+            PathBuf::from(".codexpotter/projects/2026/03/03/1")
+        );
     }
 }
