@@ -12,19 +12,14 @@ use ignore::WalkBuilder;
 
 const PROJECT_MAIN_FILE: &str = "MAIN.md";
 
-pub(super) fn discover_project_progress_files(workdir: &Path) -> Vec<PathBuf> {
+pub fn discover_project_progress_files(workdir: &Path) -> Vec<PathBuf> {
     let projects_root = workdir.join(".codexpotter").join("projects");
     if !projects_root.is_dir() {
         return Vec::new();
     }
 
     let walker = WalkBuilder::new(&projects_root)
-        .hidden(false)
-        .ignore(false)
-        .git_ignore(false)
-        .git_exclude(false)
-        .git_global(false)
-        .parents(false)
+        .standard_filters(false)
         .follow_links(false)
         .build();
 
