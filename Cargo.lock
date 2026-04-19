@@ -314,6 +314,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+ "tracing",
  "vt100",
  "which",
 ]

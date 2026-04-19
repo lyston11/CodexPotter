@@ -146,6 +146,7 @@ pub fn effective_potter_xmodel_enabled(
     Ok(runtime_potter_xmodel || persisted)
 }
 
+#[cfg(test)]
 pub fn progress_file_has_finite_incantatem_true(
     workdir: &Path,
     progress_file_rel: &Path,
@@ -154,6 +155,32 @@ pub fn progress_file_has_finite_incantatem_true(
     let contents = std::fs::read_to_string(&progress_file)
         .with_context(|| format!("read {}", progress_file.display()))?;
     Ok(front_matter_bool(&contents, "finite_incantatem")?.unwrap_or(false))
+}
+
+/// Best-effort variant for completed-round finalization.
+///
+/// Once a round already completed successfully, a malformed progress file should not prevent
+/// `potter-rollout.jsonl` from recording the terminal round boundary. In that narrow case we log a
+/// warning and treat `finite_incantatem` as `false`, while preserving strict errors for missing or
+/// unreadable files.
+pub fn progress_file_has_finite_incantatem_true_after_completed_round(
+    workdir: &Path,
+    progress_file_rel: &Path,
+) -> anyhow::Result<bool> {
+    let progress_file = workdir.join(progress_file_rel);
+    let contents = std::fs::read_to_string(&progress_file)
+        .with_context(|| format!("read {}", progress_file.display()))?;
+    match front_matter_bool(&contents, "finite_incantatem") {
+        Ok(value) => Ok(value.unwrap_or(false)),
+        Err(err) => {
+            tracing::warn!(
+                "failed to parse progress file front matter at {} while reading \
+                 finite_incantatem after a completed round; treating it as false: {err:#}",
+                progress_file.display()
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// Set `finite_incantatem` in the progress file YAML front matter.
@@ -837,5 +864,28 @@ finite_incantatem: maybe
                 "progress file front matter key `finite_incantatem` has invalid boolean value"
             ));
         }
+    }
+
+    #[test]
+    fn completed_round_check_degrades_on_invalid_front_matter() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let progress = temp.path().join("MAIN.md");
+        std::fs::write(&progress, "status: open\nfinite_incantatem: true\n").expect("write");
+
+        let rel = PathBuf::from("MAIN.md");
+        let flagged =
+            progress_file_has_finite_incantatem_true_after_completed_round(temp.path(), &rel)
+                .expect("read stop flag");
+        assert!(!flagged);
+    }
+
+    #[test]
+    fn completed_round_check_still_errors_when_missing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let rel = PathBuf::from("MAIN.md");
+        let err = progress_file_has_finite_incantatem_true_after_completed_round(temp.path(), &rel)
+            .unwrap_err();
+        assert!(err.to_string().contains("read"));
     }
 }

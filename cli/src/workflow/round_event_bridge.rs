@@ -103,7 +103,7 @@ impl PotterRoundEventBridge {
 
             if matches!(outcome, PotterRoundOutcome::Completed) {
                 let stop_due_to_finite_incantatem =
-                    crate::workflow::project::progress_file_has_finite_incantatem_true(
+                    crate::workflow::project::progress_file_has_finite_incantatem_true_after_completed_round(
                         &self.workdir,
                         &self.progress_file_rel,
                     )
@@ -673,6 +673,55 @@ potter.xmodel: {potter_xmodel}
         assert!(
             !potter_rollout_path.exists(),
             "should not write rollout on error"
+        );
+    }
+
+    #[test]
+    fn observe_backend_event_degrades_when_progress_file_front_matter_is_malformed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md");
+        let progress_file = workdir.join(&progress_file_rel);
+        std::fs::create_dir_all(progress_file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&progress_file, "status: open\nfinite_incantatem: true\n")
+            .expect("write progress file");
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: false,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            potter_xmodel_runtime: false,
+            user_prompt_file: progress_file_rel,
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 10,
+            round_total: 10,
+            project_rounds_run: 10,
+        });
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        };
+
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .expect("observe finished");
+        assert!(matches!(
+            injected.as_ref().map(|event| &event.msg),
+            Some(EventMsg::PotterProjectBudgetExhausted { rounds: 10, .. })
+        ));
+
+        let lines = crate::workflow::rollout::read_lines(&potter_rollout_path).expect("read");
+        assert_eq!(
+            lines,
+            vec![crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            }]
         );
     }
 }

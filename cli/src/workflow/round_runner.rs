@@ -430,7 +430,7 @@ async fn run_potter_round_inner(
     let _ = forwarder.await;
 
     let stop_due_to_finite_incantatem =
-        crate::workflow::project::progress_file_has_finite_incantatem_true(
+        crate::workflow::project::progress_file_has_finite_incantatem_true_after_completed_round(
             &context.workdir,
             &context.progress_file_rel,
         )
