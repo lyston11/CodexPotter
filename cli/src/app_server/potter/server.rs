@@ -3900,6 +3900,244 @@ git_branch: "main"
         assert_eq!(*completed, PotterProjectOutcome::Interrupted);
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn resolve_interrupt_stop_runs_project_stop_hook() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().to_path_buf();
+
+        let hooks_codex_home_dir = isolated_hooks_codex_home_dir(&workdir);
+        let hook_output_path = workdir.join("hook-input.json");
+        let hooks_json = serde_json::json!({
+            "hooks": {
+                "Potter.ProjectStop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("cat > '{}'", hook_output_path.display()),
+                    }],
+                }],
+            },
+        });
+        std::fs::write(
+            hooks_codex_home_dir.join("hooks.json"),
+            hooks_json.to_string(),
+        )
+        .expect("write hooks.json");
+
+        let config = PotterAppServerConfig {
+            default_workdir: workdir.clone(),
+            codex_bin: "codex".to_string(),
+            backend_launch: crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            codex_compat_home: None,
+            hooks_codex_home_dir: Some(hooks_codex_home_dir),
+            rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
+            upstream_cli_args: Default::default(),
+            potter_xmodel: false,
+            potter_config_path: Some(isolated_potter_config_path(&workdir)),
+        };
+
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/03/06/2/MAIN.md");
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+
+        let thread_id =
+            ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c111").expect("thread id");
+        let upstream = workdir.join("upstream.jsonl");
+        let value = serde_json::json!({
+            "timestamp": "2026-03-01T00:00:00.000Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_message",
+                "message": "final assistant message",
+                "phase": "final_answer",
+            }
+        });
+        std::fs::write(&upstream, format!("{value}\n")).expect("write upstream rollout");
+        let upstream = upstream
+            .canonicalize()
+            .expect("canonicalize upstream rollout");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello from user".to_string()),
+                user_prompt_file: progress_file_rel.clone(),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 2,
+                total: 3,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: upstream.clone(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+
+        let plan = FreshProjectPlan {
+            workdir: workdir.clone(),
+            user_message: "hello from user".to_string(),
+            project_dir_rel: PathBuf::from(".codexpotter/projects/2026/03/06/2"),
+            progress_file_rel: progress_file_rel.clone(),
+            git_commit_start: String::from("start"),
+            potter_rollout_path: potter_rollout_path.clone(),
+            rounds_total: 3,
+            potter_xmodel_force_gpt_5_4: false,
+            event_mode: PotterEventMode::Interactive,
+            project_started_at: Instant::now(),
+            round_start_index: 1,
+            emit_project_started_event: false,
+            initial_continue_round: None,
+            initial_continue_prompt: None,
+        };
+
+        let interrupted_project = InterruptedProject {
+            project_id: "project_1".to_string(),
+            user_prompt_file: progress_file_rel.clone(),
+            rounds_run: 2,
+            workdir: plan.workdir.clone(),
+            git_commit_start: plan.git_commit_start.clone(),
+            project_started_at: plan.project_started_at,
+            continue_round: ContinueRoundPlan {
+                round_current: 2,
+                round_total: 3,
+                project_rounds_run: 2,
+                resume_thread_id: ThreadId::default(),
+                replay_event_msgs: Vec::new(),
+            },
+            plan: InterruptedProjectPlan::Fresh(plan),
+        };
+
+        let mut state = ServerState {
+            config,
+            running: None,
+            resumed: None,
+            interrupted: Some(interrupted_project),
+        };
+
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (internal_tx, _internal_rx) = unbounded_channel::<InternalEvent>();
+
+        resolve_interrupt_project(
+            &mut state,
+            ProjectResolveInterruptParams {
+                project_id: "project_1".to_string(),
+                action: ResolveInterruptAction::Stop,
+                turn_prompt_override: None,
+            },
+            &writer_tx,
+            &internal_tx,
+        )
+        .await
+        .expect("resolve_interrupt stop");
+
+        let events = drain_potter_events(writer_rx);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.msg, EventMsg::HookStarted(_))),
+            "expected HookStarted event, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.msg, EventMsg::HookCompleted(_))),
+            "expected HookCompleted event, got {events:?}"
+        );
+
+        let payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
+        )
+        .expect("parse hook input json");
+
+        let expected_project_file_path = workdir.join(&progress_file_rel);
+        let expected_project_dir = expected_project_file_path
+            .parent()
+            .expect("project dir")
+            .to_path_buf();
+        let expected_project_dir = expected_project_dir.to_string_lossy().to_string();
+        let expected_project_file_path = expected_project_file_path.to_string_lossy().to_string();
+        let expected_workdir = workdir.to_string_lossy().to_string();
+
+        assert_eq!(
+            payload
+                .get("project_dir")
+                .and_then(serde_json::Value::as_str),
+            Some(expected_project_dir.as_str())
+        );
+        assert_eq!(
+            payload
+                .get("project_file_path")
+                .and_then(serde_json::Value::as_str),
+            Some(expected_project_file_path.as_str())
+        );
+        assert_eq!(
+            payload.get("cwd").and_then(serde_json::Value::as_str),
+            Some(expected_workdir.as_str())
+        );
+        assert_eq!(
+            payload
+                .get("hook_event_name")
+                .and_then(serde_json::Value::as_str),
+            Some("Potter.ProjectStop")
+        );
+        assert_eq!(
+            payload
+                .get("user_prompt")
+                .and_then(serde_json::Value::as_str),
+            Some("hello from user")
+        );
+        assert_eq!(
+            payload
+                .get("stop_reason_code")
+                .and_then(serde_json::Value::as_str),
+            Some("interrupted")
+        );
+
+        assert_eq!(
+            payload
+                .get("all_session_ids")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(thread_id.to_string())])
+        );
+        assert_eq!(
+            payload
+                .get("new_session_ids")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(thread_id.to_string())])
+        );
+        assert_eq!(
+            payload
+                .get("all_assistant_messages")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(
+                "final assistant message".to_string()
+            )])
+        );
+        assert_eq!(
+            payload
+                .get("new_assistant_messages")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(
+                "final assistant message".to_string()
+            )])
+        );
+    }
+
     fn drain_potter_events(mut writer_rx: UnboundedReceiver<JSONRPCMessage>) -> Vec<Event> {
         let mut events = Vec::new();
         while let Ok(msg) = writer_rx.try_recv() {
