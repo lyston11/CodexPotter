@@ -29,7 +29,10 @@ pub fn persist_potter_tui_verbosity(verbosity: Verbosity) -> io::Result<()> {
 ///
 /// This is backed by `~/.codexpotter/config.toml` under the top-level `yolo` key.
 ///
-/// Returns `false` when the key is missing.
+/// When only the legacy `[potter].yolo` key is present, this returns its value and best-effort
+/// migrates it to the canonical top-level key.
+///
+/// Returns `false` when neither key is present.
 pub fn load_potter_yolo_enabled() -> io::Result<bool> {
     let path = potter_config_path()?;
     load_yolo_from_path(&path)
@@ -37,7 +40,7 @@ pub fn load_potter_yolo_enabled() -> io::Result<bool> {
 
 /// Load whether YOLO is enabled by default from the provided config path.
 ///
-/// Returns `false` when the file or key is missing.
+/// Returns `false` when the file is missing, or neither key is present.
 pub fn load_potter_yolo_enabled_from_path(path: &Path) -> io::Result<bool> {
     load_yolo_from_path(path)
 }
@@ -70,12 +73,28 @@ fn load_tui_verbosity_from_path(path: &Path) -> io::Result<Option<Verbosity>> {
 }
 
 fn load_yolo_from_path(path: &Path) -> io::Result<bool> {
-    load_config_value(
-        path,
-        || false,
-        |doc| read_yolo(doc).unwrap_or(false),
-        |content| parse_yolo_fallback(content).unwrap_or(false),
-    )
+    let Some(content) = read_document_string(path)? else {
+        return Ok(false);
+    };
+
+    let doc = match content.parse::<DocumentMut>() {
+        Ok(doc) => doc,
+        Err(_) => return Ok(parse_yolo_fallback(&content).unwrap_or(false)),
+    };
+
+    if let Some(enabled) = read_yolo(&doc) {
+        return Ok(enabled);
+    }
+
+    let Some(enabled) = read_legacy_potter_yolo(&doc) else {
+        return Ok(false);
+    };
+
+    // Best-effort migration: keep the file in the canonical format so future reads remain
+    // unambiguous, but never fail the current run when the config is read-only.
+    let _ = persist_yolo_to_path(path, enabled);
+
+    Ok(enabled)
 }
 
 fn persist_tui_verbosity_to_path(path: &Path, verbosity: Verbosity) -> io::Result<()> {
@@ -104,6 +123,10 @@ fn read_yolo(doc: &DocumentMut) -> Option<bool> {
     doc.get("yolo")
         .and_then(TomlItem::as_value)
         .and_then(toml_edit::Value::as_bool)
+}
+
+fn read_legacy_potter_yolo(doc: &DocumentMut) -> Option<bool> {
+    read_table_value(doc, "potter", "yolo").and_then(toml_edit::Value::as_bool)
 }
 
 fn set_tui_verbosity(doc: &mut DocumentMut, verbosity: Verbosity) {
@@ -486,7 +509,7 @@ yolo = true
     }
 
     #[test]
-    fn valid_toml_yolo_only_reads_and_writes_the_top_level_key() -> io::Result<()> {
+    fn load_yolo_migrates_legacy_potter_yolo_key() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
 
@@ -495,7 +518,21 @@ yolo = true
             "[potter]\nyolo = true\nmarker = \"keep\"\n\n[tui]\nverbosity = \"simple\"\n",
         )?;
 
-        assert!(!load_yolo_from_path(&path)?);
+        assert_eq!(
+            load_tui_verbosity_from_path(&path)?,
+            Some(Verbosity::Simple)
+        );
+
+        assert!(load_yolo_from_path(&path)?);
+        let migrated = std::fs::read_to_string(&path)?;
+        let migrated_doc = migrated
+            .parse::<DocumentMut>()
+            .expect("migrated valid toml");
+        assert_eq!(read_yolo(&migrated_doc), Some(true));
+        assert!(
+            read_table_value(&migrated_doc, "potter", "yolo").is_none(),
+            "legacy yolo key should be removed"
+        );
         assert_eq!(
             load_tui_verbosity_from_path(&path)?,
             Some(Verbosity::Simple)

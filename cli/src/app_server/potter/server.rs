@@ -2243,7 +2243,7 @@ git_branch: "main"
     }
 
     #[test]
-    fn resolve_effective_backend_launch_uses_only_the_top_level_yolo_key() {
+    fn resolve_effective_backend_launch_migrates_legacy_potter_yolo_key() {
         let temp = tempfile::tempdir().expect("tempdir");
         let config_path = isolated_potter_config_path(temp.path());
         std::fs::create_dir_all(config_path.parent().expect("config parent"))
@@ -2291,10 +2291,29 @@ git_branch: "main"
                 &mut warning_emitted,
                 &mut ui,
             ),
-            base
+            crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: Some(
+                    crate::app_server::upstream_protocol::SandboxMode::DangerFullAccess
+                ),
+                bypass_approvals_and_sandbox: true,
+            }
         );
         assert!(!warning_emitted);
         assert!(drain_potter_events(writer_rx).is_empty());
+
+        let migrated = std::fs::read_to_string(&config_path).expect("read migrated config");
+        let migrated_doc = migrated
+            .parse::<toml_edit::DocumentMut>()
+            .expect("migrated valid toml");
+        assert_eq!(
+            migrated_doc
+                .get("yolo")
+                .and_then(toml_edit::Item::as_value)
+                .and_then(toml_edit::Value::as_bool),
+            Some(true)
+        );
+        assert!(migrated_doc.get("potter").is_none());
     }
 
     #[test]
