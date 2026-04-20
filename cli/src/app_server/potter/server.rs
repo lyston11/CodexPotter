@@ -68,6 +68,10 @@ pub struct PotterAppServerConfig {
     pub codex_bin: String,
     pub backend_launch: crate::app_server::AppServerLaunchConfig,
     pub codex_compat_home: Option<PathBuf>,
+    /// Override Codex home directory used for `hooks.json` discovery.
+    ///
+    /// When unset, hook discovery follows upstream Codex behavior (`$CODEX_HOME` or `~/.codex`).
+    pub hooks_codex_home_dir: Option<PathBuf>,
     pub rounds: NonZeroUsize,
     pub upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     pub potter_xmodel: bool,
@@ -227,7 +231,7 @@ async fn run_potter_app_server_inner(config: PotterAppServerConfig) -> anyhow::R
                         .as_ref()
                         .expect("interrupted project just set");
                     emit_potter_event(
-                        writer_tx.clone(),
+                        &writer_tx,
                         Event {
                             id: "".to_string(),
                             msg: EventMsg::PotterProjectInterrupted {
@@ -382,7 +386,7 @@ async fn handle_request(
             }
         }
         PotterAppServerClientRequest::ProjectResolveInterrupt { request_id, params } => {
-            match resolve_interrupt_project(state, params, writer_tx, internal_tx) {
+            match resolve_interrupt_project(state, params, writer_tx, internal_tx).await {
                 Ok(response) => send_response(writer_tx, request_id, response),
                 Err(err) => send_error(writer_tx, request_id, -32000, format!("{err:#}")),
             }
@@ -642,7 +646,7 @@ fn interrupt_project(
     Ok(())
 }
 
-fn resolve_interrupt_project(
+async fn resolve_interrupt_project(
     state: &mut ServerState,
     params: ProjectResolveInterruptParams,
     writer_tx: &UnboundedSender<JSONRPCMessage>,
@@ -686,13 +690,34 @@ fn resolve_interrupt_project(
                 workdir,
                 git_commit_start,
                 project_started_at,
-                plan: _plan,
+                plan,
                 ..
             } = interrupted;
 
             let git_commit_end = crate::workflow::project::resolve_git_commit(&workdir);
+            let baseline_round_count = match &plan {
+                InterruptedProjectPlan::Fresh(_) => 0,
+                InterruptedProjectPlan::Resumed(plan) => plan.resumed.index.completed_rounds.len(),
+            };
+            let potter_rollout_path = plan.potter_rollout_path().to_path_buf();
+
+            for event in crate::workflow::project_stop_hooks::build_project_stop_hook_events(
+                &workdir,
+                &user_prompt_file,
+                &potter_rollout_path,
+                baseline_round_count,
+                crate::workflow::project_stop_hooks::potter_project_stop_reason_code(
+                    &PotterProjectOutcome::Interrupted,
+                ),
+                state.config.hooks_codex_home_dir.as_deref(),
+            )
+            .await
+            {
+                emit_potter_event(writer_tx, event);
+            }
+
             emit_potter_event(
-                writer_tx.clone(),
+                writer_tx,
                 Event {
                     id: "".to_string(),
                     msg: EventMsg::PotterProjectCompleted {
@@ -802,7 +827,7 @@ fn send_error(
     }));
 }
 
-fn emit_potter_event(writer_tx: UnboundedSender<JSONRPCMessage>, event: Event) {
+fn emit_potter_event(writer_tx: &UnboundedSender<JSONRPCMessage>, event: Event) {
     let Ok(params) = serde_json::to_value(event) else {
         return;
     };
@@ -1234,6 +1259,7 @@ async fn run_fresh_project(
         codex_bin,
         backend_launch,
         codex_compat_home,
+        hooks_codex_home_dir,
         upstream_cli_args,
         potter_xmodel,
         potter_config_path,
@@ -1256,10 +1282,12 @@ async fn run_fresh_project(
         upstream_cli_args,
         potter_xmodel_runtime: potter_xmodel,
         codex_compat_home,
+        hooks_codex_home_dir,
         thread_cwd: Some(plan.workdir.clone()),
         turn_prompt,
         workdir: plan.workdir.clone(),
         progress_file_rel: plan.progress_file_rel.clone(),
+        baseline_round_count: 0,
         user_prompt_file: plan.progress_file_rel.clone(),
         git_commit_start: plan.git_commit_start.clone(),
         potter_rollout_path: plan.potter_rollout_path.clone(),
@@ -1515,6 +1543,7 @@ async fn run_resumed_project(
         codex_bin,
         backend_launch,
         codex_compat_home,
+        hooks_codex_home_dir,
         upstream_cli_args,
         potter_xmodel,
         potter_config_path,
@@ -1533,6 +1562,8 @@ async fn run_resumed_project(
         initial_continue_prompt,
     } = plan;
 
+    let baseline_round_count = resumed.index.completed_rounds.len();
+
     let developer_prompt =
         crate::workflow::project::render_developer_prompt(&resumed.progress_file_rel);
     let turn_prompt = crate::workflow::project::fixed_prompt()
@@ -1549,10 +1580,12 @@ async fn run_resumed_project(
         upstream_cli_args,
         potter_xmodel_runtime: potter_xmodel,
         codex_compat_home,
+        hooks_codex_home_dir,
         thread_cwd: Some(resumed.resolved.workdir.clone()),
         turn_prompt,
         workdir: resumed.resolved.workdir.clone(),
         progress_file_rel: resumed.progress_file_rel.clone(),
+        baseline_round_count,
         user_prompt_file: resumed.progress_file_rel.clone(),
         git_commit_start: git_commit_start.clone(),
         potter_rollout_path: potter_rollout_path.clone(),
@@ -2159,6 +2192,12 @@ git_branch: "main"
         workdir.join(".codexpotter").join("config.toml")
     }
 
+    fn isolated_hooks_codex_home_dir(workdir: &Path) -> PathBuf {
+        let dir = workdir.join("codex-home");
+        std::fs::create_dir_all(&dir).expect("create hooks codex home dir");
+        dir
+    }
+
     #[test]
     fn decode_jsonrpc_message_line_rejects_invalid_json_and_ignores_empty_lines() {
         let err = decode_jsonrpc_message_line("{not json").expect_err("should fail");
@@ -2338,6 +2377,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -2481,6 +2521,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
             rounds: NonZeroUsize::new(10).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -2624,6 +2665,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(temp.path())),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -2681,6 +2723,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(temp.path())),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -2838,6 +2881,7 @@ done
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: true,
@@ -3006,6 +3050,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
             rounds: NonZeroUsize::new(2).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3197,6 +3242,7 @@ git_branch: "main"
                         bypass_approvals_and_sandbox: false,
                     },
                     codex_compat_home: None,
+                    hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
                     rounds: NonZeroUsize::new(4).expect("nonzero rounds"),
                     upstream_cli_args: Default::default(),
                     potter_xmodel: false,
@@ -3304,6 +3350,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(temp.path())),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3379,6 +3426,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(temp.path())),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3469,6 +3517,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(temp.path())),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3548,6 +3597,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(temp.path())),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3579,8 +3629,8 @@ git_branch: "main"
         );
     }
 
-    #[test]
-    fn resolve_interrupt_continue_requires_turn_prompt_override() {
+    #[tokio::test]
+    async fn resolve_interrupt_continue_requires_turn_prompt_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path().to_path_buf();
 
@@ -3593,6 +3643,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3653,6 +3704,7 @@ git_branch: "main"
             &writer_tx,
             &internal_tx,
         )
+        .await
         .expect_err("expected resolve_interrupt to fail without override");
         assert!(
             err.to_string()
@@ -3734,8 +3786,8 @@ git_branch: "main"
         }
     }
 
-    #[test]
-    fn resolve_interrupt_stop_records_round_finish_and_emits_completed_marker() {
+    #[tokio::test]
+    async fn resolve_interrupt_stop_records_round_finish_and_emits_completed_marker() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workdir = temp.path().to_path_buf();
 
@@ -3750,6 +3802,7 @@ git_branch: "main"
                 bypass_approvals_and_sandbox: false,
             },
             codex_compat_home: None,
+            hooks_codex_home_dir: Some(isolated_hooks_codex_home_dir(&workdir)),
             rounds: NonZeroUsize::new(1).expect("nonzero rounds"),
             upstream_cli_args: Default::default(),
             potter_xmodel: false,
@@ -3812,6 +3865,7 @@ git_branch: "main"
             &writer_tx,
             &internal_tx,
         )
+        .await
         .expect("resolve_interrupt stop");
 
         assert!(

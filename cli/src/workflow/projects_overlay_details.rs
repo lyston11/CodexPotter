@@ -105,7 +105,7 @@ fn build_project_details_for_overlay_inner(
     })
 }
 
-fn read_final_agent_message_from_rollout(
+pub(crate) fn read_final_agent_message_from_rollout(
     rollout_path: &Path,
 ) -> anyhow::Result<(Option<u64>, Option<String>)> {
     let file = std::fs::File::open(rollout_path)

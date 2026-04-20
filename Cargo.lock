@@ -318,6 +318,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "codex-hooks",
  "codex-protocol",
  "codex-tui",
  "crossterm",

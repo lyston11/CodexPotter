@@ -370,6 +370,7 @@ async fn main() -> anyhow::Result<()> {
                 codex_bin,
                 backend_launch,
                 codex_compat_home,
+                hooks_codex_home_dir: None,
                 rounds,
                 upstream_cli_args,
                 potter_xmodel: cli.xmodel,

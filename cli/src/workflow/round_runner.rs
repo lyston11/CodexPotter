@@ -66,10 +66,19 @@ pub struct PotterRoundContext {
     /// file.
     pub potter_xmodel_runtime: bool,
     pub codex_compat_home: Option<PathBuf>,
+    /// Override Codex home directory used for `hooks.json` discovery.
+    ///
+    /// When unset, hooks default to `$CODEX_HOME` (or `~/.codex` when unset).
+    pub hooks_codex_home_dir: Option<PathBuf>,
     pub thread_cwd: Option<PathBuf>,
     pub turn_prompt: String,
     pub workdir: PathBuf,
     pub progress_file_rel: PathBuf,
+    /// Number of completed rounds that existed before the current iteration window began.
+    ///
+    /// This is used for `Potter.ProjectStop` hook input fields so `new_session_ids` /
+    /// `new_assistant_messages` can reflect only sessions produced since a resume started.
+    pub baseline_round_count: usize,
     pub user_prompt_file: PathBuf,
     pub git_commit_start: String,
     pub potter_rollout_path: PathBuf,
@@ -303,6 +312,8 @@ async fn run_potter_round_inner(
                 record_round_configured,
                 workdir: context.workdir.clone(),
                 progress_file_rel: context.progress_file_rel.clone(),
+                baseline_round_count: context.baseline_round_count,
+                hooks_codex_home_dir: context.hooks_codex_home_dir.clone(),
                 potter_xmodel_runtime: context.potter_xmodel_runtime,
                 user_prompt_file: context.user_prompt_file.clone(),
                 git_commit_start: context.git_commit_start.clone(),
@@ -320,7 +331,7 @@ async fn run_potter_round_inner(
                     session_model_tx.send_replace(Some(cfg.model.clone()));
                 }
 
-                let injected = match bridge.observe_backend_event(&event) {
+                let injected = match bridge.observe_backend_event(&event).await {
                     Ok(injected) => injected,
                     Err(err) => {
                         let _ = fatal_exit_tx.send(format!(
@@ -331,14 +342,14 @@ async fn run_potter_round_inner(
                     }
                 };
 
-                if let Some(injected) = injected
-                    && ui_event_tx.send(injected).is_err()
-                {
-                    break;
+                for injected in injected {
+                    if ui_event_tx.send(injected).is_err() {
+                        return;
+                    }
                 }
 
                 if ui_event_tx.send(event).is_err() {
-                    break;
+                    return;
                 }
             }
         })
