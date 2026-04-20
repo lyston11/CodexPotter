@@ -2243,6 +2243,61 @@ git_branch: "main"
     }
 
     #[test]
+    fn resolve_effective_backend_launch_uses_only_the_top_level_yolo_key() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = isolated_potter_config_path(temp.path());
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("create config parent");
+
+        let base = crate::app_server::AppServerLaunchConfig {
+            spawn_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
+            thread_sandbox: Some(crate::app_server::upstream_protocol::SandboxMode::ReadOnly),
+            bypass_approvals_and_sandbox: false,
+        };
+
+        std::fs::write(&config_path, "yolo = true\n\n[potter]\nyolo = false\n")
+            .expect("write top-level yolo config");
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (_interrupt_tx, interrupt_rx) = watch::channel(false);
+        let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+        let mut warning_emitted = false;
+        assert_eq!(
+            resolve_effective_backend_launch(
+                base,
+                Some(config_path.as_path()),
+                &mut warning_emitted,
+                &mut ui,
+            ),
+            crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: Some(
+                    crate::app_server::upstream_protocol::SandboxMode::DangerFullAccess
+                ),
+                bypass_approvals_and_sandbox: true,
+            }
+        );
+        assert!(!warning_emitted);
+        assert!(drain_potter_events(writer_rx).is_empty());
+
+        std::fs::write(&config_path, "[potter]\nyolo = true\n").expect("write legacy yolo config");
+        let (writer_tx, writer_rx) = unbounded_channel::<JSONRPCMessage>();
+        let (_interrupt_tx, interrupt_rx) = watch::channel(false);
+        let mut ui = EventForwardingRoundUi::new(writer_tx, interrupt_rx);
+        let mut warning_emitted = false;
+        assert_eq!(
+            resolve_effective_backend_launch(
+                base,
+                Some(config_path.as_path()),
+                &mut warning_emitted,
+                &mut ui,
+            ),
+            base
+        );
+        assert!(!warning_emitted);
+        assert!(drain_potter_events(writer_rx).is_empty());
+    }
+
+    #[test]
     fn prepare_xmodel_follow_up_round_clears_finite_incantatem_until_gpt_5_4() {
         {
             let temp = tempfile::tempdir().expect("tempdir");
