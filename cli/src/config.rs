@@ -6,8 +6,8 @@
 //! Design notes:
 //! - Writes are comment-preserving whenever possible (via `toml_edit`).
 //! - Reads are intentionally resilient: if the TOML is invalid, we fall back to a tiny
-//!   line-based parser for a small set of boolean keys so the CLI can still start and users can
-//!   fix the file in place.
+//!   line-based parser for a small set of keys so the CLI can still start and users can fix the
+//!   file in place.
 //!
 //! Current keys:
 //! - `[notice] hide_gitignore_prompt` (bool): hides the gitignore startup prompt.
@@ -85,7 +85,7 @@ impl ConfigStore {
 
         let doc = match content.parse::<DocumentMut>() {
             Ok(doc) => doc,
-            Err(_) => return Ok(None),
+            Err(_) => return parse_rounds_fallback(&content),
         };
 
         read_rounds(&doc)
@@ -182,6 +182,43 @@ fn parse_check_for_update_on_startup_fallback(contents: &str) -> Option<bool> {
     }
 
     None
+}
+
+fn parse_rounds_fallback(contents: &str) -> anyhow::Result<Option<NonZeroUsize>> {
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        let Some(line) = strip_toml_comment(trimmed) else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "rounds" {
+            continue;
+        }
+
+        let token = value.split_whitespace().next().unwrap_or_default().trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        let normalized = token.replace('_', "");
+        let rounds = normalized
+            .parse::<i64>()
+            .map_err(|_| anyhow::anyhow!("`rounds` must be an integer, got {token}"))?;
+
+        if rounds <= 0 {
+            anyhow::bail!("`rounds` must be >= 1, got {rounds}");
+        }
+
+        let rounds_usize = usize::try_from(rounds)
+            .map_err(|_| anyhow::anyhow!("`rounds` is too large, got {rounds}"))?;
+        return Ok(Some(
+            NonZeroUsize::new(rounds_usize).expect("positive rounds should be non-zero"),
+        ));
+    }
+
+    Ok(None)
 }
 
 fn parse_notice_hide_gitignore_prompt_fallback(contents: &str) -> Option<bool> {
@@ -367,6 +404,48 @@ check_for_update_on_startup = false # keep me
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "rounds = 0\n").expect("write config");
+
+        let store = ConfigStore::new(path);
+        let err = store.rounds().unwrap_err();
+        assert!(err.to_string().contains("rounds"));
+    }
+
+    #[test]
+    fn rounds_read_falls_back_when_toml_invalid_and_respects_underscores() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"# broken table header makes this TOML invalid
+[other
+key = 1
+
+rounds = 1_000
+"#,
+        )
+        .expect("write config");
+
+        let store = ConfigStore::new(path);
+        assert_eq!(
+            store.rounds().expect("read rounds").map(NonZeroUsize::get),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn rounds_read_rejects_invalid_values_even_when_toml_invalid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"# broken table header makes this TOML invalid
+[other
+key = 1
+
+rounds = 0
+"#,
+        )
+        .expect("write config");
 
         let store = ConfigStore::new(path);
         let err = store.rounds().unwrap_err();
