@@ -80,6 +80,8 @@ impl From<CliVerbosity> for codex_tui::Verbosity {
     }
 }
 
+const DEFAULT_ROUNDS: usize = 10;
+
 #[derive(Parser, Debug)]
 #[command(author = "Codex", version, about = "Run CodexPotter interactively")]
 struct Cli {
@@ -89,11 +91,17 @@ struct Cli {
 
     /// Number of turns to run (each turn starts a fresh `codex app-server`; must be >= 1).
     ///
+    /// Default behavior:
+    /// - If `~/.codexpotter/config.toml` sets `rounds`, it is used.
+    /// - Otherwise it defaults to 10.
+    ///
+    /// `--rounds` always overrides the config value.
+    ///
     /// For `resume`, this controls how many rounds are run when the last recorded round is
     /// complete. If the last recorded round is unfinished, the remaining budget is derived from
     /// the recorded `round_total` in `potter-rollout.jsonl`.
-    #[arg(long, default_value = "10", global = true)]
-    rounds: NonZeroUsize,
+    #[arg(long, global = true)]
+    rounds: Option<NonZeroUsize>,
 
     /// Sandbox mode to request from Codex.
     ///
@@ -155,6 +163,46 @@ fn parse_cli() -> Cli {
         .version(codex_tui::CODEX_POTTER_VERSION)
         .get_matches();
     Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedRounds {
+    value: NonZeroUsize,
+    cli_override: bool,
+}
+
+fn resolve_rounds_with_config(
+    cli_rounds: Option<NonZeroUsize>,
+    configured_rounds: Option<NonZeroUsize>,
+) -> ResolvedRounds {
+    if let Some(value) = cli_rounds {
+        return ResolvedRounds {
+            value,
+            cli_override: true,
+        };
+    }
+
+    ResolvedRounds {
+        value: configured_rounds
+            .or_else(|| NonZeroUsize::new(DEFAULT_ROUNDS))
+            .expect("default rounds should be non-zero"),
+        cli_override: false,
+    }
+}
+
+fn resolve_rounds(cli_rounds: Option<NonZeroUsize>) -> ResolvedRounds {
+    if cli_rounds.is_some() {
+        return resolve_rounds_with_config(cli_rounds, None);
+    }
+
+    let configured = crate::config::ConfigStore::new_default().and_then(|store| store.rounds());
+    match configured {
+        Ok(configured) => resolve_rounds_with_config(cli_rounds, configured),
+        Err(err) => {
+            eprintln!("warning: failed to load `rounds` from config.toml: {err}");
+            resolve_rounds_with_config(cli_rounds, None)
+        }
+    }
 }
 
 fn resolve_codex_bin_or_exit(codex_bin: &str) -> String {
@@ -247,6 +295,8 @@ fn load_exec_human_verbosity(cli_override: Option<CliVerbosity>) -> codex_tui::V
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
+    let resolved_rounds = resolve_rounds(cli.rounds);
+    let rounds = resolved_rounds.value;
     let yolo_cli_override = cli.dangerously_bypass_approvals_and_sandbox;
     let backend_launch =
         crate::app_server::AppServerLaunchConfig::from_cli(cli.sandbox, yolo_cli_override);
@@ -271,7 +321,7 @@ async fn main() -> anyhow::Result<()> {
                 &workdir,
                 prompt.clone(),
                 crate::exec::ExecRunConfig {
-                    rounds: cli.rounds,
+                    rounds,
                     codex_bin,
                     backend_launch,
                     potter_xmodel: cli.xmodel,
@@ -285,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
                 &workdir,
                 prompt.clone(),
                 crate::exec::ExecRunConfig {
-                    rounds: cli.rounds,
+                    rounds,
                     codex_bin,
                     backend_launch,
                     potter_xmodel: cli.xmodel,
@@ -299,7 +349,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(exit_code);
     }
 
-    crate::rounds::round_budget_to_u32(cli.rounds)?;
+    crate::rounds::round_budget_to_u32(rounds)?;
 
     let workdir = std::env::current_dir().context("resolve current directory")?;
     let codex_bin = resolve_codex_bin_or_exit(&cli.codex_bin);
@@ -320,7 +370,7 @@ async fn main() -> anyhow::Result<()> {
                 codex_bin,
                 backend_launch,
                 codex_compat_home,
-                rounds: cli.rounds,
+                rounds,
                 upstream_cli_args,
                 potter_xmodel: cli.xmodel,
                 potter_config_path: None,
@@ -395,7 +445,7 @@ async fn main() -> anyhow::Result<()> {
     let mut potter_app_server = crate::app_server::potter::PotterAppServerClient::spawn(
         workdir.clone(),
         codex_bin.clone(),
-        cli.rounds,
+        rounds,
         backend_launch,
         cli.xmodel,
         cli.upstream_cli_args.clone(),
@@ -426,7 +476,7 @@ async fn main() -> anyhow::Result<()> {
                 &mut potter_app_server,
                 &workdir,
                 &project_path,
-                cli.rounds,
+                rounds,
                 yolo_cli_override,
             )
             .await
@@ -442,7 +492,12 @@ async fn main() -> anyhow::Result<()> {
                     let _ = potter_app_server.shutdown().await;
                     drop(ui);
                     print_queued_prompts_note(&queued_prompts);
-                    print_resume_note(&resume_note_path, &cli);
+                    print_resume_note(
+                        &resume_note_path,
+                        &cli,
+                        rounds,
+                        resolved_rounds.cli_override,
+                    );
                     return Ok(());
                 }
                 crate::workflow::resume::ResumeExit::FatalExitRequested => {
@@ -455,7 +510,12 @@ async fn main() -> anyhow::Result<()> {
                     let resume_note_path = derive_resume_project_path_for_note(&project_path);
                     drop(ui);
                     print_queued_prompts_note(&queued_prompts);
-                    print_resume_note(&resume_note_path, &cli);
+                    print_resume_note(
+                        &resume_note_path,
+                        &cli,
+                        rounds,
+                        resolved_rounds.cli_override,
+                    );
                     std::process::exit(1);
                 }
             }
@@ -469,7 +529,7 @@ async fn main() -> anyhow::Result<()> {
         &mut potter_app_server,
         project_queue_workdir.clone(),
         crate::workflow::project_runner::ProjectQueueOptions {
-            rounds: cli.rounds,
+            rounds,
             turn_prompt: turn_prompt.clone(),
             yolo_cli_override,
         },
@@ -496,7 +556,7 @@ async fn main() -> anyhow::Result<()> {
     drop(ui);
     print_queued_prompts_note(&queued_prompts_on_exit);
     if let Some(project_path) = resume_note_project_path {
-        print_resume_note(&project_path, &cli);
+        print_resume_note(&project_path, &cli, rounds, resolved_rounds.cli_override);
     }
 
     Ok(())
@@ -588,7 +648,11 @@ fn cli_sandbox_flag_value(sandbox: CliSandbox) -> Option<&'static str> {
     }
 }
 
-fn resume_note_global_args(cli: &Cli) -> Vec<String> {
+fn resume_note_global_args(
+    cli: &Cli,
+    rounds: NonZeroUsize,
+    cli_rounds_override: bool,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
 
     if cli.dangerously_bypass_approvals_and_sandbox {
@@ -600,9 +664,9 @@ fn resume_note_global_args(cli: &Cli) -> Vec<String> {
         out.push(sandbox.to_string());
     }
 
-    if cli.rounds.get() != 10 {
+    if cli_rounds_override || rounds.get() != DEFAULT_ROUNDS {
         out.push("--rounds".to_string());
-        out.push(cli.rounds.get().to_string());
+        out.push(rounds.get().to_string());
     }
 
     if cli.codex_bin != "codex" {
@@ -619,17 +683,27 @@ fn resume_note_global_args(cli: &Cli) -> Vec<String> {
     out
 }
 
-fn render_resume_note_command(project_path: &str, cli: &Cli) -> String {
+fn render_resume_note_command(
+    project_path: &str,
+    cli: &Cli,
+    rounds: NonZeroUsize,
+    cli_rounds_override: bool,
+) -> String {
     let mut args: Vec<String> = vec!["codex-potter".to_string(), "resume".to_string()];
-    args.extend(resume_note_global_args(cli));
+    args.extend(resume_note_global_args(cli, rounds, cli_rounds_override));
     args.push(project_path.to_string());
 
     shlex::try_join(args.iter().map(String::as_str)).unwrap_or_else(|_| args.join(" "))
 }
 
-fn print_resume_note(project_path: &str, cli: &Cli) {
+fn print_resume_note(
+    project_path: &str,
+    cli: &Cli,
+    rounds: NonZeroUsize,
+    cli_rounds_override: bool,
+) {
     let color_enabled = stdout_color_enabled();
-    let command = render_resume_note_command(project_path, cli);
+    let command = render_resume_note_command(project_path, cli, rounds, cli_rounds_override);
     println!(
         "{} To continue this project, run:",
         ansi_bold("Note:", color_enabled)
@@ -815,6 +889,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_rounds_prefers_cli_over_config_and_falls_back_to_default() {
+        let cli_override = Some(NonZeroUsize::new(3).expect("rounds"));
+        let configured = Some(NonZeroUsize::new(15).expect("rounds"));
+        assert_eq!(
+            resolve_rounds_with_config(cli_override, configured)
+                .value
+                .get(),
+            3
+        );
+        assert!(resolve_rounds_with_config(cli_override, configured).cli_override);
+
+        assert_eq!(resolve_rounds_with_config(None, configured).value.get(), 15);
+        assert!(!resolve_rounds_with_config(None, configured).cli_override);
+
+        assert_eq!(
+            resolve_rounds_with_config(None, None).value.get(),
+            DEFAULT_ROUNDS
+        );
+    }
+
+    #[test]
     fn yolo_alias_sets_bypass_flag() {
         let cli = Cli::try_parse_from(["codex-potter", "--yolo"]).expect("parse args");
         assert!(cli.dangerously_bypass_approvals_and_sandbox);
@@ -851,7 +946,7 @@ mod tests {
         assert!(cli.dangerously_bypass_approvals_and_sandbox);
         assert!(cli.xmodel);
         assert_eq!(cli.sandbox, CliSandbox::ReadOnly);
-        assert_eq!(cli.rounds.get(), 3);
+        assert_eq!(cli.rounds.map(NonZeroUsize::get), Some(3));
         assert_eq!(cli.codex_bin, "custom-codex");
         assert_eq!(cli.upstream_cli_args.model.as_deref(), Some("o3"));
         assert_eq!(cli.upstream_cli_args.profile.as_deref(), Some("my-profile"));
@@ -1012,7 +1107,12 @@ mod tests {
         let cli =
             Cli::try_parse_from(["codex-potter", "--codex-bin", "codex"]).expect("parse args");
         assert_eq!(
-            render_resume_note_command("2026/02/01/1", &cli),
+            render_resume_note_command(
+                "2026/02/01/1",
+                &cli,
+                NonZeroUsize::new(DEFAULT_ROUNDS).expect("rounds"),
+                false
+            ),
             "codex-potter resume 2026/02/01/1"
         );
     }
@@ -1044,8 +1144,27 @@ mod tests {
         .expect("parse args");
 
         assert_eq!(
-            render_resume_note_command("2026/02/01/1", &cli),
+            render_resume_note_command(
+                "2026/02/01/1",
+                &cli,
+                NonZeroUsize::new(3).expect("rounds"),
+                true
+            ),
             "codex-potter resume --yolo --sandbox read-only --rounds 3 --codex-bin custom-codex --config 'foo=bar' --enable feature_a --disable feature_b --model o3 --profile my-profile --search --xmodel 2026/02/01/1"
+        );
+    }
+
+    #[test]
+    fn render_resume_note_command_includes_config_rounds_when_non_default() {
+        let cli = Cli::try_parse_from(["codex-potter"]).expect("parse args");
+        assert_eq!(
+            render_resume_note_command(
+                "2026/02/01/1",
+                &cli,
+                NonZeroUsize::new(15).expect("rounds"),
+                false
+            ),
+            "codex-potter resume --rounds 15 2026/02/01/1"
         );
     }
 

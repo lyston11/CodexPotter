@@ -105,7 +105,7 @@ shares the same interaction model as upstream list selection popups:
 Currently the picker contains a single action:
 
 - When the last recorded round is complete: `Iterate N more rounds` (controlled by `--rounds`,
-  default: 10)
+  or config `rounds` when unset; defaults to 10)
 - When the last recorded round is unfinished: `Continue & iterate M more rounds`, where `M`
   is derived from the recorded `round_current` / `round_total` in `potter-rollout.jsonl`
 
@@ -119,7 +119,8 @@ Key behavior:
 
 - The progress file front matter is updated first: `finite_incantatem` is reset to `false` so the
   normal runner does not stop immediately after the next round.
-- The continue budget is `--rounds` (default: 10) rounds, counted from the resume action.
+- The continue budget is `--rounds` (or config `rounds` when unset; defaults to 10) rounds,
+  counted from the resume action.
 - `potter-rollout.jsonl` is append-only; `project_started` is not written again.
 - New upstream rollouts are started via fresh app-server threads, just like a normal project.
 

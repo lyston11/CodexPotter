@@ -12,8 +12,11 @@
 //! Current keys:
 //! - `[notice] hide_gitignore_prompt` (bool): hides the gitignore startup prompt.
 //! - `check_for_update_on_startup` (bool): enables update checks on startup (default: `true`).
+//! - `rounds` (integer): default round budget for runs that do not specify `--rounds`
+//!   (default: `10`).
 
 use std::io::ErrorKind;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -75,6 +78,19 @@ impl ConfigStore {
         Ok(read_check_for_update_on_startup(&doc).unwrap_or(true))
     }
 
+    pub fn rounds(&self) -> anyhow::Result<Option<NonZeroUsize>> {
+        let Some(content) = read_document_string(&self.path)? else {
+            return Ok(None);
+        };
+
+        let doc = match content.parse::<DocumentMut>() {
+            Ok(doc) => doc,
+            Err(_) => return Ok(None),
+        };
+
+        read_rounds(&doc)
+    }
+
     pub fn set_notice_hide_gitignore_prompt(&self, hide: bool) -> anyhow::Result<()> {
         let content = match read_document_string(&self.path) {
             Ok(Some(existing)) => existing,
@@ -114,6 +130,28 @@ fn read_check_for_update_on_startup(doc: &DocumentMut) -> Option<bool> {
     doc.get("check_for_update_on_startup")
         .and_then(TomlItem::as_value)
         .and_then(|v| v.as_bool())
+}
+
+fn read_rounds(doc: &DocumentMut) -> anyhow::Result<Option<NonZeroUsize>> {
+    let Some(item) = doc.get("rounds") else {
+        return Ok(None);
+    };
+
+    let Some(value) = item.as_value() else {
+        anyhow::bail!("`rounds` must be an integer, got {item}");
+    };
+    let Some(rounds) = value.as_integer() else {
+        anyhow::bail!("`rounds` must be an integer, got {value}");
+    };
+    if rounds <= 0 {
+        anyhow::bail!("`rounds` must be >= 1, got {rounds}");
+    }
+
+    let rounds_usize = usize::try_from(rounds)
+        .map_err(|_| anyhow::anyhow!("`rounds` is too large, got {rounds}"))?;
+    Ok(Some(
+        NonZeroUsize::new(rounds_usize).expect("positive rounds should be non-zero"),
+    ))
 }
 
 fn set_notice_hide_gitignore_prompt(doc: &mut DocumentMut, hide: bool) {
@@ -308,6 +346,31 @@ check_for_update_on_startup = false # keep me
 
         let store = ConfigStore::new(path);
         assert!(!store.check_for_update_on_startup().expect("read flag"));
+    }
+
+    #[test]
+    fn rounds_read_returns_none_when_unset_and_reads_integer_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let store = ConfigStore::new(path.clone());
+        assert_eq!(store.rounds().expect("read rounds"), None);
+
+        std::fs::write(&path, "rounds = 15\n").expect("write config");
+        assert_eq!(
+            store.rounds().expect("read rounds").map(NonZeroUsize::get),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn rounds_read_rejects_non_positive_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "rounds = 0\n").expect("write config");
+
+        let store = ConfigStore::new(path);
+        let err = store.rounds().unwrap_err();
+        assert!(err.to_string().contains("rounds"));
     }
 
     #[test]
