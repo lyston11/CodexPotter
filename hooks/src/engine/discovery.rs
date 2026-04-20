@@ -274,4 +274,36 @@ mod tests {
             HookEventName::PotterProjectStop
         );
     }
+
+    #[test]
+    fn discovery_resolves_repo_root_from_subdir_and_parses_timeout_sec_alias_and_status_message() {
+        let temp = TempDir::new().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+        std::fs::create_dir_all(repo.join(".git")).expect("create .git");
+        std::fs::create_dir_all(repo.join(".codex")).expect("create .codex");
+        std::fs::create_dir_all(repo.join("subdir")).expect("create subdir");
+
+        std::fs::write(
+            repo.join(".codex").join("hooks.json"),
+            r#"{"hooks":{"Potter.ProjectStop":[{"hooks":[{"type":"command","command":"echo hello","timeoutSec":42,"statusMessage":"Setting up environment"}]}]}}"#,
+        )
+        .expect("write hooks.json");
+
+        let discovered = super::discover_handlers(&repo.join("subdir"), Some(codex_home.as_path()));
+        assert_eq!(discovered.warnings, Vec::<String>::new());
+        assert_eq!(
+            discovered.handlers,
+            vec![ConfiguredHandler {
+                event_name: HookEventName::PotterProjectStop,
+                matcher: None,
+                command: "echo hello".to_string(),
+                timeout_sec: 42,
+                status_message: Some("Setting up environment".to_string()),
+                source_path: repo.join(".codex").join("hooks.json"),
+                display_order: 0,
+            }]
+        );
+    }
 }

@@ -134,3 +134,47 @@ fn default_shell_command() -> Command {
         command
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use codex_protocol::protocol::HookEventName;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    use super::run_command;
+    use crate::engine::CommandShell;
+    use crate::engine::ConfiguredHandler;
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn run_command_uses_provided_cwd_as_working_directory() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let cwd = temp_dir.path().canonicalize().expect("canonicalize cwd");
+
+        let shell = CommandShell {
+            program: String::new(),
+            args: Vec::new(),
+        };
+
+        let handler = ConfiguredHandler {
+            event_name: HookEventName::PotterProjectStop,
+            matcher: None,
+            command: "cat >/dev/null; pwd".to_string(),
+            timeout_sec: 5,
+            status_message: None,
+            source_path: PathBuf::from("/tmp/hooks.json"),
+            display_order: 0,
+        };
+
+        let result = run_command(&shell, &handler, "{}", cwd.as_path()).await;
+        assert_eq!(result.error, None);
+        assert_eq!(result.exit_code, Some(0));
+
+        let reported = PathBuf::from(result.stdout.trim())
+            .canonicalize()
+            .expect("canonicalize reported cwd");
+        assert_eq!(reported, cwd);
+    }
+}

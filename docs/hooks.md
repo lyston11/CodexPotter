@@ -8,12 +8,8 @@ CodexPotter supports **hooks** [similar to Codex](https://developers.openai.com/
 
 CodexPotter discovers hook configuration from two locations, same as codex:
 
-- User-level config:
-  - `$CODEX_HOME/hooks.json` when `CODEX_HOME` is set and non-empty
-  - otherwise `~/.codex/hooks.json`
-- Repo-level config:
-  - `<repo>/.codex/hooks.json` where `<repo>` is discovered by walking up from the session `cwd`
-    until a directory containing `.git` is found (fallback: the session `cwd` if no `.git` exists)
+- `~/.codex/hooks.json` (adjust according to `CODEX_HOME` if set)
+- `<repo>/.codex/hooks.json`
 
 If more than one `hooks.json` file exists, CodexPotter loads all matching hooks, as same as codex. Higher-precedence config layers do not replace lower-precedence hooks.
 
