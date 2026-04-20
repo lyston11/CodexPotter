@@ -161,6 +161,7 @@ See `resume.md` for how replay works and which artifacts are required.
 - You can also enable YOLO by default for all sessions via `~/.codexpotter/config.toml`:
   - `yolo = true` (or use `/yolo` in the TUI)
   - Legacy `[potter].yolo` is ignored.
+  - Saving the default rewrites the top-level `yolo` key and drops the legacy key.
   - CLI `--yolo` still overrides the config (always enables YOLO for the current run)
 - When YOLO is active, the prompt footer prefixes the status line with `▲YOLO`.
 - The client requests `approvalPolicy: "never"` when starting the thread, and `codex-potter` is

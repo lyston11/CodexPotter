@@ -34,6 +34,7 @@ Created by `cli/src/workflow/project.rs`:
   - `yolo` (bool): enables YOLO by default (unsafe; disables approvals and sandboxing)
     - configurable via `/yolo` in the TUI
     - legacy `[potter].yolo` is ignored
+    - saving the setting rewrites the canonical top-level key and drops the legacy key
     - CLI `--yolo` always overrides this config (enables YOLO for the current run)
 - `~/.codexpotter/history.jsonl`
   - prompt history for the bottom composer (see `tui-chat-composer.md`)
@@ -108,6 +109,7 @@ Persistent default:
 - `~/.codexpotter/config.toml` `yolo = true`
   - enables YOLO for rounds when `--yolo` is not passed
   - legacy `[potter].yolo` is ignored
+  - saving the setting rewrites the canonical top-level key and drops the legacy key
   - change via `/yolo` in the TUI
 
 Implementation:

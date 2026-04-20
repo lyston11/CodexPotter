@@ -117,6 +117,18 @@ fn set_tui_verbosity(doc: &mut DocumentMut, verbosity: Verbosity) {
 
 fn set_yolo(doc: &mut DocumentMut, enabled: bool) {
     doc["yolo"] = value(enabled);
+
+    let remove_legacy_table = doc
+        .get_mut("potter")
+        .and_then(TomlItem::as_table_mut)
+        .map(|table| {
+            table.remove("yolo");
+            table.is_empty()
+        })
+        .unwrap_or(false);
+    if remove_legacy_table {
+        doc.remove("potter");
+    }
 }
 
 fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
@@ -480,7 +492,7 @@ yolo = true
 
         std::fs::write(
             &path,
-            "[potter]\nyolo = true\n\n[tui]\nverbosity = \"simple\"\n",
+            "[potter]\nyolo = true\nmarker = \"keep\"\n\n[tui]\nverbosity = \"simple\"\n",
         )?;
 
         assert!(!load_yolo_from_path(&path)?);
@@ -492,13 +504,38 @@ yolo = true
         persist_yolo_to_path(&path, false)?;
 
         let contents = std::fs::read_to_string(&path)?;
+        let doc = contents
+            .parse::<DocumentMut>()
+            .expect("persisted valid toml");
         assert_eq!(load_yolo_from_path(&path)?, false);
         assert_eq!(
             load_tui_verbosity_from_path(&path)?,
             Some(Verbosity::Simple)
         );
+        assert_eq!(read_yolo(&doc), Some(false));
+        assert_eq!(
+            read_table_value(&doc, "potter", "marker").and_then(toml_edit::Value::as_str),
+            Some("keep")
+        );
+        assert!(read_table_value(&doc, "potter", "yolo").is_none());
         assert!(contents.find("yolo = false").unwrap() < contents.find("[potter]").unwrap());
-        assert!(contents.contains("[potter]\nyolo = true"));
+        Ok(())
+    }
+
+    #[test]
+    fn persist_yolo_removes_empty_legacy_potter_table() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+
+        std::fs::write(&path, "[potter]\nyolo = true\n")?;
+        persist_yolo_to_path(&path, false)?;
+
+        let contents = std::fs::read_to_string(&path)?;
+        let doc = contents
+            .parse::<DocumentMut>()
+            .expect("persisted valid toml");
+        assert_eq!(read_yolo(&doc), Some(false));
+        assert!(doc.get("potter").is_none());
         Ok(())
     }
 
