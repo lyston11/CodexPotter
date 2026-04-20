@@ -8,6 +8,12 @@ use crate::events::project_stop::ProjectStopRequest;
 #[derive(Default, Clone)]
 pub struct HooksConfig {
     pub cwd: Option<PathBuf>,
+    /// Override the Codex home directory used when locating `hooks.json`.
+    ///
+    /// When unset, hooks discovery follows upstream behavior:
+    /// - `$CODEX_HOME/hooks.json` when `CODEX_HOME` is set and non-empty
+    /// - otherwise `~/.codex/hooks.json`
+    pub codex_home_dir: Option<PathBuf>,
     pub shell_program: Option<String>,
     pub shell_args: Vec<String>,
 }
@@ -27,6 +33,7 @@ impl Hooks {
     pub fn new(config: HooksConfig) -> Self {
         let engine = HooksEngine::new(
             config.cwd.as_deref(),
+            config.codex_home_dir.as_deref(),
             CommandShell {
                 program: config.shell_program.unwrap_or_default(),
                 args: config.shell_args,

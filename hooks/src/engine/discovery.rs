@@ -16,12 +16,12 @@ pub(crate) struct DiscoveryResult {
     pub warnings: Vec<String>,
 }
 
-pub(crate) fn discover_handlers(cwd: &Path) -> DiscoveryResult {
+pub(crate) fn discover_handlers(cwd: &Path, codex_home_dir: Option<&Path>) -> DiscoveryResult {
     let mut handlers = Vec::new();
     let mut warnings = Vec::new();
     let mut display_order = 0_i64;
 
-    for source_path in discover_hooks_json_paths(cwd) {
+    for source_path in discover_hooks_json_paths(cwd, codex_home_dir) {
         if !source_path.is_file() {
             continue;
         }
@@ -150,10 +150,12 @@ fn append_matcher_groups(
     }
 }
 
-fn discover_hooks_json_paths(cwd: &Path) -> Vec<PathBuf> {
+fn discover_hooks_json_paths(cwd: &Path, codex_home_dir_override: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    if let Some(path) = codex_home_dir().map(|dir| dir.join("hooks.json")) {
+    if let Some(dir) = codex_home_dir_override {
+        paths.push(dir.join("hooks.json"));
+    } else if let Some(path) = codex_home_dir().map(|dir| dir.join("hooks.json")) {
         paths.push(path);
     }
 
@@ -254,6 +256,8 @@ mod tests {
     fn discovery_reads_hooks_json_from_repo_root_dot_codex() {
         let temp = TempDir::new().expect("tempdir");
         let repo = temp.path().join("repo");
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
         std::fs::create_dir_all(repo.join(".git")).expect("create .git");
         std::fs::create_dir_all(repo.join(".codex")).expect("create .codex");
         std::fs::write(
@@ -262,7 +266,7 @@ mod tests {
         )
         .expect("write hooks.json");
 
-        let discovered = super::discover_handlers(&repo);
+        let discovered = super::discover_handlers(&repo, Some(codex_home.as_path()));
         assert_eq!(discovered.warnings, Vec::<String>::new());
         assert_eq!(discovered.handlers.len(), 1);
         assert_eq!(
