@@ -154,6 +154,11 @@ If you even don't know what you are designing for, just discuss with **codex** t
 
 &ensp;
 
+## Configuration
+
+- [Config File](./docs/config.md)
+- [Hooks](./docs/hooks.md)
+
 ## Other Features
 
 - `--xmodel` (experimental): Use gpt-5.2 first, then use gpt-5.4 to cross review gpt-5.2's work in later rounds. In clear coding tasks this may produce better results than only using gpt-5.2 or gpt-5.4.

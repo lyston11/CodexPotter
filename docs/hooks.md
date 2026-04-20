@@ -1,40 +1,25 @@
-# Hooks (Experimental)
+# Hooks
 
-CodexPotter supports **hooks** similar to upstream Codex. Hooks are user-configured commands that
-run on specific events and receive a single JSON object on **stdin**.
+CodexPotter supports **hooks** [similar to Codex](https://developers.openai.com/codex/hooks). Hooks allow you to inject your own scripts into the agentic loop.
 
-This feature is **experimental**. The supported events and payload shape may change.
+⚠️ This feature is **experimental**. Events and payload shape may change.
 
-Upstream reference: https://developers.openai.com/codex/hooks
+## Where CodexPotter looks for hooks
 
-## Configuration files (`hooks.json`)
+CodexPotter discovers hook configuration from two locations, same as codex:
 
-CodexPotter discovers hook configuration from two locations (both are loaded when present):
+- User-level config:
+  - `$CODEX_HOME/hooks.json` when `CODEX_HOME` is set and non-empty
+  - otherwise `~/.codex/hooks.json`
+- Repo-level config:
+  - `<repo>/.codex/hooks.json` where `<repo>` is discovered by walking up from the session `cwd`
+    until a directory containing `.git` is found (fallback: the session `cwd` if no `.git` exists)
 
-1. **User-level**
-   - `$CODEX_HOME/hooks.json` when `CODEX_HOME` is set and non-empty
-   - otherwise `~/.codex/hooks.json`
-2. **Repo-level**
-   - `<repo>/.codex/hooks.json`
-   - `<repo>` is the nearest parent directory (starting from `cwd`) that contains a `.git`
-     directory (fallback: `cwd` if no `.git` exists)
+If more than one `hooks.json` file exists, CodexPotter loads all matching hooks, as same as codex. Higher-precedence config layers do not replace lower-precedence hooks.
 
-## Supported event: `Potter.ProjectStop`
+## Config shape
 
-`Potter.ProjectStop` runs when a Potter project stops (the same boundary where project completion
-markers are emitted), including:
-
-- success
-- budget exhausted
-- interrupted + user chose "stop iterate"
-- task failed / fatal failures
-
-This event **does not support matchers** (any `matcher` fields are ignored) and **does not support
-output fields** (hook output does not affect runtime behavior).
-
-### `hooks.json` example
-
-Create `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) with a `command` hook:
+Here is an example `hooks.json` with a single `Potter.ProjectStop` hook, which is triggered when a Potter project stops for any reason (success, failure, interruption, etc.):
 
 ```json
 {
@@ -44,10 +29,8 @@ Create `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) with a `command` hook
         "hooks": [
           {
             "type": "command",
-            "command": "cat > /tmp/potter-project-stop.json",
-            "timeout": 30,
-            "async": false,
-            "statusMessage": "Saving project stop payload..."
+            "command": "cat >> /tmp/potter-project-stop.json",
+            "timeout": 30
           }
         ]
       }
@@ -58,12 +41,25 @@ Create `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) with a `command` hook
 
 Notes:
 
-- `timeout` is in seconds (default: 600; minimum: 1).
-- Only synchronous `command` hooks are supported today:
-  - `async: true` hooks are skipped with a warning.
-  - `prompt` and `agent` hook types are skipped with a warning.
+- `timeout` is in seconds.
+- `timeoutSec` is also accepted as an alias.
+- If `timeout` is omitted, CodexPotter uses `600` seconds.
+- `statusMessage` is optional and, when present, is shown while the hook is running.
+- Commands run with the session `cwd` as their working directory.
 
-### Payload
+## Hooks
+
+### `Potter.ProjectStop`
+
+Triggered when a Potter project stops (the same boundary where CodexPotter summary are emitted), including:
+
+- success
+- round budget exhausted
+- user interrupt
+- task failed / fatal failures
+
+This event **does not support matchers** (any `matcher` fields are ignored) and **does not support
+output fields** (hook output does not affect runtime behavior).
 
 Every `command` hook receives a single JSON object on stdin:
 
@@ -91,7 +87,6 @@ Field notes:
 - `new_session_ids`: session ids created since the current iteration window began:
   - fresh project: equals `all_session_ids`
   - resumed project: contains only rounds executed after resume
-- `all_assistant_messages`: last assistant message for each round (best-effort; empty string when
-  extraction fails).
+- `all_assistant_messages`: last assistant message for each round.
 - `new_assistant_messages`: messages corresponding to `new_session_ids`.
 - `stop_reason_code`: one of `succeeded`, `budget_exhausted`, `interrupted`, `task_failed`, `fatal`.
