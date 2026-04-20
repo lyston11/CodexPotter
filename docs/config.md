@@ -14,13 +14,12 @@ CodexPotter reads a per-user TOML config file:
 # Check for updates on startup. (default: true)
 # check_for_update_on_startup = true
 
+# Enable YOLO by default. (default: false)
+# Warning: YOLO disables approvals and sandboxing.
+# yolo = false
+
 [tui]
 # Default transcript verbosity. (default: "minimal")
 # One of: "minimal", "simple"
 # verbosity = "minimal"
-
-[potter]
-# Enable YOLO by default. (default: false)
-# Warning: YOLO disables approvals and sandboxing.
-# yolo = false
 ```

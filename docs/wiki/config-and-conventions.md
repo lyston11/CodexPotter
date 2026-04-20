@@ -31,7 +31,7 @@ Created by `cli/src/workflow/project.rs`:
   - `check_for_update_on_startup` (bool): enables update checks on startup (default: `true`)
   - `rounds` (integer): default round budget for runs that do not specify `--rounds` (default: `10`)
   - `[tui].verbosity` (string): default transcript verbosity (`tui/src/potter_config.rs`)
-  - `[potter].yolo` (bool): enables YOLO by default (unsafe; disables approvals and sandboxing)
+  - `yolo` (bool): enables YOLO by default (unsafe; disables approvals and sandboxing)
     - configurable via `/yolo` in the TUI
     - CLI `--yolo` always overrides this config (enables YOLO for the current run)
 - `~/.codexpotter/history.jsonl`
@@ -104,7 +104,7 @@ approvals.
 
 Persistent default:
 
-- `~/.codexpotter/config.toml` `[potter].yolo = true`
+- `~/.codexpotter/config.toml` `yolo = true`
   - enables YOLO for rounds when `--yolo` is not passed
   - change via `/yolo` in the TUI
 

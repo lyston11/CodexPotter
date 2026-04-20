@@ -159,7 +159,7 @@ See `resume.md` for how replay works and which artifacts are required.
 - `--yolo` (`--dangerously-bypass-approvals-and-sandbox`) is unsafe: it disables Codex approvals and
   sandboxing, and `codex-potter` will also request `sandbox: "danger-full-access"` for the thread.
 - You can also enable YOLO by default for all sessions via `~/.codexpotter/config.toml`:
-  - `[potter].yolo = true` (or use `/yolo` in the TUI)
+  - `yolo = true` (or use `/yolo` in the TUI)
   - CLI `--yolo` still overrides the config (always enables YOLO for the current run)
 - When YOLO is active, the prompt footer prefixes the status line with `▲YOLO`.
 - The client requests `approvalPolicy: "never"` when starting the thread, and `codex-potter` is

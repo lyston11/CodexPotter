@@ -21,7 +21,7 @@ pub fn persist_potter_tui_verbosity(verbosity: Verbosity) -> io::Result<()> {
 
 /// Load whether YOLO is enabled by default for CodexPotter sessions.
 ///
-/// This is backed by `~/.codexpotter/config.toml` under `[potter].yolo`.
+/// This is backed by `~/.codexpotter/config.toml` under the top-level `yolo` key.
 ///
 /// Returns `false` when the key is missing.
 pub fn load_potter_yolo_enabled() -> io::Result<bool> {
@@ -38,7 +38,7 @@ pub fn load_potter_yolo_enabled_from_path(path: &Path) -> io::Result<bool> {
 
 /// Persist whether YOLO is enabled by default for CodexPotter sessions.
 ///
-/// Writes `~/.codexpotter/config.toml` under `[potter].yolo`.
+/// Writes `~/.codexpotter/config.toml` under the top-level `yolo` key.
 pub fn persist_potter_yolo_enabled(enabled: bool) -> io::Result<()> {
     let path = potter_config_path()?;
     persist_yolo_to_path(&path, enabled)
@@ -95,7 +95,9 @@ fn read_tui_verbosity(doc: &DocumentMut) -> Option<Verbosity> {
 }
 
 fn read_yolo(doc: &DocumentMut) -> Option<bool> {
-    read_table_value(doc, "potter", "yolo").and_then(toml_edit::Value::as_bool)
+    doc.get("yolo")
+        .and_then(TomlItem::as_value)
+        .and_then(toml_edit::Value::as_bool)
 }
 
 fn set_tui_verbosity(doc: &mut DocumentMut, verbosity: Verbosity) {
@@ -108,7 +110,7 @@ fn set_tui_verbosity(doc: &mut DocumentMut, verbosity: Verbosity) {
 }
 
 fn set_yolo(doc: &mut DocumentMut, enabled: bool) {
-    set_table_value(doc, "potter", "yolo", value(enabled));
+    doc["yolo"] = value(enabled);
 }
 
 fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
@@ -124,13 +126,41 @@ fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
 }
 
 fn parse_yolo_fallback(contents: &str) -> Option<bool> {
-    parse_fallback_table_key(contents, "potter", "yolo", |value| {
-        match value.split_whitespace().next().unwrap_or_default() {
+    let mut in_potter_table = false;
+    let mut result = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            in_potter_table = matches!(
+                parse_table_header_name(trimmed),
+                Some(name) if name == "potter"
+            );
+            continue;
+        }
+
+        if in_potter_table {
+            continue;
+        }
+
+        let Some(line) = strip_toml_comment(trimmed) else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "yolo" {
+            continue;
+        }
+
+        result = match value.split_whitespace().next().unwrap_or_default() {
             "true" => Some(true),
             "false" => Some(false),
-            _ => None,
-        }
-    })
+            _ => result,
+        };
+    }
+
+    result
 }
 
 fn parse_table_header_name(line: &str) -> Option<&str> {
@@ -277,7 +307,7 @@ fn append_tui_fallback(existing: &str, verbosity: Verbosity) -> String {
 }
 
 fn append_yolo_fallback(existing: &str, enabled: bool) -> String {
-    append_table_fallback(existing, "potter", format!("yolo = {enabled}\n"))
+    append_root_fallback(existing, format!("yolo = {enabled}\n"))
 }
 
 fn append_table_fallback(existing: &str, table_name: &str, assignment: String) -> String {
@@ -287,6 +317,16 @@ fn append_table_fallback(existing: &str, table_name: &str, assignment: String) -
     }
     out.push('\n');
     out.push_str(&format!("[{table_name}]\n"));
+    out.push_str(&assignment);
+    out
+}
+
+fn append_root_fallback(existing: &str, assignment: String) -> String {
+    let mut out = existing.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
     out.push_str(&assignment);
     out
 }
@@ -325,15 +365,22 @@ verbosity = "simple"
         let yolo_contents = r#"
 garbage
 
-[potter]
 yolo = true
 
 something = else
 
-[potter]
 yolo = false
+
+[potter]
+yolo = true
 "#;
         assert_eq!(parse_yolo_fallback(yolo_contents), Some(false));
+
+        let legacy_yolo_contents = r#"
+[potter]
+yolo = true
+"#;
+        assert_eq!(parse_yolo_fallback(legacy_yolo_contents), None);
     }
 
     #[test]
@@ -357,6 +404,15 @@ yolo = false
         assert_eq!(load_yolo_from_path(&yolo_path)?, true);
         persist_yolo_to_path(&yolo_path, false)?;
         assert_eq!(load_yolo_from_path(&yolo_path)?, false);
+
+        let combined_path = dir.path().join("combined.toml");
+        persist_tui_verbosity_to_path(&combined_path, Verbosity::Minimal)?;
+        persist_yolo_to_path(&combined_path, true)?;
+        assert_eq!(
+            load_tui_verbosity_from_path(&combined_path)?,
+            Some(Verbosity::Minimal)
+        );
+        assert_eq!(load_yolo_from_path(&combined_path)?, true);
         Ok(())
     }
 
@@ -378,7 +434,7 @@ yolo = false
         std::fs::write(&yolo_path, "[potter\nx = 1\n")?;
         persist_yolo_to_path(&yolo_path, true)?;
         let yolo_contents = std::fs::read_to_string(&yolo_path)?;
-        assert!(yolo_contents.contains("[potter]"));
+        assert!(yolo_contents.contains("yolo = true"));
         assert_eq!(parse_yolo_fallback(&yolo_contents), Some(true));
         Ok(())
     }
