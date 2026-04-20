@@ -126,41 +126,13 @@ fn parse_tui_verbosity_fallback(contents: &str) -> Option<Verbosity> {
 }
 
 fn parse_yolo_fallback(contents: &str) -> Option<bool> {
-    let mut in_potter_table = false;
-    let mut result = None;
-
-    for line in contents.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('[') {
-            in_potter_table = matches!(
-                parse_table_header_name(trimmed),
-                Some(name) if name == "potter"
-            );
-            continue;
-        }
-
-        if in_potter_table {
-            continue;
-        }
-
-        let Some(line) = strip_toml_comment(trimmed) else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "yolo" {
-            continue;
-        }
-
-        result = match value.split_whitespace().next().unwrap_or_default() {
+    parse_fallback_root_key(contents, "yolo", |value| {
+        match value.split_whitespace().next().unwrap_or_default() {
             "true" => Some(true),
             "false" => Some(false),
-            _ => result,
-        };
-    }
-
-    result
+            _ => None,
+        }
+    })
 }
 
 fn parse_table_header_name(line: &str) -> Option<&str> {
@@ -298,6 +270,39 @@ fn parse_fallback_table_key<T>(
     result
 }
 
+fn parse_fallback_root_key<T>(
+    contents: &str,
+    key_name: &str,
+    mut parse_value: impl FnMut(&str) -> Option<T>,
+) -> Option<T> {
+    // Once malformed content reaches a table-like header, later bare keys are too ambiguous to
+    // treat as root-level settings reliably.
+    let mut result = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            break;
+        }
+
+        let Some(line) = strip_toml_comment(trimmed) else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != key_name {
+            continue;
+        }
+
+        if let Some(parsed) = parse_value(value) {
+            result = Some(parsed);
+        }
+    }
+
+    result
+}
+
 fn append_tui_fallback(existing: &str, verbosity: Verbosity) -> String {
     append_table_fallback(
         existing,
@@ -322,13 +327,50 @@ fn append_table_fallback(existing: &str, table_name: &str, assignment: String) -
 }
 
 fn append_root_fallback(existing: &str, assignment: String) -> String {
+    // Keep malformed-content root assignments in the same preamble that `parse_fallback_root_key`
+    // reads, so fallback writes and reads share one boundary.
+    if let Some(index) = first_table_like_line_start(existing) {
+        let (head, tail) = existing.split_at(index);
+        let mut out = head.to_string();
+        push_fallback_spacing(&mut out);
+        out.push_str(&assignment);
+        out.push_str(tail);
+        return out;
+    }
+
     let mut out = existing.to_string();
+    push_fallback_spacing(&mut out);
+    out.push_str(&assignment);
+    out
+}
+
+fn first_table_like_line_start(contents: &str) -> Option<usize> {
+    let mut line_start = 0;
+
+    while line_start < contents.len() {
+        let line_end = contents[line_start..]
+            .find('\n')
+            .map_or(contents.len(), |offset| line_start + offset);
+        let line = &contents[line_start..line_end];
+        if line.trim_start().starts_with('[') {
+            return Some(line_start);
+        }
+        if line_end == contents.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    None
+}
+
+fn push_fallback_spacing(out: &mut String) {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push('\n');
-    out.push_str(&assignment);
-    out
+    if !out.is_empty() && !out.ends_with("\n\n") {
+        out.push('\n');
+    }
 }
 
 fn read_document_string(path: &Path) -> io::Result<Option<String>> {
@@ -371,6 +413,9 @@ something = else
 
 yolo = false
 
+[notice]
+yolo = true
+
 [potter]
 yolo = true
 "#;
@@ -381,6 +426,12 @@ yolo = true
 yolo = true
 "#;
         assert_eq!(parse_yolo_fallback(legacy_yolo_contents), None);
+
+        let malformed_legacy_yolo_contents = r#"
+[potter
+yolo = true
+"#;
+        assert_eq!(parse_yolo_fallback(malformed_legacy_yolo_contents), None);
     }
 
     #[test]
@@ -434,8 +485,21 @@ yolo = true
         std::fs::write(&yolo_path, "[potter\nx = 1\n")?;
         persist_yolo_to_path(&yolo_path, true)?;
         let yolo_contents = std::fs::read_to_string(&yolo_path)?;
-        assert!(yolo_contents.contains("yolo = true"));
+        assert!(yolo_contents.starts_with("yolo = true"));
         assert_eq!(parse_yolo_fallback(&yolo_contents), Some(true));
+
+        let table_yolo_path = dir.path().join("table-yolo.toml");
+        std::fs::write(
+            &table_yolo_path,
+            "[notice]\nflag = true\nbroken = [\nyolo = false\n",
+        )?;
+        persist_yolo_to_path(&table_yolo_path, true)?;
+        let table_yolo_contents = std::fs::read_to_string(&table_yolo_path)?;
+        assert!(
+            table_yolo_contents.find("yolo = true").unwrap()
+                < table_yolo_contents.find("[notice]").unwrap()
+        );
+        assert_eq!(parse_yolo_fallback(&table_yolo_contents), Some(true));
         Ok(())
     }
 }
