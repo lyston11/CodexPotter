@@ -177,17 +177,25 @@ fn read_final_agent_message_from_rollout(
     // The overlay should show each round's conclusion, not mid-turn commentary. Modern logs mark
     // final answers explicitly; only legacy logs with no `phase` metadata fall back to the last
     // completed agent message for compatibility.
-    let (secs, message) = last_final
-        .or_else(|| {
-            (!saw_explicit_phase)
-                .then_some(last_without_phase)
-                .flatten()
-        })
-        .unwrap_or_default();
-    Ok((
-        (secs != 0).then_some(secs),
-        (!message.is_empty()).then_some(message),
-    ))
+    let selected = if let Some(final_answer) = last_final {
+        Some(final_answer)
+    } else if !saw_explicit_phase {
+        last_without_phase
+    } else {
+        None
+    };
+
+    if let Some((secs, message)) = selected {
+        let secs = if secs == 0 { None } else { Some(secs) };
+        let message = if message.is_empty() {
+            None
+        } else {
+            Some(message)
+        };
+        Ok((secs, message))
+    } else {
+        Ok((None, None))
+    }
 }
 
 #[cfg(test)]
