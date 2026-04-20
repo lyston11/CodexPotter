@@ -808,16 +808,11 @@ impl ProjectsOverlay {
         self.right_scroll = 0;
         self.ensure_selected_visible();
 
-        let project_dir = self
-            .projects
-            .get(self.selected)
-            .map(|project| &project.project_dir)?;
-        if self.details_by_project.contains_key(project_dir) {
-            return None;
-        }
-        Some(crate::ProjectsOverlayRequest::Details {
-            project_dir: project_dir.clone(),
-        })
+        let project_dir = self.projects.get(self.selected)?.project_dir.clone();
+        // Keep showing any cached details for the newly selected project, but always refresh them
+        // in the background so revisiting a project in a long-lived overlay session does not leave
+        // stale content stuck on screen until the next auto-refresh tick.
+        Some(crate::ProjectsOverlayRequest::Details { project_dir })
     }
 
     fn bump_right_scroll(&mut self, delta: i32) {
@@ -1366,6 +1361,95 @@ mod tests {
             }
             other => panic!("expected details request after moving selection, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn switching_back_to_cached_project_requests_fresh_details() {
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: first_project_dir.clone(),
+                    progress_file: first_project_dir.join("MAIN.md"),
+                    description: "First project".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: second_project_dir.clone(),
+                    progress_file: second_project_dir.join("MAIN.md"),
+                    description: "Second project".to_string(),
+                    started_at_unix_secs: Some(2),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+            ],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: first_project_dir.clone(),
+            progress_file: first_project_dir.join("MAIN.md"),
+            git_branch: None,
+            user_message: None,
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("old first details".to_string()),
+            }],
+            error: None,
+        });
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: second_project_dir.clone(),
+            progress_file: second_project_dir.join("MAIN.md"),
+            git_branch: None,
+            user_message: None,
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(2),
+                final_message: Some("second details".to_string()),
+            }],
+            error: None,
+        });
+
+        match overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)) {
+            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected refresh request for second project, got {other:?}"),
+        }
+
+        match overlay.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)) {
+            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, first_project_dir);
+            }
+            other => panic!("expected refresh request for cached project, got {other:?}"),
+        }
+
+        let rendered = overlay
+            .build_right_lines(
+                Rect::new(0, 0, 80, 18),
+                UNIX_EPOCH + Duration::from_secs(120),
+            )
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("old first details")),
+            "expected cached details to remain visible while refresh is pending: {rendered:?}"
+        );
     }
 
     #[test]
@@ -2042,75 +2126,6 @@ mod tests {
         }
 
         assert_eq!(overlay.selected_project_dir(), Some(second_project_dir));
-    }
-
-    #[test]
-    fn selection_change_does_not_re_request_cached_details() {
-        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
-        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
-        let mut overlay = ProjectsOverlay::default();
-        overlay.open_or_refresh();
-
-        let projects = vec![
-            PotterProjectListEntry {
-                project_dir: first_project_dir.clone(),
-                progress_file: first_project_dir.join("MAIN.md"),
-                description: "First project".to_string(),
-                started_at_unix_secs: Some(1),
-                rounds: 1,
-                status: PotterProjectListStatus::Succeeded,
-            },
-            PotterProjectListEntry {
-                project_dir: second_project_dir.clone(),
-                progress_file: second_project_dir.join("MAIN.md"),
-                description: "Second project".to_string(),
-                started_at_unix_secs: Some(2),
-                rounds: 2,
-                status: PotterProjectListStatus::Interrupted,
-            },
-        ];
-        overlay.on_projects_list(projects, None);
-
-        overlay.on_project_details(PotterProjectDetails {
-            project_dir: first_project_dir.clone(),
-            progress_file: first_project_dir.join("MAIN.md"),
-            git_branch: None,
-            user_message: None,
-            rounds: vec![PotterProjectRoundSummary {
-                round_current: 1,
-                round_total: 2,
-                final_message_unix_secs: Some(1),
-                final_message: Some("First done".to_string()),
-            }],
-            error: None,
-        });
-
-        match overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)) {
-            Some(crate::ProjectsOverlayRequest::Details { project_dir }) => {
-                assert_eq!(project_dir, second_project_dir);
-            }
-            other => panic!("expected details request after moving selection, got {other:?}"),
-        }
-
-        overlay.on_project_details(PotterProjectDetails {
-            project_dir: second_project_dir.clone(),
-            progress_file: second_project_dir.join("MAIN.md"),
-            git_branch: None,
-            user_message: None,
-            rounds: vec![PotterProjectRoundSummary {
-                round_current: 2,
-                round_total: 2,
-                final_message_unix_secs: Some(2),
-                final_message: Some("Second done".to_string()),
-            }],
-            error: None,
-        });
-
-        assert!(
-            overlay
-                .handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
-                .is_none()
-        );
     }
 
     #[test]
