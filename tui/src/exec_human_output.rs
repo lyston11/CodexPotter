@@ -1056,6 +1056,7 @@ fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'st
         codex_protocol::protocol::HookEventName::SessionStart => "session-start",
         codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
         codex_protocol::protocol::HookEventName::Stop => "stop",
+        codex_protocol::protocol::HookEventName::PotterProjectStop => "potter-project-stop",
     }
 }
 

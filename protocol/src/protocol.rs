@@ -892,6 +892,7 @@ pub enum HookEventName {
     SessionStart,
     UserPromptSubmit,
     Stop,
+    PotterProjectStop,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
