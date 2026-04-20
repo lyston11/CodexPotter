@@ -9,11 +9,17 @@ use toml_edit::value;
 
 use crate::verbosity::Verbosity;
 
+/// Load the configured default transcript verbosity for CodexPotter sessions.
+///
+/// This is backed by `~/.codexpotter/config.toml` under `[tui].verbosity`.
 pub fn load_potter_tui_verbosity() -> io::Result<Option<Verbosity>> {
     let path = potter_config_path()?;
     load_tui_verbosity_from_path(&path)
 }
 
+/// Persist the default transcript verbosity for CodexPotter sessions.
+///
+/// Writes `~/.codexpotter/config.toml` under `[tui].verbosity`.
 pub fn persist_potter_tui_verbosity(verbosity: Verbosity) -> io::Result<()> {
     let path = potter_config_path()?;
     persist_tui_verbosity_to_path(&path, verbosity)
