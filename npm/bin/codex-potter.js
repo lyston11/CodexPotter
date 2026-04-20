@@ -204,7 +204,8 @@ const forwardSignal = (signal) => {
   }
 };
 
-["SIGINT", "SIGTERM", "SIGHUP"].forEach((sig) => {
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
+forwardedSignals.forEach((sig) => {
   process.on(sig, () => forwardSignal(sig));
 });
 
@@ -224,10 +225,12 @@ const childResult = await new Promise((resolve) => {
 });
 
 if (childResult.type === "signal") {
+  forwardedSignals.forEach((sig) => {
+    process.removeAllListeners(sig);
+  });
   // Re-emit the same signal so that the parent terminates with the expected
   // semantics (this also sets the correct exit code of 128 + n).
   process.kill(process.pid, childResult.signal);
 } else {
   process.exit(childResult.exitCode);
 }
-
