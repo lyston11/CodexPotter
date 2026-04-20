@@ -23,3 +23,5 @@ CodexPotter reads a per-user TOML config file:
 # One of: "minimal", "simple"
 # verbosity = "minimal"
 ```
+
+Legacy `[potter].yolo` is ignored. Only the top-level `yolo` key is read and persisted.

@@ -468,6 +468,35 @@ yolo = true
     }
 
     #[test]
+    fn valid_toml_yolo_only_reads_and_writes_the_top_level_key() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+
+        std::fs::write(
+            &path,
+            "[potter]\nyolo = true\n\n[tui]\nverbosity = \"simple\"\n",
+        )?;
+
+        assert!(!load_yolo_from_path(&path)?);
+        assert_eq!(
+            load_tui_verbosity_from_path(&path)?,
+            Some(Verbosity::Simple)
+        );
+
+        persist_yolo_to_path(&path, false)?;
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert_eq!(load_yolo_from_path(&path)?, false);
+        assert_eq!(
+            load_tui_verbosity_from_path(&path)?,
+            Some(Verbosity::Simple)
+        );
+        assert!(contents.find("yolo = false").unwrap() < contents.find("[potter]").unwrap());
+        assert!(contents.contains("[potter]\nyolo = true"));
+        Ok(())
+    }
+
+    #[test]
     fn persist_appends_when_toml_is_invalid_for_supported_settings() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let verbosity_path = dir.path().join("verbosity.toml");
