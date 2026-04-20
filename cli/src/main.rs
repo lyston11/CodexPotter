@@ -664,7 +664,7 @@ fn resume_note_global_args(
         out.push(sandbox.to_string());
     }
 
-    if cli_rounds_override || rounds.get() != DEFAULT_ROUNDS {
+    if cli_rounds_override {
         out.push("--rounds".to_string());
         out.push(rounds.get().to_string());
     }
@@ -1155,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn render_resume_note_command_includes_config_rounds_when_non_default() {
+    fn render_resume_note_command_omits_config_rounds_when_cli_rounds_unset() {
         let cli = Cli::try_parse_from(["codex-potter"]).expect("parse args");
         assert_eq!(
             render_resume_note_command(
@@ -1164,7 +1164,7 @@ mod tests {
                 NonZeroUsize::new(15).expect("rounds"),
                 false
             ),
-            "codex-potter resume --rounds 15 2026/02/01/1"
+            "codex-potter resume 2026/02/01/1"
         );
     }
 
