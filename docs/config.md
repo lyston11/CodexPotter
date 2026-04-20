@@ -23,6 +23,3 @@ CodexPotter reads a per-user TOML config file:
 # One of: "minimal", "simple"
 # verbosity = "minimal"
 ```
-
-Legacy `[potter].yolo` is ignored. Saving the setting rewrites the canonical top-level `yolo`
-key and drops the legacy key.
