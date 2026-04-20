@@ -69,7 +69,6 @@ pub struct ProjectsOverlay {
     right_scroll: usize,
     /// Cached details payloads keyed by the workdir-relative project directory.
     details_by_project: HashMap<PathBuf, PotterProjectDetails>,
-    refresh_selected_project_dir: Option<PathBuf>,
 
     metrics: OverlayMetrics,
 }
@@ -90,25 +89,24 @@ impl ProjectsOverlay {
             .map(|p| p.project_dir.clone())
     }
 
+    /// Open the overlay, or start refreshing its contents if already open.
+    ///
+    /// When refreshing an already-open overlay, this keeps the current selection and scroll
+    /// offsets, and keeps any existing list/details visible until the new responses arrive.
     pub fn open_or_refresh(&mut self) -> crate::ProjectsOverlayRequest {
         let was_open = self.open;
-        self.refresh_selected_project_dir = if was_open {
-            self.selected_project_dir()
-        } else {
-            None
-        };
         self.open = true;
         if !was_open {
             self.maximized = false;
         }
         self.list_loading = true;
         self.list_error = None;
-        self.projects.clear();
-        self.right_scroll = 0;
-        self.details_by_project.clear();
         if !was_open {
+            self.projects.clear();
             self.selected = 0;
             self.scroll_top = 0;
+            self.right_scroll = 0;
+            self.details_by_project.clear();
         }
         crate::ProjectsOverlayRequest::List
     }
@@ -129,33 +127,78 @@ impl ProjectsOverlay {
 
         self.list_loading = false;
         self.list_error = error;
+        let previous_selected_dir = self.selected_project_dir();
+        let previous_selected = self.selected;
+        let previous_scroll_top = self.scroll_top;
+        let previous_scroll_top_dir = self
+            .projects
+            .get(self.scroll_top)
+            .map(|project| project.project_dir.clone());
+        let previous_right_scroll = self.right_scroll;
+
         self.projects = projects;
-        self.selected = match self.refresh_selected_project_dir.take() {
-            Some(project_dir) => self
+
+        if self.projects.is_empty() {
+            self.selected = 0;
+            self.scroll_top = 0;
+            self.right_scroll = 0;
+            return None;
+        }
+
+        let max_selected = self.projects.len().saturating_sub(1);
+        self.selected = previous_selected.min(max_selected);
+
+        if let Some(project_dir) = previous_selected_dir.as_ref()
+            && let Some(found) = self
                 .projects
                 .iter()
-                .position(|project| project.project_dir == project_dir)
-                .unwrap_or_default(),
-            None => self.selected.min(self.projects.len().saturating_sub(1)),
-        };
+                .position(|project| &project.project_dir == project_dir)
+        {
+            self.selected = found;
+        }
+
+        let next_selected_dir = self
+            .projects
+            .get(self.selected)
+            .map(|project| &project.project_dir);
+        let selection_changed = next_selected_dir != previous_selected_dir.as_ref();
+        if selection_changed {
+            self.right_scroll = 0;
+        } else {
+            self.right_scroll = previous_right_scroll;
+        }
+
+        self.scroll_top = previous_scroll_top.min(max_selected);
+        if let Some(top_dir) = previous_scroll_top_dir
+            && let Some(found) = self
+                .projects
+                .iter()
+                .position(|project| project.project_dir == top_dir)
+        {
+            self.scroll_top = found;
+        }
+
+        // Keep the selection visible if the refreshed list shifted item heights.
+        self.ensure_selected_visible();
+        // If selection snapped above the previous scroll anchor, ensure `scroll_top` doesn't move
+        // beyond it.
         self.scroll_top = self.scroll_top.min(self.selected);
-        self.right_scroll = 0;
-        self.details_by_project.clear();
 
         self.selected_project_dir()
             .map(|project_dir| crate::ProjectsOverlayRequest::Details { project_dir })
     }
 
     pub fn on_project_details(&mut self, details: PotterProjectDetails) {
-        let is_for_selected = self
-            .projects
-            .get(self.selected)
-            .is_some_and(|project| project.project_dir == details.project_dir);
+        // Ignore details responses while a list refresh is in flight. In practice this avoids a
+        // race where an older details response (queued before the refresh request) lands after we
+        // started refreshing, causing the right pane to flicker before the refreshed list and
+        // follow-up details request complete.
+        if self.list_loading {
+            return;
+        }
+
         self.details_by_project
             .insert(details.project_dir.clone(), details);
-        if is_for_selected {
-            self.right_scroll = 0;
-        }
     }
 
     pub fn handle_key_event(
@@ -571,7 +614,7 @@ impl ProjectsOverlay {
             return Vec::new();
         }
 
-        if self.list_loading {
+        if self.projects.is_empty() && self.list_loading {
             return vec![Line::from("Loading projects...")];
         }
 
@@ -624,7 +667,7 @@ impl ProjectsOverlay {
 
         let wrap_width = usize::from(area.width.max(1));
 
-        if self.list_loading {
+        if self.projects.is_empty() && self.list_loading {
             return wrap_plain_lines(
                 vec![Line::from(vec![Span::from("Loading projects...").dim()])],
                 wrap_width,
@@ -1660,7 +1703,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_clears_cached_details_until_new_response_arrives() {
+    fn refresh_preserves_cached_details_until_new_response_arrives() {
         let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
         let progress_file = project_dir.join("MAIN.md");
         let mut overlay = ProjectsOverlay::default();
@@ -1694,7 +1737,7 @@ mod tests {
         overlay.open_or_refresh();
         overlay.on_projects_list(
             vec![PotterProjectListEntry {
-                project_dir,
+                project_dir: project_dir.clone(),
                 progress_file,
                 description: "Refresh projects overlay".to_string(),
                 started_at_unix_secs: Some(1),
@@ -1704,20 +1747,21 @@ mod tests {
             None,
         );
 
-        let lines = overlay.build_right_lines(
-            Rect::new(0, 0, 48, 10),
-            UNIX_EPOCH + Duration::from_secs(120),
-        );
+        let cached = overlay
+            .details_by_project
+            .get(&project_dir)
+            .expect("expected cached details to remain");
         assert_eq!(
-            lines,
-            vec![Line::from(vec![
-                Span::from("Loading project details...").dim()
-            ])]
+            cached
+                .rounds
+                .first()
+                .and_then(|round| round.final_message.as_deref()),
+            Some("old details")
         );
     }
 
     #[test]
-    fn refreshed_list_clears_stale_details_reinserted_before_list_response() {
+    fn refreshed_list_ignores_stale_details_reinserted_before_list_response() {
         let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
         let progress_file = project_dir.join("MAIN.md");
         let mut overlay = ProjectsOverlay::default();
@@ -1768,7 +1812,7 @@ mod tests {
 
         overlay.on_projects_list(
             vec![PotterProjectListEntry {
-                project_dir,
+                project_dir: project_dir.clone(),
                 progress_file,
                 description: "Refresh projects overlay".to_string(),
                 started_at_unix_secs: Some(1),
@@ -1778,15 +1822,149 @@ mod tests {
             None,
         );
 
-        let lines = overlay.build_right_lines(
-            Rect::new(0, 0, 48, 10),
-            UNIX_EPOCH + Duration::from_secs(120),
-        );
         assert_eq!(
-            lines,
-            vec![Line::from(vec![
-                Span::from("Loading project details...").dim()
-            ])]
+            overlay
+                .details_by_project
+                .get(&project_dir)
+                .expect("expected cached details to remain")
+                .rounds
+                .first()
+                .and_then(|round| round.final_message.as_deref()),
+            Some("old details"),
+            "expected stale details response to be ignored while list refresh is in flight"
+        );
+    }
+
+    #[test]
+    fn refresh_preserves_right_pane_scroll_for_selected_project() {
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let progress_file = project_dir.join("MAIN.md");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: project_dir.clone(),
+                progress_file: progress_file.clone(),
+                description: "Scroll preservation".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: project_dir.clone(),
+            progress_file: progress_file.clone(),
+            git_branch: None,
+            user_message: None,
+            rounds: vec![PotterProjectRoundSummary {
+                round_current: 1,
+                round_total: 1,
+                final_message_unix_secs: Some(1),
+                final_message: Some("details".to_string()),
+            }],
+            error: None,
+        });
+
+        overlay.right_scroll = 7;
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir,
+                progress_file,
+                description: "Scroll preservation".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        assert_eq!(overlay.right_scroll, 7);
+    }
+
+    #[test]
+    fn refresh_preserves_list_scroll_top_anchor_when_possible() {
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let third_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/3");
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: first_project_dir.clone(),
+                    progress_file: first_project_dir.join("MAIN.md"),
+                    description: "First".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: second_project_dir.clone(),
+                    progress_file: second_project_dir.join("MAIN.md"),
+                    description: "Second".to_string(),
+                    started_at_unix_secs: Some(2),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: third_project_dir.clone(),
+                    progress_file: third_project_dir.join("MAIN.md"),
+                    description: "Third".to_string(),
+                    started_at_unix_secs: Some(3),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+            ],
+            None,
+        );
+
+        overlay.selected = 2;
+        overlay.scroll_top = 1;
+        assert_eq!(
+            overlay.selected_project_dir(),
+            Some(third_project_dir.clone())
+        );
+
+        overlay.open_or_refresh();
+        overlay.on_projects_list(
+            vec![
+                PotterProjectListEntry {
+                    project_dir: second_project_dir.clone(),
+                    progress_file: second_project_dir.join("MAIN.md"),
+                    description: "Second".to_string(),
+                    started_at_unix_secs: Some(2),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: third_project_dir,
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/3/MAIN.md"),
+                    description: "Third".to_string(),
+                    started_at_unix_secs: Some(3),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+                PotterProjectListEntry {
+                    project_dir: first_project_dir,
+                    progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                    description: "First".to_string(),
+                    started_at_unix_secs: Some(1),
+                    rounds: 1,
+                    status: PotterProjectListStatus::Succeeded,
+                },
+            ],
+            None,
+        );
+
+        assert_eq!(overlay.scroll_top, 0);
+        assert_eq!(overlay.selected, 1);
+        assert_eq!(
+            overlay.selected_project_dir(),
+            Some(PathBuf::from(".codexpotter/projects/2026/04/16/3"))
         );
     }
 

@@ -59,6 +59,12 @@ use crate::verbosity::Verbosity;
 /// Prompt inserted by the `/compact-kb` slash command.
 const COMPACT_KB_PROMPT: &str = "Cleanup and compact the knowledge base in .codexpotter, remove outdated or duplicated contents, remove unnecessary detailed steps or records, reorganize into a few domain specific topics.";
 
+/// Auto-refresh cadence for the projects overlay (`Ctrl+L` / `/list`) while it is open.
+///
+/// This keeps the overlay in sync with on-disk progress changes without requiring the user to
+/// manually reopen it.
+const PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
 fn render_runner_viewport(
     area: ratatui::layout::Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -1422,6 +1428,7 @@ struct RenderAppState {
     codex_op_tx: Option<UnboundedSender<Op>>,
     projects_overlay_request_tx: Option<UnboundedSender<crate::ProjectsOverlayRequest>>,
     projects_overlay: crate::projects_overlay::ProjectsOverlay,
+    projects_overlay_next_auto_refresh_at: Option<Instant>,
     /// True when the projects overlay has switched the TUI into alt-screen mode.
     ///
     /// This keeps the wheel from scrolling the terminal scrollback while the overlay is open,
@@ -1467,6 +1474,7 @@ impl RenderAppState {
             codex_op_tx,
             projects_overlay_request_tx: None,
             projects_overlay: crate::projects_overlay::ProjectsOverlay::default(),
+            projects_overlay_next_auto_refresh_at: None,
             projects_overlay_alt_screen_active: false,
             bottom_pane,
             prompt_history,
@@ -1652,6 +1660,11 @@ impl RenderAppState {
                                 tui.frame_requester().schedule_frame_in(crate::bottom_pane::ChatComposer::recommended_paste_flush_delay());
                                 continue;
                             }
+
+                            self.maybe_send_projects_overlay_auto_refresh(
+                                tui.frame_requester(),
+                                Instant::now(),
+                            );
                             // Drain any queued events before drawing so the rendered frame reflects
                             // the latest history inserts. This also avoids a race where a scheduled
                             // Draw event wins the select! before the final InsertHistoryCell events
@@ -1799,6 +1812,38 @@ impl RenderAppState {
         let _ = tx.send(request);
     }
 
+    fn maybe_send_projects_overlay_auto_refresh(
+        &mut self,
+        frame_requester: crate::tui::FrameRequester,
+        now: Instant,
+    ) {
+        if !self.projects_overlay.is_open() || self.projects_overlay_request_tx.is_none() {
+            self.projects_overlay_next_auto_refresh_at = None;
+            return;
+        }
+
+        let next_deadline = match self.projects_overlay_next_auto_refresh_at {
+            Some(deadline) => deadline,
+            None => {
+                self.projects_overlay_next_auto_refresh_at =
+                    Some(now + PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
+                frame_requester.schedule_frame_in(PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
+                return;
+            }
+        };
+
+        if now < next_deadline {
+            return;
+        }
+
+        let request = self.projects_overlay.open_or_refresh();
+        self.send_projects_overlay_request(request);
+
+        self.projects_overlay_next_auto_refresh_at =
+            Some(now + PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
+        frame_requester.schedule_frame_in(PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
+    }
+
     fn handle_projects_overlay_response(
         &mut self,
         frame_requester: crate::tui::FrameRequester,
@@ -1825,6 +1870,7 @@ impl RenderAppState {
         frame_requester: crate::tui::FrameRequester,
     ) {
         self.projects_overlay.close();
+        self.projects_overlay_next_auto_refresh_at = None;
         self.processor
             .emit_history_cell(Box::new(history_cell::new_error_event(
                 "Projects overlay provider disconnected".to_string(),
@@ -1881,6 +1927,9 @@ impl RenderAppState {
             if let Some(request) = self.projects_overlay.handle_key_event(key_event) {
                 self.send_projects_overlay_request(request);
             }
+            if !self.projects_overlay.is_open() {
+                self.projects_overlay_next_auto_refresh_at = None;
+            }
             frame_requester.schedule_frame();
             return;
         }
@@ -1900,6 +1949,9 @@ impl RenderAppState {
 
             let request = self.projects_overlay.open_or_refresh();
             self.send_projects_overlay_request(request);
+            self.projects_overlay_next_auto_refresh_at =
+                Some(Instant::now() + PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
+            frame_requester.schedule_frame_in(PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
             frame_requester.schedule_frame();
             return;
         }
@@ -2042,6 +2094,9 @@ impl RenderAppState {
 
                     let request = self.projects_overlay.open_or_refresh();
                     self.send_projects_overlay_request(request);
+                    self.projects_overlay_next_auto_refresh_at =
+                        Some(Instant::now() + PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
+                    frame_requester.schedule_frame_in(PROJECTS_OVERLAY_AUTO_REFRESH_INTERVAL);
                     frame_requester.schedule_frame();
                 }
                 SlashCommand::CompactKb => {
@@ -4107,6 +4162,61 @@ mod tests {
         match rx_app.try_recv() {
             Ok(AppEvent::CodexOp(Op::Interrupt)) => {}
             other => panic!("expected Esc after close to interrupt round, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projects_overlay_auto_refresh_sends_list_request() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx_raw, _rx_app) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx_raw);
+
+        let processor = AppServerEventProcessor::new(app_event_tx.clone(), Verbosity::default());
+        let (op_tx, _op_rx) = unbounded_channel::<Op>();
+        let (overlay_request_tx, mut overlay_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: crate::tui::FrameRequester::test_dummy(),
+            enhanced_keys_supported: false,
+            app_event_tx: app_event_tx.clone(),
+            animations_enabled: false,
+            placeholder_text: "Assign new task to CodexPotter".to_string(),
+            disable_paste_burst: false,
+        });
+        let file_search = FileSearchManager::new(std::env::temp_dir(), app_event_tx.clone());
+        let mut app = RenderAppState::new(
+            processor,
+            app_event_tx,
+            Some(op_tx),
+            bottom_pane,
+            crate::prompt_history_store::PromptHistoryStore::new(),
+            file_search,
+            VecDeque::new(),
+        );
+        app.projects_overlay_request_tx = Some(overlay_request_tx);
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected initial list request, got {other:?}"),
+        }
+
+        app.projects_overlay_next_auto_refresh_at = Some(Instant::now() - Duration::from_secs(1));
+        app.maybe_send_projects_overlay_auto_refresh(
+            crate::tui::FrameRequester::test_dummy(),
+            Instant::now(),
+        );
+
+        match overlay_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected auto-refresh list request, got {other:?}"),
         }
     }
 

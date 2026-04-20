@@ -83,6 +83,7 @@ Behavior related
 - No desktop notifications when the terminal is unfocused.
 - Esc triggers project interrupt with an action selection UI instead of turn interrupt.
 - `Ctrl+L` (or `/list`) opens a full-screen projects list overlay with round summaries (also available on the prompt screen before any rounds start).
+- Projects overlay auto-refreshes the list (and selected details) every minute while open, preserving selection + scroll positions when possible.
 - Projects overlay supports `Tab` to toggle a maximized details view (hide the list pane).
 - Projects overlay details pane shows a plain-text preview of the original user task message (first 5 lines + `... (N more lines)`) above the per-round final message summaries.
 
