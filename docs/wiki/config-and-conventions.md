@@ -33,6 +33,7 @@ Created by `cli/src/workflow/project.rs`:
   - `[tui].verbosity` (string): default transcript verbosity (`tui/src/potter_config.rs`)
   - `yolo` (bool): enables YOLO by default (unsafe; disables approvals and sandboxing)
     - configurable via `/yolo` in the TUI
+    - legacy `[potter].yolo` is ignored
     - CLI `--yolo` always overrides this config (enables YOLO for the current run)
 - `~/.codexpotter/history.jsonl`
   - prompt history for the bottom composer (see `tui-chat-composer.md`)
@@ -106,6 +107,7 @@ Persistent default:
 
 - `~/.codexpotter/config.toml` `yolo = true`
   - enables YOLO for rounds when `--yolo` is not passed
+  - legacy `[potter].yolo` is ignored
   - change via `/yolo` in the TUI
 
 Implementation:
