@@ -58,8 +58,10 @@ Create `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) with a `command` hook
 
 Notes:
 
-- `timeout` is in seconds.
-- When `async` is `true`, the command is started but not awaited.
+- `timeout` is in seconds (default: 600; minimum: 1).
+- Only synchronous `command` hooks are supported today:
+  - `async: true` hooks are skipped with a warning.
+  - `prompt` and `agent` hook types are skipped with a warning.
 
 ### Payload
 
@@ -93,4 +95,3 @@ Field notes:
   extraction fails).
 - `new_assistant_messages`: messages corresponding to `new_session_ids`.
 - `stop_reason_code`: one of `succeeded`, `budget_exhausted`, `interrupted`, `task_failed`, `fatal`.
-
