@@ -25,6 +25,12 @@ use tokio::sync::mpsc::unbounded_channel;
 use crate::workflow::round_runner::PotterRoundUi;
 use crate::workflow::round_runner::UiFuture;
 
+#[derive(Debug)]
+enum RenderExitHandling {
+    Return(PotterProjectRenderExit),
+    BreakRoundLoop,
+}
+
 /// Event source for a running Potter project hosted by `codex-potter app-server`.
 pub trait PotterEventSource {
     /// Read the next event from the server stream.
@@ -162,34 +168,19 @@ where
             if waiting_for_render_exit {
                 let exit_info = render.await?;
                 rendered_rounds = rendered_rounds.saturating_add(1);
-                match exit_info.exit_reason {
-                    ExitReason::UserRequested => return Ok(PotterProjectRenderExit::UserRequested),
-                    ExitReason::Fatal(_) => {
-                        if saw_round_finished_for_active_render || project_outcome.is_some() {
-                            break;
-                        }
-                        return Ok(PotterProjectRenderExit::FatalExitRequested);
-                    }
-                    ExitReason::Interrupted => {
-                        match wait_for_project_interrupted_marker(
-                            project_id,
-                            event_source,
-                            &mut pending_events,
-                        )
-                        .await?
-                        {
-                            ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
-                                return Ok(PotterProjectRenderExit::Interrupted {
-                                    user_prompt_file,
-                                    status_header_prefix,
-                                });
-                            }
-                            ProjectInterruptedMarkerOutcome::Completed { outcome } => {
-                                return Ok(PotterProjectRenderExit::Completed { outcome });
-                            }
-                        }
-                    }
-                    ExitReason::TaskFailed(_) | ExitReason::Completed => break,
+                match handle_render_exit(
+                    exit_info.exit_reason,
+                    project_id,
+                    event_source,
+                    &mut pending_events,
+                    status_header_prefix.as_str(),
+                    saw_round_finished_for_active_render,
+                    &project_outcome,
+                )
+                .await?
+                {
+                    RenderExitHandling::Return(exit) => return Ok(exit),
+                    RenderExitHandling::BreakRoundLoop => break,
                 }
             }
 
@@ -225,28 +216,19 @@ where
                 exit_info = &mut render => {
                     let exit_info = exit_info?;
                     rendered_rounds = rendered_rounds.saturating_add(1);
-                    match exit_info.exit_reason {
-                        ExitReason::UserRequested => return Ok(PotterProjectRenderExit::UserRequested),
-                        ExitReason::Fatal(_) => {
-                            if saw_round_finished_for_active_render || project_outcome.is_some() {
-                                break;
-                            }
-                            return Ok(PotterProjectRenderExit::FatalExitRequested);
-                        }
-                        ExitReason::Interrupted => {
-                            match wait_for_project_interrupted_marker(project_id, event_source, &mut pending_events).await? {
-                                ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => {
-                                    return Ok(PotterProjectRenderExit::Interrupted {
-                                        user_prompt_file,
-                                        status_header_prefix,
-                                    });
-                                }
-                                ProjectInterruptedMarkerOutcome::Completed { outcome } => {
-                                    return Ok(PotterProjectRenderExit::Completed { outcome });
-                                }
-                            }
-                        }
-                        ExitReason::TaskFailed(_) | ExitReason::Completed => break,
+                    match handle_render_exit(
+                        exit_info.exit_reason,
+                        project_id,
+                        event_source,
+                        &mut pending_events,
+                        status_header_prefix.as_str(),
+                        saw_round_finished_for_active_render,
+                        &project_outcome,
+                    )
+                    .await?
+                    {
+                        RenderExitHandling::Return(exit) => return Ok(exit),
+                        RenderExitHandling::BreakRoundLoop => break,
                     }
                 }
                 maybe_event = next_event => {
@@ -278,6 +260,50 @@ where
                 }
             }
         }
+    }
+}
+
+async fn handle_render_exit<S>(
+    exit_reason: ExitReason,
+    project_id: &str,
+    event_source: &mut S,
+    pending_events: &mut VecDeque<Event>,
+    status_header_prefix: &str,
+    saw_round_finished_for_active_render: bool,
+    project_outcome: &Option<PotterProjectOutcome>,
+) -> anyhow::Result<RenderExitHandling>
+where
+    S: PotterEventSource,
+{
+    match exit_reason {
+        ExitReason::UserRequested => Ok(RenderExitHandling::Return(
+            PotterProjectRenderExit::UserRequested,
+        )),
+        ExitReason::Fatal(_) => {
+            if saw_round_finished_for_active_render || project_outcome.is_some() {
+                Ok(RenderExitHandling::BreakRoundLoop)
+            } else {
+                Ok(RenderExitHandling::Return(
+                    PotterProjectRenderExit::FatalExitRequested,
+                ))
+            }
+        }
+        ExitReason::Interrupted => {
+            match wait_for_project_interrupted_marker(project_id, event_source, pending_events)
+                .await?
+            {
+                ProjectInterruptedMarkerOutcome::Interrupted { user_prompt_file } => Ok(
+                    RenderExitHandling::Return(PotterProjectRenderExit::Interrupted {
+                        user_prompt_file,
+                        status_header_prefix: status_header_prefix.to_string(),
+                    }),
+                ),
+                ProjectInterruptedMarkerOutcome::Completed { outcome } => Ok(
+                    RenderExitHandling::Return(PotterProjectRenderExit::Completed { outcome }),
+                ),
+            }
+        }
+        ExitReason::TaskFailed(_) | ExitReason::Completed => Ok(RenderExitHandling::BreakRoundLoop),
     }
 }
 
