@@ -4,6 +4,7 @@
 //! parsing and to upstream rollout JSONL files for extracting round summaries.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use codex_hooks::Hooks;
@@ -33,17 +34,12 @@ pub fn potter_project_stop_reason_code(outcome: &PotterProjectOutcome) -> &'stat
 
 fn prepare_project_stop_hook_request(
     workdir: &Path,
-    progress_file_rel: &Path,
+    progress_file_path: PathBuf,
+    project_dir: PathBuf,
     potter_rollout_path: &Path,
     baseline_round_count: usize,
     stop_reason_code: &'static str,
 ) -> anyhow::Result<PreparedProjectStopHookRequest> {
-    let progress_file_path = workdir.join(progress_file_rel);
-    let project_dir = progress_file_path
-        .parent()
-        .context("derive project_dir from progress file path")?
-        .to_path_buf();
-
     let potter_lines = crate::workflow::rollout::read_project_rollout_lines(potter_rollout_path)?;
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_lines)
         .with_context(|| format!("parse {}", potter_rollout_path.display()))?;
@@ -196,8 +192,8 @@ pub async fn build_project_stop_hook_events(
     // ProjectStop does not support matchers, so we can check whether any handlers exist without
     // scanning `potter-rollout.jsonl` first.
     let stub_request = ProjectStopRequest {
-        project_dir,
-        project_file_path: progress_file_path,
+        project_dir: project_dir.clone(),
+        project_file_path: progress_file_path.clone(),
         cwd: workdir.to_path_buf(),
         user_prompt: String::new(),
         all_session_ids: Vec::new(),
@@ -214,7 +210,8 @@ pub async fn build_project_stop_hook_events(
 
     let prepared = match prepare_project_stop_hook_request(
         workdir,
-        progress_file_rel,
+        progress_file_path,
+        project_dir,
         potter_rollout_path,
         baseline_round_count,
         stop_reason_code,
@@ -297,7 +294,8 @@ mod tests {
 
         let err = prepare_project_stop_hook_request(
             workdir,
-            &progress_file_rel,
+            progress_file.clone(),
+            progress_file.parent().expect("parent").to_path_buf(),
             &potter_rollout_path,
             0,
             "succeeded",
