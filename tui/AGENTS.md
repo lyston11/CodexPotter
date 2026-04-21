@@ -85,6 +85,7 @@ Behavior related
 - `Ctrl+L` (or `/list`) opens a full-screen projects list overlay with round summaries (also available on the prompt screen before any rounds start).
 - Projects overlay auto-refreshes the list (and selected details) every minute while open, preserving selection + scroll positions when possible.
 - Projects overlay supports `Tab` to toggle a maximized details view (hide the list pane).
+- Projects overlay details text wraps to at most 100 columns while not maximized, even when the right pane is wider; maximized details view still uses the full pane width.
 - Projects overlay details pane shows a plain-text preview of the original user task message (first 5 lines + `... (N more lines)`) above the per-round final message summaries.
 - Project summary `Loop more rounds:` resume command includes the current process's non-default `codex-potter` global flags (aligns with the CLI exit resume note).
 

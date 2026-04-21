@@ -32,6 +32,9 @@ use crate::human_time::human_time_ago;
 use crate::ui_colors::orange_color;
 
 const USER_TASK_PREVIEW_MAX_LINES: usize = 5;
+// CodexPotter divergence: in split-pane mode, keep the details text narrower than the pane so
+// long task descriptions and round summaries stay easier to scan. Maximized mode still uses the
+// full pane width.
 const NON_MAXIMIZED_DETAILS_MAX_CONTENT_WIDTH: usize = 100;
 
 #[derive(Debug, Default, Clone, Copy)]
