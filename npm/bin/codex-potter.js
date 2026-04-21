@@ -84,6 +84,7 @@ const localBinaryPath = path.join(
   "codex-potter",
   codexPotterBinaryName,
 );
+const packageManager = detectPackageManager();
 
 let vendorRoot;
 try {
@@ -92,27 +93,11 @@ try {
 } catch {
   if (existsSync(localBinaryPath)) {
     vendorRoot = localVendorRoot;
-  } else {
-    const packageManager = detectPackageManager();
-    const updateCommand =
-      packageManager === "bun"
-        ? "bun install -g codex-potter@latest"
-        : "npm install -g codex-potter@latest";
-    throw new Error(
-      `Missing optional dependency ${platformPackage}. Reinstall CodexPotter: ${updateCommand}`,
-    );
   }
 }
 
 if (!vendorRoot) {
-  const packageManager = detectPackageManager();
-  const updateCommand =
-    packageManager === "bun"
-      ? "bun install -g codex-potter@latest"
-      : "npm install -g codex-potter@latest";
-  throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall CodexPotter: ${updateCommand}`,
-  );
+  throw missingOptionalDependencyError(platformPackage, packageManager);
 }
 
 const archRoot = path.join(vendorRoot, targetTriple);
@@ -159,6 +144,18 @@ function detectPackageManager() {
   return userAgent ? "npm" : null;
 }
 
+function reinstallCommand(packageManager) {
+  return packageManager === "bun"
+    ? "bun install -g codex-potter@latest"
+    : "npm install -g codex-potter@latest";
+}
+
+function missingOptionalDependencyError(platformPackage, packageManager) {
+  return new Error(
+    `Missing optional dependency ${platformPackage}. Reinstall CodexPotter: ${reinstallCommand(packageManager)}`,
+  );
+}
+
 const additionalDirs = [];
 const pathDir = path.join(archRoot, "path");
 if (existsSync(pathDir)) {
@@ -170,7 +167,7 @@ const env = { ...process.env, PATH: updatedPath };
 delete env.CODEX_POTTER_MANAGED_BY_NPM;
 delete env.CODEX_POTTER_MANAGED_BY_BUN;
 const packageManagerEnvVar =
-  detectPackageManager() === "bun"
+  packageManager === "bun"
     ? "CODEX_POTTER_MANAGED_BY_BUN"
     : "CODEX_POTTER_MANAGED_BY_NPM";
 env[packageManagerEnvVar] = "1";

@@ -94,6 +94,55 @@ function launcherSourcePath() {
 }
 
 test(
+  "npm launcher preserves bun reinstall hint when optional package is missing",
+  { timeout: 10_000 },
+  async () => {
+    const tmp = await makeTempDir("codex-potter-launcher-");
+    let launcherProcess = null;
+
+    try {
+      const launcherDir = path.join(tmp, "bin");
+      const launcherPath = path.join(launcherDir, "codex-potter.js");
+
+      await fs.promises.mkdir(launcherDir, { recursive: true });
+      await fs.promises.copyFile(launcherSourcePath(), launcherPath);
+
+      launcherProcess = spawn(process.execPath, [launcherPath], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          npm_config_user_agent: "bun/1.2.0",
+        },
+      });
+
+      let output = "";
+      launcherProcess.stdout.on("data", (chunk) => {
+        output += chunk.toString("utf8");
+      });
+      launcherProcess.stderr.on("data", (chunk) => {
+        output += chunk.toString("utf8");
+      });
+
+      const [code, signal] = await once(launcherProcess, "exit");
+      assert.equal(signal, null);
+      assert.equal(code, 1);
+      assert.match(output, /Missing optional dependency/);
+      assert.match(output, /bun install -g codex-potter@latest/);
+    } finally {
+      if (
+        launcherProcess &&
+        launcherProcess.exitCode === null &&
+        launcherProcess.signalCode === null
+      ) {
+        launcherProcess.kill("SIGKILL");
+        await once(launcherProcess, "exit");
+      }
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "npm launcher mirrors child SIGTERM exit semantics",
   {
     skip:
