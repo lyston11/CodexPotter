@@ -358,7 +358,10 @@ pub struct PotterProjectListEntry {
     pub description: String,
     /// Project start time derived from upstream rollouts, when available.
     pub started_at_unix_secs: Option<u64>,
-    /// Project rounds count rendered in the left list (best-effort).
+    /// Total rounds observed for the project (best-effort).
+    ///
+    /// This value is derived from the append-only `potter-rollout.jsonl` log and is intended to
+    /// remain stable across `codex-potter resume` windows.
     pub rounds: u32,
     pub status: PotterProjectListStatus,
 }

@@ -112,7 +112,7 @@ fn project_entry_for_progress_file(
         index.project_started.user_message.as_deref(),
     )
     .unwrap_or_default();
-    let rounds = project_list_rounds(&status, &index);
+    let rounds = project_list_rounds(&index);
     let started_at_unix_secs = project_started_at_unix_secs(workdir, &index);
 
     Ok(DiscoveredOverlayProject {
@@ -168,27 +168,28 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
     }
 }
 
-fn project_list_rounds(status: &PotterProjectListStatus, index: &PotterRolloutResumeIndex) -> u32 {
-    if *status == PotterProjectListStatus::Succeeded
-        && let Some(rounds) = index.completed_rounds.iter().rev().find_map(|round| {
-            round
-                .project_succeeded
-                .as_ref()
-                .map(|succeeded| succeeded.rounds)
-        })
-    {
-        return rounds;
-    }
+fn project_list_rounds(index: &PotterRolloutResumeIndex) -> u32 {
+    // Count total rounds across the entire project lifecycle (including prior `resume` windows).
+    //
+    // Older/partially-corrupted logs might contain only the latest round marker. Preserve the
+    // previous best-effort behavior by ensuring we never report fewer rounds than the last
+    // recorded round index.
+    let completed_rounds: u32 = index.completed_rounds.len().try_into().unwrap_or(u32::MAX);
+    let counted = completed_rounds.saturating_add(u32::from(index.unfinished_round.is_some()));
 
-    if let Some(unfinished) = index.unfinished_round.as_ref() {
-        return unfinished.round_current;
-    }
-
-    index
-        .completed_rounds
-        .last()
+    let last_round_current = index
+        .unfinished_round
+        .as_ref()
         .map(|round| round.round_current)
-        .unwrap_or_default()
+        .or_else(|| {
+            index
+                .completed_rounds
+                .last()
+                .map(|round| round.round_current)
+        })
+        .unwrap_or_default();
+
+    counted.max(last_round_current)
 }
 
 fn project_started_at_unix_secs(workdir: &Path, index: &PotterRolloutResumeIndex) -> Option<u64> {
@@ -367,7 +368,7 @@ original goal line
     fn write_potter_rollout(
         project_dir: &Path,
         user_prompt_file: &Path,
-        round_current: u32,
+        rounds: u32,
         round_total: u32,
         rollout_path: &Path,
         outcome: PotterRoundOutcome,
@@ -388,46 +389,55 @@ original goal line
         )
         .expect("append project_started");
 
-        crate::workflow::rollout::append_line(
-            &potter_rollout_path,
-            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
-                current: round_current,
-                total: round_total,
-            },
-        )
-        .expect("append round_started");
-
-        crate::workflow::rollout::append_line(
-            &potter_rollout_path,
-            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
-                thread_id,
-                rollout_path: rollout_path.to_path_buf(),
-                service_tier: None,
-                rollout_path_raw: None,
-                rollout_base_dir: None,
-            },
-        )
-        .expect("append round_configured");
-
-        if let Some(rounds) = succeeded_rounds {
+        for round_current in 1..=rounds {
             crate::workflow::rollout::append_line(
                 &potter_rollout_path,
-                &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
-                    rounds,
-                    duration_secs: 1,
-                    user_prompt_file: user_prompt_file.to_path_buf(),
-                    git_commit_start: "".to_string(),
-                    git_commit_end: "".to_string(),
+                &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                    current: round_current,
+                    total: round_total,
                 },
             )
-            .expect("append project_succeeded");
-        }
+            .expect("append round_started");
 
-        crate::workflow::rollout::append_line(
-            &potter_rollout_path,
-            &crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome },
-        )
-        .expect("append round_finished");
+            crate::workflow::rollout::append_line(
+                &potter_rollout_path,
+                &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                    thread_id,
+                    rollout_path: rollout_path.to_path_buf(),
+                    service_tier: None,
+                    rollout_path_raw: None,
+                    rollout_base_dir: None,
+                },
+            )
+            .expect("append round_configured");
+
+            if round_current == rounds
+                && let Some(project_succeeded_rounds) = succeeded_rounds
+            {
+                crate::workflow::rollout::append_line(
+                    &potter_rollout_path,
+                    &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                        rounds: project_succeeded_rounds,
+                        duration_secs: 1,
+                        user_prompt_file: user_prompt_file.to_path_buf(),
+                        git_commit_start: "".to_string(),
+                        git_commit_end: "".to_string(),
+                    },
+                )
+                .expect("append project_succeeded");
+            }
+
+            let outcome = if round_current == rounds {
+                outcome.clone()
+            } else {
+                PotterRoundOutcome::Completed
+            };
+            crate::workflow::rollout::append_line(
+                &potter_rollout_path,
+                &crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome },
+            )
+            .expect("append round_finished");
+        }
     }
 
     #[test]
@@ -566,6 +576,34 @@ original goal line
             },
         )
         .expect("append project_started");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: Path::new("live.jsonl").to_path_buf(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        )
+        .expect("append round_finished");
+
         crate::workflow::rollout::append_line(
             &potter_rollout_path,
             &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
@@ -590,6 +628,107 @@ original goal line
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, PotterProjectListStatus::Incomplete);
         assert_eq!(rows[0].rounds, 2);
+    }
+
+    #[test]
+    fn discover_projects_rounds_count_across_resume_windows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/04/1", None);
+        let rollout = workdir.join("rollout.jsonl");
+        write_rollout_with_timestamp(&rollout, "2026-03-04T00:00:00.000Z");
+
+        let project_dir = main.parent().expect("project dir");
+        let user_prompt_file = main.strip_prefix(workdir).expect("rel");
+
+        // First iteration window: 3 rounds, then stop.
+        write_potter_rollout(
+            project_dir,
+            user_prompt_file,
+            3,
+            10,
+            Path::new("rollout.jsonl"),
+            PotterRoundOutcome::Interrupted,
+            None,
+        );
+
+        // Resumed window: rounds reset to 1, succeeds in 2 rounds.
+        let potter_rollout_path =
+            project_dir.join(crate::workflow::rollout::POTTER_ROLLOUT_FILENAME);
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        )
+        .expect("append round_finished");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 2,
+                total: 10,
+            },
+        )
+        .expect("append round_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                rounds: 2,
+                duration_secs: 1,
+                user_prompt_file: user_prompt_file.to_path_buf(),
+                git_commit_start: "".to_string(),
+                git_commit_end: "".to_string(),
+            },
+        )
+        .expect("append project_succeeded");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        )
+        .expect("append round_finished");
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Succeeded);
+        assert_eq!(rows[0].rounds, 5);
     }
 
     #[test]
