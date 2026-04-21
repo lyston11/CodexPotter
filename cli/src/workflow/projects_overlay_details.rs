@@ -221,18 +221,6 @@ pub fn read_final_agent_message_from_rollout(
     }
 }
 
-/// Resolve a recorded rollout path against `workdir` and read its final assistant message.
-pub fn read_final_agent_message_for_replay(
-    workdir: &Path,
-    rollout_path: &Path,
-) -> anyhow::Result<(Option<u64>, Option<String>)> {
-    let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-        workdir,
-        rollout_path,
-    );
-    read_final_agent_message_from_rollout(&abs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,8 +312,11 @@ mod tests {
         )
         .expect("write rollout");
 
-        let (secs, message) =
-            read_final_agent_message_for_replay(workdir, rollout_rel).expect("read");
+        let rollout_path = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            workdir,
+            rollout_rel,
+        );
+        let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
         assert_eq!(secs, Some(1_772_323_201));
         assert_eq!(message.as_deref(), Some("final"));
     }
