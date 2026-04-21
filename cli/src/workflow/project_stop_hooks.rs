@@ -53,6 +53,27 @@ fn prepare_project_stop_hook_request(
     let mut all_assistant_messages = Vec::new();
     let mut warnings = Vec::new();
 
+    let read_round_message = |round_label: &str,
+                              round_current: u32,
+                              rollout_path: &Path,
+                              warnings: &mut Vec<String>| {
+        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            workdir,
+            rollout_path,
+        );
+        match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(&abs)
+        {
+            Ok((_, message)) => message.unwrap_or_default(),
+            Err(err) => {
+                warnings.push(format!(
+                    "Potter.ProjectStop hooks: failed to read final assistant message for {round_label} {round_current} from rollout {}: {err:#}",
+                    abs.display()
+                ));
+                String::new()
+            }
+        }
+    };
+
     for round in &index.completed_rounds {
         let (thread_id, rollout_path) = match &round.configured {
             Some(cfg) => (Some(cfg.thread_id), Some(&cfg.rollout_path)),
@@ -69,23 +90,7 @@ fn prepare_project_stop_hook_request(
 
         let message = match rollout_path {
             Some(rollout_path) => {
-                let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-                    workdir,
-                    rollout_path,
-                );
-                match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(
-                    &abs,
-                ) {
-                    Ok((_, message)) => message.unwrap_or_default(),
-                    Err(err) => {
-                        warnings.push(format!(
-                            "Potter.ProjectStop hooks: failed to read final assistant message for round {} from rollout {}: {err:#}",
-                            round.round_current,
-                            abs.display()
-                        ));
-                        String::new()
-                    }
-                }
+                read_round_message("round", round.round_current, rollout_path, &mut warnings)
             }
             None => String::new(),
         };
@@ -94,24 +99,12 @@ fn prepare_project_stop_hook_request(
 
     if let Some(unfinished) = &index.unfinished_round {
         all_session_ids.push(unfinished.thread_id.to_string());
-        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            workdir,
+        let message = read_round_message(
+            "unfinished round",
+            unfinished.round_current,
             &unfinished.rollout_path,
+            &mut warnings,
         );
-        let message =
-            match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(
-                &abs,
-            ) {
-                Ok((_, message)) => message.unwrap_or_default(),
-                Err(err) => {
-                    warnings.push(format!(
-                    "Potter.ProjectStop hooks: failed to read final assistant message for unfinished round {} from rollout {}: {err:#}",
-                    unfinished.round_current,
-                    abs.display()
-                ));
-                    String::new()
-                }
-            };
         all_assistant_messages.push(message);
     }
 

@@ -56,21 +56,20 @@ fn build_project_details_for_overlay_inner(
     let user_message = index.project_started.user_message.clone();
     let mut rounds = Vec::new();
 
+    let read_round_message = |rollout_path: &Path| -> (Option<u64>, Option<String>) {
+        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            workdir,
+            rollout_path,
+        );
+        read_final_agent_message_from_rollout(&abs).unwrap_or((None, None))
+    };
+
     for round in index.completed_rounds {
-        let (final_message_unix_secs, final_message) = match round
+        let (final_message_unix_secs, final_message) = round
             .configured
             .as_ref()
-            .map(|cfg| cfg.rollout_path.clone())
-        {
-            Some(rollout_path) => {
-                let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-                    workdir,
-                    &rollout_path,
-                );
-                read_final_agent_message_from_rollout(&abs).unwrap_or((None, None))
-            }
-            None => (None, None),
-        };
+            .map(|cfg| read_round_message(&cfg.rollout_path))
+            .unwrap_or((None, None));
 
         rounds.push(PotterProjectRoundSummary {
             round_current: round.round_current,
@@ -81,12 +80,7 @@ fn build_project_details_for_overlay_inner(
     }
 
     if let Some(unfinished) = index.unfinished_round {
-        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            workdir,
-            &unfinished.rollout_path,
-        );
-        let (final_message_unix_secs, final_message) =
-            read_final_agent_message_from_rollout(&abs).unwrap_or((None, None));
+        let (final_message_unix_secs, final_message) = read_round_message(&unfinished.rollout_path);
         rounds.push(PotterProjectRoundSummary {
             round_current: unfinished.round_current,
             round_total: unfinished.round_total,
