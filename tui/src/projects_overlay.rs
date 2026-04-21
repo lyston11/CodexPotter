@@ -32,7 +32,7 @@ use crate::human_time::human_time_ago;
 use crate::ui_colors::orange_color;
 
 const USER_TASK_PREVIEW_MAX_LINES: usize = 5;
-const NON_MAXIMIZED_DETAILS_MAX_CONTENT_WIDTH: usize = 120;
+const NON_MAXIMIZED_DETAILS_MAX_CONTENT_WIDTH: usize = 100;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct OverlayMetrics {
