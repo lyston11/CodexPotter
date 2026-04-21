@@ -20,7 +20,8 @@ struct PreparedProjectStopHookRequest {
     warnings: Vec<String>,
 }
 
-pub(crate) fn potter_project_stop_reason_code(outcome: &PotterProjectOutcome) -> &'static str {
+/// Map a project outcome to the stable stop-reason code surfaced to `Potter.ProjectStop` hooks.
+pub fn potter_project_stop_reason_code(outcome: &PotterProjectOutcome) -> &'static str {
     match outcome {
         PotterProjectOutcome::Succeeded => "succeeded",
         PotterProjectOutcome::Interrupted => "interrupted",
@@ -50,31 +51,45 @@ fn prepare_project_stop_hook_request(
 
     let mut all_session_ids = Vec::new();
     let mut all_assistant_messages = Vec::new();
+    let mut warnings = Vec::new();
 
     for round in &index.completed_rounds {
         let (thread_id, rollout_path) = match &round.configured {
             Some(cfg) => (Some(cfg.thread_id), Some(&cfg.rollout_path)),
-            None => (None, None),
+            None => {
+                warnings.push(format!(
+                    "Potter.ProjectStop hooks: missing RoundConfigured entry for round {}",
+                    round.round_current
+                ));
+                (None, None)
+            }
         };
 
         all_session_ids.push(thread_id.map(|id| id.to_string()).unwrap_or_default());
-        all_assistant_messages.push(
-            rollout_path
-                .map(|rollout_path| {
-                    crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-                        workdir,
-                        rollout_path,
-                    )
-                })
-                .and_then(|abs| {
-                    crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(
-                        &abs,
-                    )
-                    .ok()
-                })
-                .and_then(|(_, message)| message)
-                .unwrap_or_default(),
-        );
+
+        let message = match rollout_path {
+            Some(rollout_path) => {
+                let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+                    workdir,
+                    rollout_path,
+                );
+                match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(
+                    &abs,
+                ) {
+                    Ok((_, message)) => message.unwrap_or_default(),
+                    Err(err) => {
+                        warnings.push(format!(
+                            "Potter.ProjectStop hooks: failed to read final assistant message for round {} from rollout {}: {err:#}",
+                            round.round_current,
+                            abs.display()
+                        ));
+                        String::new()
+                    }
+                }
+            }
+            None => String::new(),
+        };
+        all_assistant_messages.push(message);
     }
 
     if let Some(unfinished) = &index.unfinished_round {
@@ -83,19 +98,27 @@ fn prepare_project_stop_hook_request(
             workdir,
             &unfinished.rollout_path,
         );
-        all_assistant_messages.push(
-            crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(&abs)
-                .ok()
-                .and_then(|(_, message)| message)
-                .unwrap_or_default(),
-        );
+        let message =
+            match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(
+                &abs,
+            ) {
+                Ok((_, message)) => message.unwrap_or_default(),
+                Err(err) => {
+                    warnings.push(format!(
+                    "Potter.ProjectStop hooks: failed to read final assistant message for unfinished round {} from rollout {}: {err:#}",
+                    unfinished.round_current,
+                    abs.display()
+                ));
+                    String::new()
+                }
+            };
+        all_assistant_messages.push(message);
     }
 
-    let mut warnings = Vec::new();
     let baseline_round_count = if baseline_round_count > all_session_ids.len() {
+        let recorded_rounds = all_session_ids.len();
         warnings.push(format!(
-            "Potter.ProjectStop hooks: baseline round count {baseline_round_count} exceeds recorded rounds {}; treating as empty new_* window",
-            all_session_ids.len()
+            "Potter.ProjectStop hooks: baseline round count {baseline_round_count} exceeds recorded rounds {recorded_rounds}; treating as empty new_* window",
         ));
         all_session_ids.len()
     } else {
@@ -127,7 +150,16 @@ fn prepare_project_stop_hook_request(
     })
 }
 
-pub(crate) async fn build_project_stop_hook_events(
+/// Build synthetic `EventMsg` items that represent a full `Potter.ProjectStop` hook execution.
+///
+/// Returns:
+/// - startup warnings from `hooks.json` discovery
+/// - zero or more `HookStarted` events (for previewed runs)
+/// - zero or more `HookCompleted` events after execution
+///
+/// This is best-effort by design: failures preparing the request payload become `Warning` events
+/// so the project can still stop cleanly.
+pub async fn build_project_stop_hook_events(
     workdir: &Path,
     progress_file_rel: &Path,
     potter_rollout_path: &Path,

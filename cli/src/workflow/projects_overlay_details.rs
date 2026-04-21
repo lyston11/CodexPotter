@@ -105,7 +105,16 @@ fn build_project_details_for_overlay_inner(
     })
 }
 
-pub(crate) fn read_final_agent_message_from_rollout(
+/// Read the most recent "final answer" agent message from an upstream rollout JSONL file.
+///
+/// Returns `(unix_secs, message)` when found, where `unix_secs` is derived from the entry's RFC
+/// 3339 `timestamp`.
+///
+/// Selection rules:
+/// - Prefer the last `agent_message` with `phase = "final_answer"`.
+/// - If no `phase` metadata is present anywhere in the file (legacy logs), fall back to the last
+///   `agent_message` without a phase.
+pub fn read_final_agent_message_from_rollout(
     rollout_path: &Path,
 ) -> anyhow::Result<(Option<u64>, Option<String>)> {
     let file = std::fs::File::open(rollout_path)

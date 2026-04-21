@@ -24,7 +24,7 @@ pub mod project;
 mod project_progress_files;
 pub mod project_render_loop;
 pub mod project_runner;
-pub(crate) mod project_stop_hooks;
+pub mod project_stop_hooks;
 pub mod projects_overlay_backend;
 pub mod projects_overlay_details;
 pub mod projects_overlay_index;
