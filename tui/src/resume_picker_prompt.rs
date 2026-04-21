@@ -104,7 +104,9 @@ impl<'a> AltScreenGuard<'a> {
 
 impl Drop for AltScreenGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.tui.leave_alt_screen();
+        if let Err(err) = self.tui.leave_alt_screen() {
+            tracing::warn!("failed to leave alt screen after resume picker: {err}");
+        }
     }
 }
 

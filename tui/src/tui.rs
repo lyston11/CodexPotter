@@ -336,8 +336,8 @@ impl Tui {
 
         // Leave alt screen if active to avoid conflicts with external program `f`.
         let was_alt_screen = self.is_alt_screen_active();
-        if was_alt_screen {
-            let _ = self.leave_alt_screen();
+        if was_alt_screen && let Err(err) = self.leave_alt_screen() {
+            tracing::warn!("failed to leave alt screen before external program: {err}");
         }
 
         if let Err(err) = mode.restore() {
@@ -352,8 +352,8 @@ impl Tui {
         // After the external program `f` finishes, reset terminal state and flush any buffered keypresses.
         flush_terminal_input_buffer();
 
-        if was_alt_screen {
-            let _ = self.enter_alt_screen();
+        if was_alt_screen && let Err(err) = self.enter_alt_screen() {
+            tracing::warn!("failed to re-enter alt screen after external program: {err}");
         }
 
         self.resume_events();
