@@ -158,7 +158,7 @@ impl HooksEngine {
             }
         };
 
-        let results = dispatcher::execute_handlers(
+        let hook_events = dispatcher::execute_handlers(
             &self.shell,
             matched,
             input_json,
@@ -168,9 +168,7 @@ impl HooksEngine {
         )
         .await;
 
-        ProjectStopOutcome {
-            hook_events: results.into_iter().map(|result| result.completed).collect(),
-        }
+        ProjectStopOutcome { hook_events }
     }
 }
 
@@ -178,7 +176,7 @@ fn parse_project_stop_completed(
     handler: &ConfiguredHandler,
     run_result: command_runner::CommandRunResult,
     turn_id: Option<String>,
-) -> dispatcher::ParsedHandler<()> {
+) -> HookCompletedEvent {
     let mut status = HookRunStatus::Completed;
     let mut entries = Vec::new();
 
@@ -215,11 +213,8 @@ fn parse_project_stop_completed(
         },
     }
 
-    dispatcher::ParsedHandler {
-        completed: HookCompletedEvent {
-            turn_id,
-            run: dispatcher::completed_summary(handler, &run_result, status, entries),
-        },
-        data: (),
+    HookCompletedEvent {
+        turn_id,
+        run: dispatcher::completed_summary(handler, &run_result, status, entries),
     }
 }

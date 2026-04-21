@@ -15,13 +15,6 @@ use super::ConfiguredHandler;
 use super::command_runner::CommandRunResult;
 use super::command_runner::run_command;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(super) struct ParsedHandler<T> {
-    pub completed: HookCompletedEvent,
-    pub data: T,
-}
-
 pub(super) fn select_handlers(
     handlers: &[ConfiguredHandler],
     event_name: HookEventName,
@@ -53,14 +46,14 @@ pub(super) fn running_summary(handler: &ConfiguredHandler) -> HookRunSummary {
     }
 }
 
-pub(super) async fn execute_handlers<T>(
+pub(super) async fn execute_handlers(
     shell: &CommandShell,
     handlers: Vec<ConfiguredHandler>,
     input_json: String,
     cwd: &Path,
     turn_id: Option<String>,
-    parse: fn(&ConfiguredHandler, CommandRunResult, Option<String>) -> ParsedHandler<T>,
-) -> Vec<ParsedHandler<T>> {
+    parse: fn(&ConfiguredHandler, CommandRunResult, Option<String>) -> HookCompletedEvent,
+) -> Vec<HookCompletedEvent> {
     let results = join_all(
         handlers
             .iter()
