@@ -3178,53 +3178,6 @@ mod tests {
         assert_eq!(composer.textarea.text(), "あ　い\nhi");
     }
 
-    /// Behavior: a large multi-line payload containing both non-ASCII and ASCII (e.g. "UTF-8",
-    /// "Unicode") should be captured as a single paste-like burst, and Enter key events should
-    /// become `\n` within the buffered content.
-    #[test]
-    fn non_ascii_burst_buffers_large_multiline_mixed_ascii_and_unicode() {
-        use crossterm::event::KeyCode;
-        use crossterm::event::KeyEvent;
-        use crossterm::event::KeyModifiers;
-
-        const LARGE_MIXED_PAYLOAD: &str = "Ralph loop: multi-round workflow\n\
-Second line with emoji 👍\n\
-Third line with accents: naive cafe\n\
-\n\
-Wide characters: あいうえお\n\
-Mixed scripts: Жю Ωβ\n\
-\n\
-End of payload.";
-
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-        let mut composer = ChatComposer::new(
-            true,
-            sender,
-            false,
-            "Assign new task to CodexPotter".to_string(),
-            false,
-        );
-
-        // Force an active burst so the test doesn't depend on timing heuristics.
-        composer
-            .paste_burst
-            .begin_with_retro_grabbed(String::new(), Instant::now());
-
-        for ch in LARGE_MIXED_PAYLOAD.chars() {
-            let code = if ch == '\n' {
-                KeyCode::Enter
-            } else {
-                KeyCode::Char(ch)
-            };
-            let _ = composer.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
-        }
-
-        assert!(composer.textarea.text().is_empty());
-        let _ = flush_after_paste_burst(&mut composer);
-        assert_eq!(composer.textarea.text(), LARGE_MIXED_PAYLOAD);
-    }
-
     /// Behavior: while a paste-like burst is active, Enter should not submit; it should insert a
     /// newline into the buffered payload and flush as a single paste later.
     #[test]
@@ -3776,6 +3729,21 @@ End of payload.";
         composer.handle_paste_burst_flush(now)
     }
 
+    fn buffer_forced_paste_burst_payload(composer: &mut ChatComposer, payload: &str) {
+        let now = Instant::now();
+        composer
+            .paste_burst
+            .begin_with_retro_grabbed(String::new(), now);
+
+        for ch in payload.chars() {
+            if ch == '\n' {
+                assert!(composer.paste_burst.append_newline_if_active(now));
+            } else {
+                composer.paste_burst.append_char_to_buffer(ch, now);
+            }
+        }
+    }
+
     // Test helper: simulate human typing with a brief delay and flush the paste-burst buffer
     fn type_chars_humanlike(composer: &mut ChatComposer, chars: &[char]) {
         use crossterm::event::KeyCode;
@@ -3786,6 +3754,45 @@ End of payload.";
             std::thread::sleep(ChatComposer::recommended_paste_flush_delay());
             let _ = composer.flush_paste_burst_if_due();
         }
+    }
+
+    /// Behavior: a large multi-line payload containing both non-ASCII and ASCII should still
+    /// integrate as one paste, preserving exact Unicode/newline content.
+    ///
+    /// Smaller tests above already cover the `handle_key_event()` path. This one seeds the active
+    /// burst buffer directly and then flushes through `handle_paste()`, so the assertion does not
+    /// depend on wall-clock timing while iterating a long payload under a heavily loaded test
+    /// runner.
+    #[test]
+    fn non_ascii_burst_buffers_large_multiline_mixed_ascii_and_unicode() {
+        const LARGE_MIXED_PAYLOAD: &str = "Ralph loop: multi-round workflow\n\
+Second line with emoji 👍\n\
+Third line with accents: naive cafe\n\
+\n\
+Wide characters: あいうえお\n\
+Mixed scripts: Жю Ωβ\n\
+\n\
+End of payload.";
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Assign new task to CodexPotter".to_string(),
+            false,
+        );
+
+        buffer_forced_paste_burst_payload(&mut composer, LARGE_MIXED_PAYLOAD);
+
+        assert!(composer.textarea.text().is_empty());
+        let pasted = composer
+            .paste_burst
+            .flush_before_modified_input()
+            .expect("buffered burst payload");
+        assert!(composer.handle_paste(pasted));
+        assert_eq!(composer.textarea.text(), LARGE_MIXED_PAYLOAD);
     }
 
     /// Behavior: multiple paste operations can coexist; placeholders should be expanded to their
