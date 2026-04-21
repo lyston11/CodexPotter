@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -675,7 +676,7 @@ impl AppServerEventProcessor {
     /// pending `Verbosity::Minimal` agent message / compact patch preview so
     /// transcript-suppressed protocol events cannot break coalescing.
     fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
-        self.flush_pending_minimal_agent_message(true);
+        self.flush_pending_minimal_agent_message(false);
         self.flush_pending_compact_patch_changes();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
@@ -715,17 +716,17 @@ impl AppServerEventProcessor {
         if lines.is_empty() {
             return;
         }
-        self.flush_pending_minimal_agent_message(true);
+        self.flush_pending_minimal_agent_message(false);
         self.pending_minimal_agent_message_lines = Some(lines);
     }
 
-    fn flush_agent_output(&mut self, final_message: bool) {
+    fn flush_agent_output(&mut self, _final_message: bool) {
         if self.verbosity == Verbosity::Minimal {
             if self.saw_agent_delta {
                 let lines = self.take_streamed_agent_message_lines();
-                self.insert_agent_message_lines_direct(lines, !final_message);
+                self.insert_agent_message_lines_direct(lines, false);
             } else {
-                self.flush_pending_minimal_agent_message(!final_message);
+                self.flush_pending_minimal_agent_message(false);
             }
             return;
         }
@@ -929,7 +930,7 @@ impl AppServerEventProcessor {
             EventMsg::AgentMessageDelta(ev) => {
                 self.flush_pending_live_activity_cells();
                 if self.verbosity == Verbosity::Minimal && !self.saw_agent_delta {
-                    self.flush_pending_minimal_agent_message(true);
+                    self.flush_pending_minimal_agent_message(false);
                 }
                 if !self.saw_agent_delta {
                     self.maybe_emit_final_message_separator();
@@ -969,6 +970,12 @@ impl AppServerEventProcessor {
             EventMsg::AgentMessage(ev) => {
                 self.flush_pending_live_activity_cells();
                 if self.verbosity == Verbosity::Minimal {
+                    if ev.phase == Some(MessagePhase::Commentary) {
+                        if self.saw_agent_delta {
+                            let _ = self.take_streamed_agent_message_lines();
+                        }
+                        return;
+                    }
                     if !self.saw_agent_delta {
                         self.maybe_emit_final_message_separator();
                         self.store_pending_minimal_agent_message(
@@ -2583,6 +2590,16 @@ impl RenderAppState {
                 self.unified_exec_wait = None;
                 self.bottom_pane
                     .update_status_header(String::from("Working"));
+            }
+            EventMsg::AgentMessage(ev) => {
+                if self.processor.verbosity == Verbosity::Minimal
+                    && ev.phase == Some(MessagePhase::Commentary)
+                    && self.unified_exec_wait.is_none()
+                    && let Some(header) =
+                        crate::commentary_status::status_header_from_commentary(&ev.message)
+                {
+                    self.bottom_pane.update_status_header(header);
+                }
             }
             EventMsg::AgentReasoningDelta(ev) => {
                 if let Some(header) = self.reasoning_status.on_delta(&ev.delta)
@@ -6538,8 +6555,49 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_minimal_commits_previous_agent_message_dim_and_last_message_normal_on_turn_complete()
-     {
+    fn round_renderer_minimal_suppresses_commentary_agent_message_and_updates_shimmer_header() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "turn-started".into(),
+                msg: EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-1".to_string(),
+                    model_context_window: None,
+                }),
+            },
+        )
+        .expect("handle turn started");
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "commentary".into(),
+                msg: EventMsg::AgentMessage(AgentMessageEvent {
+                    message: "**Inspecting**\n\nWorking...".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                }),
+            },
+        )
+        .expect("handle commentary agent message");
+
+        assert_eq!(app.bottom_pane.status_header(), "Inspecting");
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected minimal mode to suppress commentary agent message history cells"
+        );
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            !transient_blob.contains("Inspecting"),
+            "expected minimal mode to keep commentary out of transient transcript preview: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_commits_previous_agent_message_without_dimming_on_turn_complete() {
         let width: u16 = 80;
 
         let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
@@ -6565,7 +6623,7 @@ mod tests {
         });
 
         let first = recv_inserted_history_cell(&mut rx);
-        assert_line_with_text_dimmed(&first.display_lines(width), "first", true);
+        assert_line_with_text_dimmed(&first.display_lines(width), "first", false);
         assert!(
             rx.try_recv().is_err(),
             "expected second message to remain pending until turn complete"
@@ -6618,7 +6676,7 @@ mod tests {
         });
 
         let agent_message = recv_inserted_history_cell(&mut rx_app);
-        assert_line_with_text_dimmed(&agent_message.display_lines(width), "inspect", true);
+        assert_line_with_text_dimmed(&agent_message.display_lines(width), "inspect", false);
 
         let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
         assert!(
@@ -6667,7 +6725,7 @@ mod tests {
         .expect("handle stream recovery update");
 
         let agent_message = recv_inserted_history_cell(&mut rx_app);
-        assert_line_with_text_dimmed(&agent_message.display_lines(width), "inspect", true);
+        assert_line_with_text_dimmed(&agent_message.display_lines(width), "inspect", false);
 
         let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
         assert!(

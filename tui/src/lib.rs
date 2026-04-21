@@ -14,6 +14,7 @@ mod codex_config;
 mod codex_home;
 mod codex_system_paths;
 mod color;
+mod commentary_status;
 mod custom_terminal;
 mod diff_render;
 mod exec_cell;

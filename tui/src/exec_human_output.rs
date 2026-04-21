@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_protocol::models::MessagePhase;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ServiceTier;
 use codex_protocol::protocol::TokenUsage;
@@ -343,6 +344,19 @@ impl ExecHumanRenderer {
             }
             EventMsg::AgentMessage(ev) => {
                 if self.verbosity == Verbosity::Minimal {
+                    if ev.phase == Some(MessagePhase::Commentary) {
+                        if self.saw_agent_delta {
+                            let _ = self.stream.take_finalized_lines();
+                            self.saw_agent_delta = false;
+                        }
+                        if let Some(header) =
+                            crate::commentary_status::status_header_from_commentary(&ev.message)
+                        {
+                            out.push(self.render_reasoning_status_hint_block(header)?);
+                        }
+                        return Ok(out);
+                    }
+
                     let lines = if self.saw_agent_delta {
                         let lines = self.stream.take_finalized_lines();
                         self.saw_agent_delta = false;
