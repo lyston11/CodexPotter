@@ -423,83 +423,10 @@ fn unquote_yaml_scalar(raw: &str) -> String {
 }
 
 fn set_front_matter_bool(contents: &str, key: &str, value: bool) -> anyhow::Result<String> {
-    let mut lines = contents.lines();
-    let first = lines
-        .next()
-        .map(str::trim_end)
-        .context("progress file is empty")?;
-    if first != "---" {
-        anyhow::bail!("progress file missing YAML front matter delimiter `---` at top");
-    }
-
-    let mut out = String::new();
-    out.push_str(first);
-    out.push('\n');
-
-    let mut in_front_matter = true;
-    let mut saw_key = false;
-    let mut saw_footer = false;
-    for line in lines {
-        if in_front_matter {
-            let trimmed = line.trim_end();
-            if trimmed == "---" {
-                if !saw_key {
-                    out.push_str(key);
-                    out.push_str(": ");
-                    out.push_str(if value { "true" } else { "false" });
-                    out.push('\n');
-                }
-                in_front_matter = false;
-                saw_footer = true;
-                out.push_str(trimmed);
-                out.push('\n');
-                continue;
-            }
-
-            let mut replaced = false;
-            if let Some((k, _)) = trimmed.split_once(':')
-                && k.trim() == key
-            {
-                saw_key = true;
-                let comment = trimmed.find('#').map(|idx| &trimmed[idx..]);
-                let key_part = &trimmed[..trimmed.find(':').expect("split_once") + 1];
-                out.push_str(key_part);
-                out.push(' ');
-                out.push_str(if value { "true" } else { "false" });
-                if let Some(comment) = comment {
-                    out.push(' ');
-                    out.push_str(comment);
-                }
-                out.push('\n');
-                replaced = true;
-            }
-
-            if !replaced {
-                out.push_str(trimmed);
-                out.push('\n');
-            }
-            continue;
-        }
-
-        out.push_str(line);
-        out.push('\n');
-    }
-
-    if !saw_footer {
-        anyhow::bail!("progress file YAML front matter missing closing `---`");
-    }
-
-    Ok(out)
+    set_front_matter_scalar(contents, key, if value { "true" } else { "false" })
 }
 
-fn set_front_matter_string(contents: &str, key: &str, value: &str) -> anyhow::Result<String> {
-    if value.trim().is_empty() {
-        anyhow::bail!("progress file front matter key `{key}` cannot be set to an empty value");
-    }
-    if value.contains('\n') {
-        anyhow::bail!("progress file front matter key `{key}` cannot contain newlines");
-    }
-
+fn set_front_matter_scalar(contents: &str, key: &str, value: &str) -> anyhow::Result<String> {
     let mut lines = contents.lines();
     let first = lines
         .next()
@@ -567,6 +494,17 @@ fn set_front_matter_string(contents: &str, key: &str, value: &str) -> anyhow::Re
     }
 
     Ok(out)
+}
+
+fn set_front_matter_string(contents: &str, key: &str, value: &str) -> anyhow::Result<String> {
+    if value.trim().is_empty() {
+        anyhow::bail!("progress file front matter key `{key}` cannot be set to an empty value");
+    }
+    if value.contains('\n') {
+        anyhow::bail!("progress file front matter key `{key}` cannot contain newlines");
+    }
+
+    set_front_matter_scalar(contents, key, value)
 }
 
 fn resolve_git_metadata(workdir: &Path) -> (String, String) {
@@ -727,6 +665,48 @@ mod tests {
             updated,
             "---\nstatus: open\nfinite_incantatem: true\n---\n\n# Goal\n\nHi\n"
         );
+    }
+
+    #[test]
+    fn reset_progress_file_status_from_skip_to_open_reopens_skipped_progress_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let rel = PathBuf::from(".codexpotter/projects/2026/01/27/1/MAIN.md");
+        let abs = workdir.join(&rel);
+        std::fs::create_dir_all(abs.parent().expect("parent")).expect("mkdir");
+
+        std::fs::write(
+            &abs,
+            "---\nstatus: \"SKIP\" # reopen for follow-up\nfinite_incantatem: false\n---\n\n# Goal\n\nHi\n",
+        )
+        .expect("write");
+
+        let changed =
+            reset_progress_file_status_from_skip_to_open(workdir, &rel).expect("reset status");
+        assert!(changed);
+        let updated = std::fs::read_to_string(&abs).expect("read updated");
+        assert_eq!(
+            updated,
+            "---\nstatus: open # reopen for follow-up\nfinite_incantatem: false\n---\n\n# Goal\n\nHi\n"
+        );
+    }
+
+    #[test]
+    fn reset_progress_file_status_from_skip_to_open_keeps_non_skip_status_unchanged() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let rel = PathBuf::from(".codexpotter/projects/2026/01/27/1/MAIN.md");
+        let abs = workdir.join(&rel);
+        std::fs::create_dir_all(abs.parent().expect("parent")).expect("mkdir");
+
+        let original = "---\nstatus: open\nfinite_incantatem: false\n---\n\n# Goal\n\nHi\n";
+        std::fs::write(&abs, original).expect("write");
+
+        let changed =
+            reset_progress_file_status_from_skip_to_open(workdir, &rel).expect("reset status");
+        assert!(!changed);
+        let updated = std::fs::read_to_string(&abs).expect("read updated");
+        assert_eq!(updated, original);
     }
 
     #[test]
