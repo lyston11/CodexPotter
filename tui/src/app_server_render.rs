@@ -748,8 +748,8 @@ impl AppServerEventProcessor {
     ///
     /// In `Verbosity::Minimal`, the latest agent message stays pending until a later visible event
     /// confirms whether it is truly final. Exit paths still need to flush that buffered content so
-    /// the user does not lose in-flight output; because the turn did not complete, the flushed
-    /// agent message remains dim.
+    /// the user does not lose in-flight output; the flushed agent message is inserted as a normal
+    /// history cell so the transcript stays free of gray agent messages.
     fn flush_live_transcript_buffers(&mut self) {
         self.flush_pending_live_activity_cells();
         self.flush_agent_output(false);
