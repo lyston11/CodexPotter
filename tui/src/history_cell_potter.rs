@@ -10,7 +10,6 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
-use std::{ffi::OsStr, path::Path};
 
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -109,6 +108,7 @@ pub fn new_potter_project_succeeded(
         user_prompt_file,
         git_commit_start,
         git_commit_end,
+        potter_resume_command_global_args: Vec::new(),
     }
 }
 
@@ -134,6 +134,7 @@ pub fn new_potter_project_interrupted(
         user_prompt_file,
         git_commit_start,
         git_commit_end,
+        potter_resume_command_global_args: Vec::new(),
     }
 }
 
@@ -152,6 +153,7 @@ pub fn new_potter_project_budget_exhausted(
         user_prompt_file,
         git_commit_start,
         git_commit_end,
+        potter_resume_command_global_args: Vec::new(),
     }
 }
 
@@ -164,6 +166,16 @@ pub struct PotterProjectSummaryCell {
     user_prompt_file: PathBuf,
     git_commit_start: String,
     git_commit_end: String,
+    potter_resume_command_global_args: Vec<String>,
+}
+
+impl PotterProjectSummaryCell {
+    /// Include the process's incoming `codex-potter` global flags in the `Loop more rounds`
+    /// resume command rendered by this summary block.
+    pub fn with_potter_resume_command_global_args(mut self, args: Vec<String>) -> Self {
+        self.potter_resume_command_global_args = args;
+        self
+    }
 }
 
 impl HistoryCell for PotterProjectSummaryCell {
@@ -172,9 +184,15 @@ impl HistoryCell for PotterProjectSummaryCell {
         let rounds = self.rounds;
         let separator_style = Style::default().fg(secondary_color());
         let summary_style = separator_style.add_modifier(Modifier::BOLD);
-        let resume_project_path = derive_resume_project_path(&self.user_prompt_file)
+        let resume_project_path =
+            codex_protocol::potter_command::derive_potter_resume_project_path(
+                &self.user_prompt_file,
+            )
             .unwrap_or_else(|| self.user_prompt_file.to_string_lossy().to_string());
-        let resume_command = format!("codex-potter resume {resume_project_path}");
+        let resume_command = codex_protocol::potter_command::render_potter_resume_command(
+            &resume_project_path,
+            &self.potter_resume_command_global_args,
+        );
 
         let mut header_spans: Vec<Span<'static>> = vec![
             Span::styled("─ ", separator_style),
@@ -211,30 +229,6 @@ impl HistoryCell for PotterProjectSummaryCell {
 
         lines
     }
-}
-
-fn derive_resume_project_path(progress_file: &Path) -> Option<String> {
-    let project_dir = match progress_file.file_name() {
-        Some(name) if name == OsStr::new("MAIN.md") => progress_file.parent()?,
-        _ => progress_file,
-    };
-
-    let components = project_dir
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    let projects_start = components
-        .windows(2)
-        .position(|window| window[0] == ".codexpotter" && window[1] == "projects")?;
-    let suffix = components.get(projects_start.saturating_add(2)..)?;
-    if suffix.is_empty() {
-        return None;
-    }
-    Some(suffix.join("/"))
 }
 
 #[derive(Debug, Clone)]

@@ -35,7 +35,6 @@ use clap::FromArgMatches;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use std::ffi::OsStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
@@ -395,6 +394,11 @@ async fn main() -> anyhow::Result<()> {
         .to_string();
 
     let mut ui = codex_tui::CodexPotterTui::new()?;
+    ui.set_potter_resume_command_global_args(resume_note_global_args(
+        &cli,
+        rounds,
+        resolved_rounds.cli_override,
+    ));
     ui.set_startup_banner_codex_overrides(
         &workdir,
         cli.upstream_cli_args.model.clone(),
@@ -592,49 +596,14 @@ fn run_update_action(action: codex_tui::UpdateAction) -> anyhow::Result<()> {
 }
 
 fn derive_resume_project_path_from_project_dir(project_dir: &Path) -> Option<String> {
-    let projects_root = Path::new(".codexpotter").join("projects");
-    let project_path = project_dir.strip_prefix(&projects_root).ok()?;
-    let parts = project_path
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.join("/"))
+    codex_protocol::potter_command::derive_potter_resume_project_path(project_dir)
 }
 
 fn derive_resume_project_path_for_note(project_path: &Path) -> String {
-    let project_dir = if project_path.file_name() == Some(OsStr::new("MAIN.md")) {
-        project_path.parent().unwrap_or(project_path)
-    } else {
-        project_path
-    };
-
-    if let Some(short_path) = derive_resume_project_path_from_project_dir(project_dir) {
-        return short_path;
-    }
-
-    // The resume picker can return absolute project paths. Prefer printing a stable
-    // `.codexpotter/projects/...` short form when we can find that segment.
-    let parts = project_dir
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    if let Some(codexpotter_idx) = parts.iter().rposition(|part| part == ".codexpotter")
-        && parts.get(codexpotter_idx + 1).map(String::as_str) == Some("projects")
+    if let Some(short_path) =
+        codex_protocol::potter_command::derive_potter_resume_project_path(project_path)
     {
-        let remainder = &parts[(codexpotter_idx + 2)..];
-        if !remainder.is_empty() {
-            return remainder.join("/");
-        }
+        return short_path;
     }
 
     crate::path_utils::display_with_tilde(project_path)
@@ -690,11 +659,8 @@ fn render_resume_note_command(
     rounds: NonZeroUsize,
     cli_rounds_override: bool,
 ) -> String {
-    let mut args: Vec<String> = vec!["codex-potter".to_string(), "resume".to_string()];
-    args.extend(resume_note_global_args(cli, rounds, cli_rounds_override));
-    args.push(project_path.to_string());
-
-    shlex::try_join(args.iter().map(String::as_str)).unwrap_or_else(|_| args.join(" "))
+    let global_args = resume_note_global_args(cli, rounds, cli_rounds_override);
+    codex_protocol::potter_command::render_potter_resume_command(project_path, &global_args)
 }
 
 fn print_resume_note(

@@ -18,6 +18,7 @@ icu_provider = { workspace = true, features = ["sync"] }
 path-absolutize = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+shlex = { workspace = true }
 strum_macros = { workspace = true }
 sys-locale = { workspace = true }
 thiserror = { workspace = true }

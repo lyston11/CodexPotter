@@ -24,4 +24,4 @@ expression: terminal.backend().vt100().screen().contents()
 
   View changes:      git diff fb827a2...662d232
   Task history:      .codexpotter/projects/2026/02/01/11/MAIN.md
-  Loop more rounds:  codex-potter resume 2026/02/01/11
+  Loop more rounds:  codex-potter resume --sandbox read-only 2026/02/01/11

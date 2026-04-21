@@ -86,6 +86,7 @@ Behavior related
 - Projects overlay auto-refreshes the list (and selected details) every minute while open, preserving selection + scroll positions when possible.
 - Projects overlay supports `Tab` to toggle a maximized details view (hide the list pane).
 - Projects overlay details pane shows a plain-text preview of the original user task message (first 5 lines + `... (N more lines)`) above the per-round final message summaries.
+- Project summary `Loop more rounds:` resume command includes the current process's non-default `codex-potter` global flags (aligns with the CLI exit resume note).
 
 Engineering related:
 

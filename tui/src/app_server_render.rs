@@ -378,6 +378,7 @@ pub struct RoundUiState<'a> {
 pub struct ProjectRenderContext {
     pub project_started_at: Instant,
     pub prompt_footer: PromptFooterContext,
+    pub potter_resume_command_global_args: Vec<String>,
 }
 
 fn text_user_input_op(text: String) -> Op {
@@ -408,6 +409,7 @@ pub async fn run_round_with_tui_options_and_queue(
     let ProjectRenderContext {
         project_started_at,
         prompt_footer,
+        potter_resume_command_global_args,
     } = context;
     let RoundBackendChannels {
         codex_op_tx,
@@ -430,6 +432,7 @@ pub async fn run_round_with_tui_options_and_queue(
     let prompt_history = crate::prompt_history_store::PromptHistoryStore::new();
 
     let mut driver = AppServerEventProcessor::new(app_event_tx.clone(), *state.verbosity);
+    driver.potter_resume_command_global_args = potter_resume_command_global_args;
     if options.render_user_prompt {
         driver.emit_user_prompt(prompt.clone());
     }
@@ -518,6 +521,9 @@ struct AppServerEventProcessor {
     /// Divergence (codex-potter): keep the latest completed agent message pending in
     /// `Verbosity::Minimal` until a later visible event confirms whether it is final.
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
+    /// Divergence (codex-potter): include the current process's incoming global flags in the
+    /// `Loop more rounds:` resume command rendered by project summary blocks.
+    potter_resume_command_global_args: Vec<String>,
     pending_potter_project_summary: Option<PendingPotterProjectSummary>,
     pending_potter_round_marker: Option<(u32, u32)>,
     pending_potter_round_session: Option<PendingPotterRoundSession>,
@@ -574,6 +580,7 @@ impl AppServerEventProcessor {
             pending_compact_patch_changes: Vec::new(),
             pending_compact_patch_preview: None,
             pending_minimal_agent_message_lines: None,
+            potter_resume_command_global_args: Vec::new(),
             pending_potter_project_summary: None,
             pending_potter_round_marker: None,
             pending_potter_round_session: None,
@@ -638,7 +645,8 @@ impl AppServerEventProcessor {
                     git_commit_end,
                 )
             }
-        };
+        }
+        .with_potter_resume_command_global_args(self.potter_resume_command_global_args.clone());
 
         self.emit_history_cell(Box::new(cell));
     }
@@ -7385,6 +7393,8 @@ mod tests {
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
         let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        proc.potter_resume_command_global_args =
+            vec!["--sandbox".to_string(), "read-only".to_string()];
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
             &mut rx,
@@ -7474,6 +7484,8 @@ mod tests {
         terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
         let (mut proc, mut rx) = make_round_renderer_processor("test prompt");
+        proc.potter_resume_command_global_args =
+            vec!["--sandbox".to_string(), "read-only".to_string()];
         let mut has_emitted_history_lines = false;
         drain_render_history_events(
             &mut rx,

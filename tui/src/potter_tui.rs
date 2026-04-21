@@ -75,6 +75,7 @@ pub struct CodexPotterTui {
     check_for_update_on_startup: bool,
     startup_warnings: Vec<String>,
     startup_codex_model_config: Option<crate::codex_config::ResolvedCodexModelConfig>,
+    potter_resume_command_global_args: Vec<String>,
     verbosity: Verbosity,
     needs_startup_verbosity_prompt: bool,
 }
@@ -115,6 +116,7 @@ impl CodexPotterTui {
             check_for_update_on_startup: true,
             startup_warnings,
             startup_codex_model_config: None,
+            potter_resume_command_global_args: Vec::new(),
             verbosity,
             needs_startup_verbosity_prompt,
         })
@@ -154,6 +156,14 @@ impl CodexPotterTui {
             )?,
         );
         Ok(())
+    }
+
+    /// Record the current process's incoming `codex-potter` global args for resume hints.
+    ///
+    /// These are rendered in the final summary block's `Loop more rounds:` command so users can
+    /// continue with the same non-default flags (e.g. `--yolo`, `--sandbox`, `--rounds`).
+    pub fn set_potter_resume_command_global_args(&mut self, args: Vec<String>) {
+        self.potter_resume_command_global_args = args;
     }
 
     /// Show the "update available" modal, if applicable.
@@ -337,6 +347,7 @@ impl CodexPotterTui {
             git_commit_start,
             git_commit_end,
         )
+        .with_potter_resume_command_global_args(self.potter_resume_command_global_args.clone())
         .display_lines(width);
 
         if lines.is_empty() {
@@ -426,6 +437,7 @@ impl CodexPotterTui {
         let context = crate::app_server_render::ProjectRenderContext {
             project_started_at,
             prompt_footer,
+            potter_resume_command_global_args: self.potter_resume_command_global_args.clone(),
         };
         let state = crate::app_server_render::RoundUiState {
             queued_user_messages: &mut queued,
