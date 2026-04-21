@@ -1617,15 +1617,11 @@ impl RenderAppState {
         }
 
         if self.processor.verbosity == Verbosity::Minimal {
-            let preview_lines =
-                if let Some(lines) = self.processor.pending_minimal_agent_message_lines.as_ref() {
-                    Some(lines.clone())
-                } else if self.processor.saw_agent_delta {
-                    let lines = self.processor.stream.preview_lines();
-                    (!lines.is_empty()).then_some(lines)
-                } else {
-                    None
-                };
+            let preview_lines = self
+                .processor
+                .pending_minimal_agent_message_lines
+                .as_ref()
+                .cloned();
 
             if let Some(mut preview_lines) = preview_lines {
                 dim_lines(&mut preview_lines);
@@ -6650,6 +6646,23 @@ mod tests {
         app.handle_codex_event(
             crate::tui::FrameRequester::test_dummy(),
             Event {
+                id: "commentary-delta".into(),
+                msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                    delta: "**Inspecting**".to_string(),
+                }),
+            },
+        )
+        .expect("handle commentary delta");
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            !transient_blob.contains("Inspecting"),
+            "expected minimal mode to keep streamed commentary out of transient transcript preview: {transient_blob:?}"
+        );
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
                 id: "commentary".into(),
                 msg: EventMsg::AgentMessage(AgentMessageEvent {
                     message: "**Inspecting**\n\nWorking...".to_string(),
@@ -6814,7 +6827,7 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_minimal_renders_live_streamed_agent_message_in_transient_lines() {
+    fn round_renderer_minimal_hides_live_streamed_agent_message_until_completion() {
         let width: u16 = 80;
 
         let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
@@ -6831,8 +6844,11 @@ mod tests {
             "expected active streamed message to stay out of history before completion"
         );
 
-        let transient_lines = app.build_transient_lines(width);
-        assert_line_with_text_dimmed(&transient_lines, "inspect workspace", true);
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            !transient_blob.contains("inspect workspace"),
+            "expected minimal mode to hide streamed agent text before completion: {transient_blob:?}"
+        );
     }
 
     #[test]

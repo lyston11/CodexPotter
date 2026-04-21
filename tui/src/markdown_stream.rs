@@ -71,23 +71,6 @@ impl MarkdownStreamCollector {
         out
     }
 
-    /// Render the current stream buffer as if the stream ended now, without mutating state.
-    ///
-    /// This is used for transient live preview in `Verbosity::Minimal`: the latest agent text
-    /// must be visible immediately, but still stay out of committed transcript history until a
-    /// later barrier confirms whether it is final.
-    pub fn preview_lines(&self) -> Vec<Line<'static>> {
-        if self.buffer.is_empty() {
-            return Vec::new();
-        }
-
-        let mut source = self.buffer.clone();
-        if !source.ends_with('\n') {
-            source.push('\n');
-        }
-        self.render_markdown(&source)
-    }
-
     /// Finalize the stream: emit all remaining lines beyond the last commit.
     /// If the buffer does not end with a newline, a temporary one is appended
     /// for rendering. Optionally unwraps ```markdown language fences in
