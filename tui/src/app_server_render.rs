@@ -7338,6 +7338,56 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_minimal_stream_recovery_retry_discards_incomplete_streamed_agent_message() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "agent-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                // Phase is unknown until the completed AgentMessage arrives, so retryable
+                // recovery boundaries must not commit this partial text into transcript history.
+                delta: "inspect workspace".to_string(),
+            }),
+        });
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "recovery".into(),
+                msg: EventMsg::PotterStreamRecoveryUpdate {
+                    attempt: 1,
+                    max_attempts: 10,
+                    error_message:
+                        "stream disconnected before completion: error sending request for url (...)"
+                            .to_string(),
+                },
+            },
+        )
+        .expect("handle stream recovery update");
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .all(|line| !line.contains("inspect workspace")),
+            "expected recovery barrier not to commit streamed agent text into transcript history: {cells:?}"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("• CodexPotter: retry 1/10"),
+            "missing stream recovery retry block: {transient_blob:?}"
+        );
+        assert!(
+            !transient_blob.contains("inspect workspace"),
+            "expected recovery barrier to clear in-flight agent text from transient preview: {transient_blob:?}"
+        );
+    }
+
+    #[test]
     fn round_renderer_minimal_hides_live_streamed_agent_message_until_completion() {
         let width: u16 = 80;
 
