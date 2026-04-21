@@ -196,6 +196,8 @@ pub fn progress_file_has_finite_incantatem_true_after_completed_round(
 }
 
 /// Set `finite_incantatem` in the progress file YAML front matter.
+///
+/// If the key is missing, this inserts it before the closing front matter delimiter.
 pub fn set_progress_file_finite_incantatem(
     workdir: &Path,
     progress_file_rel: &Path,
@@ -403,11 +405,18 @@ fn set_front_matter_bool(contents: &str, key: &str, value: bool) -> anyhow::Resu
     out.push('\n');
 
     let mut in_front_matter = true;
+    let mut saw_key = false;
     let mut saw_footer = false;
     for line in lines {
         if in_front_matter {
             let trimmed = line.trim_end();
             if trimmed == "---" {
+                if !saw_key {
+                    out.push_str(key);
+                    out.push_str(": ");
+                    out.push_str(if value { "true" } else { "false" });
+                    out.push('\n');
+                }
                 in_front_matter = false;
                 saw_footer = true;
                 out.push_str(trimmed);
@@ -419,6 +428,7 @@ fn set_front_matter_bool(contents: &str, key: &str, value: bool) -> anyhow::Resu
             if let Some((k, _)) = trimmed.split_once(':')
                 && k.trim() == key
             {
+                saw_key = true;
                 let comment = trimmed.find('#').map(|idx| &trimmed[idx..]);
                 let key_part = &trimmed[..trimmed.find(':').expect("split_once") + 1];
                 out.push_str(key_part);
@@ -590,6 +600,24 @@ mod tests {
         assert!(updated.contains("finite_incantatem: false\n"));
         assert!(updated.contains("status: open\n"));
         assert!(updated.contains("# Goal\n"));
+    }
+
+    #[test]
+    fn set_progress_file_finite_incantatem_inserts_missing_front_matter_key() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let rel = PathBuf::from(".codexpotter/projects/2026/01/27/1/MAIN.md");
+        let abs = workdir.join(&rel);
+        std::fs::create_dir_all(abs.parent().expect("parent")).expect("mkdir");
+
+        std::fs::write(&abs, "---\nstatus: open\n---\n\n# Goal\n\nHi\n").expect("write");
+
+        set_progress_file_finite_incantatem(workdir, &rel, true).expect("set true");
+        let updated = std::fs::read_to_string(&abs).expect("read updated");
+        assert_eq!(
+            updated,
+            "---\nstatus: open\nfinite_incantatem: true\n---\n\n# Goal\n\nHi\n"
+        );
     }
 
     #[test]
