@@ -721,6 +721,14 @@ impl AppServerEventProcessor {
         lines
     }
 
+    fn take_agent_message_lines(&mut self, message: &str) -> Vec<Line<'static>> {
+        if self.saw_agent_delta {
+            self.take_streamed_agent_message_lines()
+        } else {
+            self.build_agent_message_lines(message)
+        }
+    }
+
     fn clear_pending_minimal_commentary(&mut self) {
         self.pending_minimal_commentary_message_lines = None;
     }
@@ -1036,20 +1044,17 @@ impl AppServerEventProcessor {
                         );
                         return;
                     }
-                    if !self.saw_agent_delta {
+                    let had_streamed_delta = self.saw_agent_delta;
+                    let lines = self.take_agent_message_lines(&ev.message);
+                    if !had_streamed_delta {
                         self.maybe_emit_final_message_separator();
-                        self.store_pending_minimal_agent_message(
-                            self.build_agent_message_lines(&ev.message),
-                        );
-                    } else {
-                        let lines = self.take_streamed_agent_message_lines();
-                        self.store_pending_minimal_agent_message(lines);
                     }
+                    self.store_pending_minimal_agent_message(lines);
                     return;
                 }
 
                 if self.saw_agent_delta {
-                    let lines = self.take_streamed_agent_message_lines();
+                    let lines = self.take_agent_message_lines(&ev.message);
                     self.insert_agent_message_lines_direct(lines, false);
                     return;
                 }
