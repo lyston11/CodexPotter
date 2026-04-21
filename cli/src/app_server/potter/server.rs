@@ -485,7 +485,8 @@ fn resume_project(
         .context("read git_branch from progress file")?;
 
     let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&resolved.project_dir);
-    let potter_rollout_lines = load_potter_rollout_lines(&potter_rollout_path)?;
+    let potter_rollout_lines =
+        crate::workflow::rollout::read_project_rollout_lines(&potter_rollout_path)?;
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_rollout_lines)?;
 
     let replay = build_resume_replay(&resolved, &index)?;
@@ -824,29 +825,6 @@ fn resolve_rounds_total(rounds: Option<u32>, default_rounds: NonZeroUsize) -> an
         Some(_) => anyhow::bail!("rounds must be >= 1"),
         None => crate::rounds::round_budget_to_u32(default_rounds),
     }
-}
-
-fn load_potter_rollout_lines(
-    potter_rollout_path: &Path,
-) -> anyhow::Result<Vec<crate::workflow::rollout::PotterRolloutLine>> {
-    if !potter_rollout_path.exists() {
-        anyhow::bail!(
-            "unsupported project: the project is from an older version of CodexPotter (missing potter-rollout.jsonl)",
-        );
-    }
-    if !potter_rollout_path.is_file() {
-        anyhow::bail!(
-            "unsupported project: expected a file at {}",
-            potter_rollout_path.display()
-        );
-    }
-
-    let lines = crate::workflow::rollout::read_lines(potter_rollout_path)
-        .with_context(|| format!("read {}", potter_rollout_path.display()))?;
-    if lines.is_empty() {
-        anyhow::bail!("potter-rollout is empty: {}", potter_rollout_path.display());
-    }
-    Ok(lines)
 }
 
 fn build_resume_replay(

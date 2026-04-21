@@ -595,31 +595,6 @@ enum ReplayRoundExitDecision {
     FatalExitRequested,
 }
 
-#[cfg(test)]
-fn load_potter_rollout_lines(
-    potter_rollout_path: &Path,
-) -> anyhow::Result<Vec<crate::workflow::rollout::PotterRolloutLine>> {
-    if !potter_rollout_path.exists() {
-        anyhow::bail!(
-            "unsupported project: the project is from an older version of CodexPotter (missing potter-rollout.jsonl)",
-        );
-    }
-    if !potter_rollout_path.is_file() {
-        anyhow::bail!(
-            "unsupported project: expected a file at {}",
-            potter_rollout_path.display()
-        );
-    }
-
-    let lines = crate::workflow::rollout::read_lines(potter_rollout_path)
-        .with_context(|| format!("read {}", potter_rollout_path.display()))?;
-    if lines.is_empty() {
-        anyhow::bail!("potter-rollout is empty: {}", potter_rollout_path.display());
-    }
-
-    Ok(lines)
-}
-
 fn replay_round_exit_decision(
     exit_reason: &ExitReason,
     outcome: &PotterRoundOutcome,
@@ -1902,20 +1877,6 @@ mod tests {
             &PotterRoundOutcome::Completed,
         );
         assert_eq!(decision, ReplayRoundExitDecision::FatalExitRequested);
-    }
-
-    #[test]
-    fn load_potter_rollout_lines_errors_when_missing() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("potter-rollout.jsonl");
-
-        let err = load_potter_rollout_lines(&path).expect_err("expected missing error");
-        let message = format!("{err:#}");
-        assert!(
-            message.contains("the project is from an older version of CodexPotter"),
-            "unexpected error: {message}"
-        );
-        assert!(message.contains("potter-rollout.jsonl"));
     }
 
     #[test]

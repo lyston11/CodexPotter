@@ -113,6 +113,33 @@ pub fn read_lines(path: &Path) -> anyhow::Result<Vec<PotterRolloutLine>> {
     Ok(out)
 }
 
+/// Read a persisted project rollout file for resume/replay.
+///
+/// This enforces the stronger contract expected by resume entry points:
+/// - missing files are reported as "older CodexPotter project" compatibility errors
+/// - non-file paths are rejected explicitly
+/// - empty logs are rejected because they cannot be replayed safely
+pub fn read_project_rollout_lines(path: &Path) -> anyhow::Result<Vec<PotterRolloutLine>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "unsupported project: the project is from an older version of CodexPotter (missing {POTTER_ROLLOUT_FILENAME})",
+            );
+        }
+        Err(err) => return Err(err).with_context(|| format!("stat {}", path.display())),
+    };
+    if !metadata.is_file() {
+        anyhow::bail!("unsupported project: expected a file at {}", path.display());
+    }
+
+    let lines = read_lines(path).with_context(|| format!("read {}", path.display()))?;
+    if lines.is_empty() {
+        anyhow::bail!("potter-rollout is empty: {}", path.display());
+    }
+    Ok(lines)
+}
+
 /// Best-effort: resolve a rollout path to an absolute path suitable for recording.
 ///
 /// Returns:
@@ -199,5 +226,37 @@ mod tests {
         assert_eq!(resolved, dir.path().join("missing.jsonl"));
         assert_eq!(raw, Some(PathBuf::from("missing.jsonl")));
         assert_eq!(base, Some(dir.path().to_path_buf()));
+    }
+
+    #[test]
+    fn read_project_rollout_lines_errors_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(POTTER_ROLLOUT_FILENAME);
+
+        let err = read_project_rollout_lines(&path).expect_err("expected missing error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("the project is from an older version of CodexPotter"),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains(POTTER_ROLLOUT_FILENAME));
+    }
+
+    #[test]
+    fn read_project_rollout_lines_errors_when_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(POTTER_ROLLOUT_FILENAME);
+        std::fs::write(&path, "").expect("write empty rollout");
+
+        let err = read_project_rollout_lines(&path).expect_err("expected empty error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("potter-rollout is empty"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains(POTTER_ROLLOUT_FILENAME),
+            "unexpected error: {message}"
+        );
     }
 }
