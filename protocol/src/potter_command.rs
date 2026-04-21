@@ -12,7 +12,9 @@ pub fn render_potter_resume_command(project_path: &str, global_args: &[String]) 
     args.extend(global_args.iter().map(String::as_str));
     args.push(project_path);
 
-    shlex::try_join(args.iter().copied()).unwrap_or_else(|_| args.join(" "))
+    shlex::try_join(args.iter().copied()).unwrap_or_else(|err| {
+        format!("codex-potter resume <unable to quote args: {err}> {project_path}")
+    })
 }
 
 /// Derive the project-path argument for `codex-potter resume` when a path points somewhere under
@@ -88,6 +90,24 @@ mod tests {
         assert_eq!(
             command,
             "codex-potter resume --yolo --sandbox read-only 2026/02/01/11"
+        );
+    }
+
+    #[test]
+    fn render_potter_resume_command_quotes_args_with_spaces() {
+        let command = render_potter_resume_command(
+            "2026/02/01/11",
+            &[
+                "--codex-bin".to_string(),
+                "/tmp/codex bin".to_string(),
+                "--config".to_string(),
+                "/tmp/with spaces/config.toml".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            command,
+            "codex-potter resume --codex-bin '/tmp/codex bin' --config '/tmp/with spaces/config.toml' 2026/02/01/11"
         );
     }
 }
