@@ -34,11 +34,18 @@ const POTTER_XMODEL_MARKER_WITH_TRAILING_SPACE: &str = "/potter:xmodel ";
 const POTTER_XMODEL_FRONT_MATTER_PLACEHOLDER: &str = "{{POTTER_XMODEL_FRONT_MATTER}}";
 
 #[derive(Debug, Clone)]
+/// Metadata produced when initializing a new CodexPotter project on disk.
 pub struct ProjectInit {
+    /// Workdir-relative path to the created progress file (`.codexpotter/projects/.../MAIN.md`).
     pub progress_file_rel: PathBuf,
+    /// Git commit hash recorded at project start (empty when unavailable).
     pub git_commit_start: String,
 }
 
+/// Initialize a new CodexPotter project under `.codexpotter/projects/`.
+///
+/// This creates the next available `.codexpotter/projects/YYYY/MM/DD/N/MAIN.md` progress file,
+/// records git metadata into its YAML front matter, and returns the created path and commit hash.
 pub fn init_project(
     workdir: &Path,
     user_prompt: &str,
@@ -73,6 +80,9 @@ pub fn init_project(
     })
 }
 
+/// Resolve the current git commit hash for `workdir`.
+///
+/// Returns an empty string when `workdir` is not a git repository or when git is unavailable.
 pub fn resolve_git_commit(workdir: &Path) -> String {
     git_stdout_trimmed(workdir, &["rev-parse", "HEAD"]).unwrap_or_default()
 }
@@ -110,11 +120,13 @@ pub fn render_project_main(
         .replace("{{USER_PROMPT}}", &user_prompt)
 }
 
+/// Render the developer prompt template for a given progress file.
 pub fn render_developer_prompt(progress_file_rel: &Path) -> String {
     let progress_file_rel = progress_file_rel.to_string_lossy();
     DEVELOPER_PROMPT_TEMPLATE.replace("{{PROGRESS_FILE}}", &progress_file_rel)
 }
 
+/// Return the static base prompt template used for CodexPotter sessions.
 pub fn fixed_prompt() -> &'static str {
     PROMPT_TEMPLATE
 }

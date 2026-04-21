@@ -21,6 +21,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::SessionConfiguredEvent;
 
+/// Configuration for [`PotterRoundEventBridge`].
 #[derive(Debug, Clone)]
 pub struct PotterRoundEventBridgeConfig {
     pub record_round_configured: bool,
@@ -52,6 +53,10 @@ pub struct PotterRoundEventBridgeConfig {
     pub project_rounds_run: u32,
 }
 
+/// Observes backend `EventMsg` items and produces:
+/// - persisted `potter-rollout.jsonl` boundaries, and
+/// - optional synthetic project markers (success / budget exhausted), and
+/// - optional hook execution events (`Potter.ProjectStop`).
 #[derive(Debug, Clone)]
 pub struct PotterRoundEventBridge {
     workdir: PathBuf,
@@ -71,6 +76,7 @@ pub struct PotterRoundEventBridge {
 }
 
 impl PotterRoundEventBridge {
+    /// Create a new bridge for an active round.
     pub fn new(config: PotterRoundEventBridgeConfig) -> Self {
         Self {
             has_recorded_round_configured: !config.record_round_configured,
@@ -90,6 +96,7 @@ impl PotterRoundEventBridge {
         }
     }
 
+    /// Observe one backend event and return any synthetic events to inject into the UI stream.
     pub async fn observe_backend_event(&mut self, event: &Event) -> anyhow::Result<Vec<Event>> {
         if let EventMsg::SessionConfigured(cfg) = &event.msg {
             self.session_model = Some(cfg.model.clone());
