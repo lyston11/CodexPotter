@@ -56,13 +56,13 @@ fn build_project_details_for_overlay_inner(
     let mut rounds = Vec::new();
 
     let read_round_message = |rollout_path: &Path| -> (Option<u64>, Option<String>) {
-        match read_final_agent_message_for_replay(workdir, rollout_path) {
+        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+            workdir,
+            rollout_path,
+        );
+        match read_final_agent_message_from_rollout(&abs) {
             Ok(message) => message,
             Err(err) => {
-                let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-                    workdir,
-                    rollout_path,
-                );
                 tracing::warn!(
                     "failed to read final assistant message from rollout {}: {err:#}",
                     abs.display()
