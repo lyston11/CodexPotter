@@ -114,106 +114,110 @@ impl PotterRoundEventBridge {
     pub async fn observe_backend_event(&mut self, event: &Event) -> anyhow::Result<Vec<Event>> {
         if let EventMsg::SessionConfigured(cfg) = &event.msg {
             self.session_model = Some(cfg.model.clone());
-        }
 
-        if !self.has_recorded_round_configured
-            && let EventMsg::SessionConfigured(cfg) = &event.msg
-        {
-            self.has_recorded_round_configured = true;
-            self.record_round_configured(cfg)
-                .context("record potter-rollout round_configured")?;
+            if !self.has_recorded_round_configured {
+                self.has_recorded_round_configured = true;
+                self.record_round_configured(cfg)
+                    .context("record potter-rollout round_configured")?;
+            }
         }
 
         let mut injected = Vec::new();
-        let mut should_run_project_stop_hook = None;
+        let mut stop_reason_code = None;
         if let EventMsg::PotterRoundFinished {
             outcome,
             duration_secs,
         } = &event.msg
         {
-            if matches!(outcome, PotterRoundOutcome::Interrupted) {
-                // Live ESC interruptions do not immediately finalize the round in
-                // `potter-rollout.jsonl`. The round stays open until the user resolves the paused
-                // project: `continue iterate` reuses the same thread and later appends a terminal
-                // `RoundFinished`, while `stop iterate` records `RoundFinished(Interrupted)` when
-                // the stop action is confirmed.
-                return Ok(Vec::new());
-            }
-
-            if matches!(outcome, PotterRoundOutcome::Completed) {
-                let stop_due_to_finite_incantatem =
-                    crate::workflow::project::progress_file_has_finite_incantatem_true_after_completed_round(
-                        &self.workdir,
-                        &self.progress_file_rel,
-                    )
-                    .context("check progress file finite_incantatem")?;
-
-                if stop_due_to_finite_incantatem {
-                    let potter_xmodel_enabled =
-                        crate::workflow::project::effective_potter_xmodel_enabled(
+            let is_last_round = self.round_current == self.round_total;
+            match outcome {
+                PotterRoundOutcome::Interrupted => {
+                    // Live ESC interruptions do not immediately finalize the round in
+                    // `potter-rollout.jsonl`. The round stays open until the user resolves the paused
+                    // project: `continue iterate` reuses the same thread and later appends a terminal
+                    // `RoundFinished`, while `stop iterate` records `RoundFinished(Interrupted)` when
+                    // the stop action is confirmed.
+                    return Ok(Vec::new());
+                }
+                PotterRoundOutcome::Completed => {
+                    let stop_due_to_finite_incantatem =
+                        crate::workflow::project::progress_file_has_finite_incantatem_true_after_completed_round(
                             &self.workdir,
                             &self.progress_file_rel,
-                            self.potter_xmodel_runtime,
                         )
-                        .context("read potter xmodel mode")?;
+                        .context("check progress file finite_incantatem")?;
 
-                    let should_emit_project_succeeded =
-                        crate::workflow::potter_xmodel::should_emit_project_succeeded(
-                            potter_xmodel_enabled,
-                            self.session_model.as_deref(),
-                        );
-                    if should_emit_project_succeeded {
+                    if stop_due_to_finite_incantatem {
+                        let potter_xmodel_enabled =
+                            crate::workflow::project::effective_potter_xmodel_enabled(
+                                &self.workdir,
+                                &self.progress_file_rel,
+                                self.potter_xmodel_runtime,
+                            )
+                            .context("read potter xmodel mode")?;
+
+                        let should_emit_project_succeeded =
+                            crate::workflow::potter_xmodel::should_emit_project_succeeded(
+                                potter_xmodel_enabled,
+                                self.session_model.as_deref(),
+                            );
+                        if should_emit_project_succeeded {
+                            let git_commit_end =
+                                crate::workflow::project::resolve_git_commit(&self.workdir);
+                            let elapsed = self.project_started_at.elapsed();
+                            crate::workflow::rollout::append_line(
+                                &self.potter_rollout_path,
+                                &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                                    rounds: self.project_rounds_run,
+                                    duration_secs: elapsed.as_secs(),
+                                    user_prompt_file: self.user_prompt_file.clone(),
+                                    git_commit_start: self.git_commit_start.clone(),
+                                    git_commit_end: git_commit_end.clone(),
+                                },
+                            )
+                            .context("append potter-rollout project_succeeded")?;
+
+                            injected.push(Event {
+                                id: "".to_string(),
+                                msg: EventMsg::PotterProjectSucceeded {
+                                    rounds: self.project_rounds_run,
+                                    duration: elapsed,
+                                    user_prompt_file: self.user_prompt_file.clone(),
+                                    git_commit_start: self.git_commit_start.clone(),
+                                    git_commit_end,
+                                },
+                            });
+                            stop_reason_code = Some("succeeded");
+                        }
+                    } else if is_last_round {
                         let git_commit_end =
                             crate::workflow::project::resolve_git_commit(&self.workdir);
-                        crate::workflow::rollout::append_line(
-                            &self.potter_rollout_path,
-                            &crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
-                                rounds: self.project_rounds_run,
-                                duration_secs: self.project_started_at.elapsed().as_secs(),
-                                user_prompt_file: self.user_prompt_file.clone(),
-                                git_commit_start: self.git_commit_start.clone(),
-                                git_commit_end: git_commit_end.clone(),
-                            },
-                        )
-                        .context("append potter-rollout project_succeeded")?;
-
+                        let elapsed = self.project_started_at.elapsed();
                         injected.push(Event {
                             id: "".to_string(),
-                            msg: EventMsg::PotterProjectSucceeded {
+                            msg: EventMsg::PotterProjectBudgetExhausted {
                                 rounds: self.project_rounds_run,
-                                duration: self.project_started_at.elapsed(),
+                                duration: elapsed,
                                 user_prompt_file: self.user_prompt_file.clone(),
                                 git_commit_start: self.git_commit_start.clone(),
                                 git_commit_end,
                             },
                         });
-                        should_run_project_stop_hook = Some("succeeded");
+                        stop_reason_code = Some("budget_exhausted");
                     }
-                } else if self.round_current == self.round_total {
-                    let git_commit_end =
-                        crate::workflow::project::resolve_git_commit(&self.workdir);
-                    injected.push(Event {
-                        id: "".to_string(),
-                        msg: EventMsg::PotterProjectBudgetExhausted {
-                            rounds: self.project_rounds_run,
-                            duration: self.project_started_at.elapsed(),
-                            user_prompt_file: self.user_prompt_file.clone(),
-                            git_commit_start: self.git_commit_start.clone(),
-                            git_commit_end,
-                        },
-                    });
-                    should_run_project_stop_hook = Some("budget_exhausted");
                 }
-            } else if matches!(outcome, PotterRoundOutcome::UserRequested) {
-                should_run_project_stop_hook = Some("fatal");
-            } else if matches!(outcome, PotterRoundOutcome::TaskFailed { .. }) {
-                should_run_project_stop_hook = Some("task_failed");
-            } else if matches!(outcome, PotterRoundOutcome::Fatal { .. })
-                && self.round_current == self.round_total
-            {
-                // Fatal rounds only terminate the project when no later budgeted round exists to
-                // recover from transient failures.
-                should_run_project_stop_hook = Some("fatal");
+                PotterRoundOutcome::UserRequested => {
+                    stop_reason_code = Some("fatal");
+                }
+                PotterRoundOutcome::TaskFailed { .. } => {
+                    stop_reason_code = Some("task_failed");
+                }
+                PotterRoundOutcome::Fatal { .. } if is_last_round => {
+                    // Fatal rounds only terminate the project when no later budgeted round exists to
+                    // recover from transient failures.
+                    stop_reason_code = Some("fatal");
+                }
+                _ => {}
             }
 
             crate::workflow::rollout::append_line(
@@ -225,7 +229,7 @@ impl PotterRoundEventBridge {
             )
             .context("append potter-rollout round_finished")?;
 
-            if let Some(stop_reason_code) = should_run_project_stop_hook {
+            if let Some(stop_reason_code) = stop_reason_code {
                 let mut hook_events =
                     crate::workflow::project_stop_hooks::build_project_stop_hook_events(
                         &self.workdir,
