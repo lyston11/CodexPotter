@@ -42,6 +42,7 @@ struct OverlayMetrics {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Controls which footer hints are rendered in the projects overlay.
 pub enum ProjectsOverlayFooterMode {
     #[default]
     ListOverlay,

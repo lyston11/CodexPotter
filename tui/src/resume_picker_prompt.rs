@@ -22,12 +22,14 @@ use crate::tui::Tui;
 use crate::tui::TuiEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Outcome of the resume picker UI.
 pub enum ResumePickerOutcome {
     StartFresh,
     Resume(PathBuf),
     Exit,
 }
 
+/// Run the interactive resume picker using the projects overlay UI.
 pub async fn run_resume_picker_prompt_with_tui(
     tui: &mut Tui,
     projects_overlay_provider: crate::ProjectsOverlayProviderChannels,
