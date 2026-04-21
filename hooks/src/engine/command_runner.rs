@@ -12,7 +12,7 @@ use super::ConfiguredHandler;
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) struct CommandRunResult {
+pub(super) struct CommandRunResult {
     pub started_at: i64,
     pub completed_at: i64,
     pub duration_ms: i64,
@@ -22,7 +22,7 @@ pub(crate) struct CommandRunResult {
     pub error: Option<String>,
 }
 
-pub(crate) async fn run_command(
+pub(super) async fn run_command(
     shell: &CommandShell,
     handler: &ConfiguredHandler,
     input_json: &str,

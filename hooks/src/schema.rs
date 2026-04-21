@@ -16,7 +16,7 @@ const POTTER_PROJECT_STOP_INPUT_FIXTURE: &str = "potter-project-stop.command.inp
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "potter-project-stop.command.input")]
-pub(crate) struct PotterProjectStopCommandInput {
+pub struct PotterProjectStopCommandInput {
     pub project_dir: String,
     pub project_file_path: String,
     pub cwd: String,

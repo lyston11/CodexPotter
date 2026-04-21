@@ -3,11 +3,11 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 #[allow(dead_code)]
-pub(crate) struct GeneratedHookSchemas {
+pub(super) struct GeneratedHookSchemas {
     pub potter_project_stop_command_input: Value,
 }
 
-pub(crate) fn generated_hook_schemas() -> &'static GeneratedHookSchemas {
+pub(super) fn generated_hook_schemas() -> &'static GeneratedHookSchemas {
     static SCHEMAS: OnceLock<GeneratedHookSchemas> = OnceLock::new();
     SCHEMAS.get_or_init(|| GeneratedHookSchemas {
         potter_project_stop_command_input: parse_json_schema(

@@ -17,12 +17,12 @@ use super::command_runner::run_command;
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) struct ParsedHandler<T> {
+pub(super) struct ParsedHandler<T> {
     pub completed: HookCompletedEvent,
     pub data: T,
 }
 
-pub(crate) fn select_handlers(
+pub(super) fn select_handlers(
     handlers: &[ConfiguredHandler],
     event_name: HookEventName,
     matcher_input: Option<&str>,
@@ -30,14 +30,12 @@ pub(crate) fn select_handlers(
     handlers
         .iter()
         .filter(|handler| handler.event_name == event_name)
-        .filter(|handler| {
-            crate::events::common::matches_matcher(handler.matcher.as_deref(), matcher_input)
-        })
+        .filter(|handler| super::common::matches_matcher(handler.matcher.as_deref(), matcher_input))
         .cloned()
         .collect()
 }
 
-pub(crate) fn running_summary(handler: &ConfiguredHandler) -> HookRunSummary {
+pub(super) fn running_summary(handler: &ConfiguredHandler) -> HookRunSummary {
     HookRunSummary {
         id: handler.run_id(),
         event_name: handler.event_name,
@@ -55,7 +53,7 @@ pub(crate) fn running_summary(handler: &ConfiguredHandler) -> HookRunSummary {
     }
 }
 
-pub(crate) async fn execute_handlers<T>(
+pub(super) async fn execute_handlers<T>(
     shell: &CommandShell,
     handlers: Vec<ConfiguredHandler>,
     input_json: String,
@@ -77,7 +75,7 @@ pub(crate) async fn execute_handlers<T>(
         .collect()
 }
 
-pub(crate) fn completed_summary(
+pub(super) fn completed_summary(
     handler: &ConfiguredHandler,
     run_result: &CommandRunResult,
     status: HookRunStatus,

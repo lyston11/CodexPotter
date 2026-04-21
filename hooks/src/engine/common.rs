@@ -4,10 +4,10 @@ use codex_protocol::protocol::HookOutputEntry;
 use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 
-use crate::engine::ConfiguredHandler;
-use crate::engine::dispatcher;
+use super::ConfiguredHandler;
+use super::dispatcher;
 
-pub(crate) fn trimmed_non_empty(text: &str) -> Option<String> {
+pub(super) fn trimmed_non_empty(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         None
@@ -16,7 +16,7 @@ pub(crate) fn trimmed_non_empty(text: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn serialization_failure_hook_events(
+pub(super) fn serialization_failure_hook_events(
     handlers: Vec<ConfiguredHandler>,
     turn_id: Option<String>,
     error_message: String,
@@ -40,7 +40,7 @@ pub(crate) fn serialization_failure_hook_events(
         .collect()
 }
 
-pub(crate) fn matcher_pattern_for_event(
+pub(super) fn matcher_pattern_for_event(
     event_name: HookEventName,
     matcher: Option<&str>,
 ) -> Option<&str> {
@@ -54,14 +54,14 @@ pub(crate) fn matcher_pattern_for_event(
     }
 }
 
-pub(crate) fn validate_matcher_pattern(matcher: &str) -> Result<(), regex::Error> {
+pub(super) fn validate_matcher_pattern(matcher: &str) -> Result<(), regex::Error> {
     if is_match_all_matcher(matcher) {
         return Ok(());
     }
     regex::Regex::new(matcher).map(|_| ())
 }
 
-pub(crate) fn matches_matcher(matcher: Option<&str>, input: Option<&str>) -> bool {
+pub(super) fn matches_matcher(matcher: Option<&str>, input: Option<&str>) -> bool {
     match matcher {
         None => true,
         Some(matcher) if is_match_all_matcher(matcher) => true,

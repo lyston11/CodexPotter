@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use crate::engine::CommandShell;
 use crate::engine::HooksEngine;
 use crate::events::project_stop::ProjectStopOutcome;
 use crate::events::project_stop::ProjectStopRequest;
@@ -47,10 +46,8 @@ impl Hooks {
         let engine = HooksEngine::new(
             config.cwd.as_deref(),
             config.codex_home_dir.as_deref(),
-            CommandShell {
-                program: config.shell_program.unwrap_or_default(),
-                args: config.shell_args,
-            },
+            config.shell_program.unwrap_or_default(),
+            config.shell_args,
         );
         Self { engine }
     }

@@ -5,18 +5,18 @@ use std::path::PathBuf;
 use codex_protocol::protocol::HookEventName;
 
 use super::ConfiguredHandler;
+use super::common::matcher_pattern_for_event;
+use super::common::validate_matcher_pattern;
 use super::config::HookHandlerConfig;
 use super::config::HooksFile;
 use super::config::MatcherGroup;
-use crate::events::common::matcher_pattern_for_event;
-use crate::events::common::validate_matcher_pattern;
 
-pub(crate) struct DiscoveryResult {
+pub(super) struct DiscoveryResult {
     pub handlers: Vec<ConfiguredHandler>,
     pub warnings: Vec<String>,
 }
 
-pub(crate) fn discover_handlers(cwd: &Path, codex_home_dir: Option<&Path>) -> DiscoveryResult {
+pub(super) fn discover_handlers(cwd: &Path, codex_home_dir: Option<&Path>) -> DiscoveryResult {
     let mut handlers = Vec::new();
     let mut warnings = Vec::new();
     let mut display_order = 0_i64;
@@ -205,7 +205,7 @@ fn find_repo_root(cwd: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use crate::events::common::matcher_pattern_for_event;
+    use crate::engine::common::matcher_pattern_for_event;
 
     use codex_protocol::protocol::HookEventName;
     use pretty_assertions::assert_eq;

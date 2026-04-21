@@ -1,28 +1,28 @@
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct HooksFile {
+pub(super) struct HooksFile {
     #[serde(default)]
-    pub hooks: HookEvents,
+    pub(super) hooks: HookEvents,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct HookEvents {
+pub(super) struct HookEvents {
     #[serde(rename = "Potter.ProjectStop", default)]
-    pub potter_project_stop: Vec<MatcherGroup>,
+    pub(super) potter_project_stop: Vec<MatcherGroup>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct MatcherGroup {
+pub(super) struct MatcherGroup {
     #[serde(default)]
-    pub matcher: Option<String>,
+    pub(super) matcher: Option<String>,
     #[serde(default)]
-    pub hooks: Vec<HookHandlerConfig>,
+    pub(super) hooks: Vec<HookHandlerConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
-pub(crate) enum HookHandlerConfig {
+pub(super) enum HookHandlerConfig {
     #[serde(rename = "command")]
     Command {
         command: String,
