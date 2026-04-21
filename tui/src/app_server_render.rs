@@ -2228,7 +2228,7 @@ impl RenderAppState {
     fn draw(&mut self, tui: &mut Tui) -> anyhow::Result<()> {
         if self.projects_overlay.is_open() {
             if !tui.is_alt_screen_active() {
-                let _ = tui.enter_alt_screen();
+                tui.enter_alt_screen()?;
             }
             self.projects_overlay_alt_screen_active = tui.is_alt_screen_active();
             tui.draw(u16::MAX, |frame| {
@@ -2242,7 +2242,7 @@ impl RenderAppState {
         }
 
         if self.projects_overlay_alt_screen_active {
-            let _ = tui.leave_alt_screen();
+            tui.leave_alt_screen()?;
             self.projects_overlay_alt_screen_active = false;
         }
 
