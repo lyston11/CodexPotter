@@ -150,7 +150,9 @@ pub enum EventMsg {
         /// Total wall time spent in this round, in whole seconds.
         ///
         /// This is measured by the CodexPotter control plane (not derived from upstream rollout
-        /// timestamps), so it remains stable across different UI renderers.
+        /// timestamps), so it remains stable across different UI renderers. `0` means the
+        /// duration is unavailable, which keeps legacy persisted event payloads decodable.
+        #[serde(default)]
         duration_secs: u64,
     },
 
@@ -1361,6 +1363,26 @@ mod tests {
                 "final_output_json_schema": schema,
             })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn potter_round_finished_deserializes_without_duration_secs() -> Result<()> {
+        let msg: EventMsg = serde_json::from_value(json!({
+            "type": "potter_round_finished",
+            "outcome": {
+                "type": "completed"
+            }
+        }))?;
+
+        assert!(matches!(
+            msg,
+            EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
+            }
+        ));
 
         Ok(())
     }
