@@ -115,8 +115,11 @@ fn build_project_details_for_overlay_inner(
 ///
 /// Selection rules:
 /// - Prefer the last `agent_message` with `phase = "final_answer"`.
-/// - If no `phase` metadata is present anywhere in the file (legacy logs), fall back to the last
-///   `agent_message` without a phase.
+/// - Otherwise, fall back to the last `agent_message` without a phase (phase unknown; treated as
+///   final answer for compatibility).
+/// - If no suitable `agent_message` exists, fall back to the last `turn_complete.last_agent_message`
+///   when present (legacy senders that attach the final answer to TurnComplete instead of an
+///   agent message item).
 pub fn read_final_agent_message_from_rollout(
     rollout_path: &Path,
 ) -> anyhow::Result<(Option<u64>, Option<String>)> {
@@ -126,7 +129,7 @@ pub fn read_final_agent_message_from_rollout(
 
     let mut last_without_phase: Option<(u64, String)> = None;
     let mut last_final: Option<(u64, String)> = None;
-    let mut saw_explicit_phase = false;
+    let mut last_turn_complete: Option<(u64, String)> = None;
 
     for (idx, line) in reader.lines().enumerate() {
         let line_number = idx + 1;
@@ -152,10 +155,10 @@ pub fn read_final_agent_message_from_rollout(
             .and_then(|payload| payload.get("type"))
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        if payload_type != "agent_message" {
+        if payload_type != "agent_message" && payload_type != "turn_complete" {
             continue;
         }
-        let payload = payload.context("rollout agent_message event missing payload")?;
+        let payload = payload.context("rollout event missing payload")?;
 
         let Some(ts) = value.get("timestamp").and_then(serde_json::Value::as_str) else {
             continue;
@@ -165,36 +168,45 @@ pub fn read_final_agent_message_from_rollout(
         let unix_secs = u64::try_from(parsed.timestamp())
             .context("convert rollout timestamp to unix seconds")?;
 
-        let Some(message) = payload.get("message").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let phase = payload.get("phase").and_then(serde_json::Value::as_str);
-        let message = message.to_string();
+        match payload_type {
+            "agent_message" => {
+                let Some(message) = payload.get("message").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let phase = payload.get("phase").and_then(serde_json::Value::as_str);
+                let message = message.to_string();
 
-        match phase {
-            Some("final_answer") => {
-                saw_explicit_phase = true;
-                last_final = Some((unix_secs, message));
+                match phase {
+                    Some("final_answer") => {
+                        last_final = Some((unix_secs, message));
+                    }
+                    Some(_) => {}
+                    None => {
+                        last_without_phase = Some((unix_secs, message));
+                    }
+                }
             }
-            Some(_) => {
-                saw_explicit_phase = true;
+            "turn_complete" => {
+                let Some(message) = payload
+                    .get("last_agent_message")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let message = message.to_string();
+                if !message.is_empty() {
+                    last_turn_complete = Some((unix_secs, message));
+                }
             }
-            None => {
-                last_without_phase = Some((unix_secs, message));
-            }
+            _ => {}
         }
     }
 
-    // The overlay should show each round's conclusion, not mid-turn commentary. Modern logs mark
-    // final answers explicitly; only legacy logs with no `phase` metadata fall back to the last
-    // completed agent message for compatibility.
-    let selected = if let Some(final_answer) = last_final {
-        Some(final_answer)
-    } else if !saw_explicit_phase {
-        last_without_phase
-    } else {
-        None
-    };
+    // The overlay should show each round's conclusion, not mid-turn commentary. Prefer explicit
+    // `final_answer` phases when present. Phase-less messages are treated as final answers for
+    // compatibility, even if other messages include phase metadata.
+    let selected = last_final.or(last_without_phase).or(last_turn_complete);
 
     if let Some((secs, message)) = selected {
         let secs = if secs == 0 { None } else { Some(secs) };
@@ -262,6 +274,40 @@ mod tests {
         let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
         assert_eq!(secs, Some(1_772_323_201));
         assert_eq!(message.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn final_agent_message_uses_phase_missing_message_even_when_commentary_phase_exists() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = temp.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout_path,
+            r#"{"timestamp":"2026-03-01T00:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"commentary","phase":"commentary"}}
+{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"final without phase"}}
+"#,
+        )
+        .expect("write rollout");
+
+        let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
+        assert_eq!(secs, Some(1_772_323_201));
+        assert_eq!(message.as_deref(), Some("final without phase"));
+    }
+
+    #[test]
+    fn final_agent_message_falls_back_to_turn_complete_last_agent_message_when_needed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = temp.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout_path,
+            r#"{"timestamp":"2026-03-01T00:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"commentary","phase":"commentary"}}
+{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"turn_complete","turn_id":"turn-1","last_agent_message":"final"}}
+"#,
+        )
+        .expect("write rollout");
+
+        let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
+        assert_eq!(secs, Some(1_772_323_201));
+        assert_eq!(message.as_deref(), Some("final"));
     }
 
     #[test]

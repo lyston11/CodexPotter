@@ -525,6 +525,12 @@ struct AppServerEventProcessor {
     /// Divergence (codex-potter): keep the latest completed agent message pending in
     /// `Verbosity::Minimal` until a later visible event confirms whether it is final.
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
+    /// Tracks whether the current turn produced a non-commentary `AgentMessage`.
+    ///
+    /// This is used to decide whether `TurnComplete.last_agent_message` should be rendered as the
+    /// final answer (compatibility with legacy providers/replay logs that do not emit a final
+    /// agent message item).
+    turn_has_non_commentary_agent_message: bool,
     /// Divergence (codex-potter): include the current process's incoming global flags in the
     /// `Loop more rounds:` resume command rendered by project summary blocks.
     potter_resume_command_global_args: Vec<String>,
@@ -584,6 +590,7 @@ impl AppServerEventProcessor {
             pending_compact_patch_changes: Vec::new(),
             pending_compact_patch_preview: None,
             pending_minimal_agent_message_lines: None,
+            turn_has_non_commentary_agent_message: false,
             potter_resume_command_global_args: Vec::new(),
             pending_potter_project_summary: None,
             pending_potter_round_marker: None,
@@ -926,6 +933,7 @@ impl AppServerEventProcessor {
                 self.plan_stream = None;
                 self.saw_agent_delta = false;
                 self.saw_plan_delta = false;
+                self.turn_has_non_commentary_agent_message = false;
             }
             EventMsg::AgentMessageDelta(ev) => {
                 self.flush_pending_live_activity_cells();
@@ -969,6 +977,9 @@ impl AppServerEventProcessor {
             }
             EventMsg::AgentMessage(ev) => {
                 self.flush_pending_live_activity_cells();
+                if ev.phase != Some(MessagePhase::Commentary) {
+                    self.turn_has_non_commentary_agent_message = true;
+                }
                 if self.verbosity == Verbosity::Minimal {
                     if ev.phase == Some(MessagePhase::Commentary) {
                         if self.saw_agent_delta {
@@ -997,9 +1008,24 @@ impl AppServerEventProcessor {
                 self.maybe_emit_final_message_separator();
                 self.emit_agent_message(&ev.message, false);
             }
-            EventMsg::TurnComplete(_) => {
+            EventMsg::TurnComplete(ev) => {
                 self.flush_pending_live_activity_cells();
-                self.flush_agent_output(true);
+                if let Some(message) = ev.last_agent_message.as_deref()
+                    && !message.is_empty()
+                    && !self.turn_has_non_commentary_agent_message
+                {
+                    self.pending_minimal_agent_message_lines = None;
+                    if self.saw_agent_delta {
+                        let _ = self.take_streamed_agent_message_lines();
+                    }
+                    self.insert_agent_message_lines_direct(
+                        self.build_agent_message_lines(message),
+                        false,
+                    );
+                    self.turn_has_non_commentary_agent_message = true;
+                } else {
+                    self.flush_agent_output(true);
+                }
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 self.maybe_emit_potter_project_summary();
@@ -6322,6 +6348,55 @@ mod tests {
 
         let cells = drain_history_cell_strings(&mut rx, width);
         pretty_assertions::assert_eq!(cells, vec![vec!["• hello".to_string()]]);
+    }
+
+    #[test]
+    fn round_renderer_renders_turn_complete_last_agent_message_when_no_agent_message_emitted() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: Some("hello".to_string()),
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx, width);
+        pretty_assertions::assert_eq!(cells, vec![vec!["• hello".to_string()]]);
+    }
+
+    #[test]
+    fn round_renderer_minimal_commentary_turn_uses_turn_complete_last_agent_message_as_final() {
+        let width: u16 = 80;
+
+        let (mut proc, mut rx) = make_round_renderer_processor_without_prompt();
+
+        proc.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "commentary".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx, width).is_empty(),
+            "expected commentary agent message to be suppressed in minimal mode"
+        );
+
+        proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: Some("final".to_string()),
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx, width);
+        pretty_assertions::assert_eq!(cells, vec![vec!["• final".to_string()]]);
     }
 
     #[test]

@@ -107,6 +107,7 @@ pub struct ExecHumanRenderer {
     plan_stream: Option<PlanStreamController>,
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
     pending_minimal_agent_message_visible: bool,
+    turn_has_non_commentary_agent_message: bool,
     pending_project_summary: Option<PendingProjectSummary>,
     pending_simple_final_message_separator: bool,
     separator_baseline: Option<Instant>,
@@ -136,6 +137,7 @@ impl ExecHumanRenderer {
             plan_stream: None,
             pending_minimal_agent_message_lines: None,
             pending_minimal_agent_message_visible: false,
+            turn_has_non_commentary_agent_message: false,
             pending_project_summary: None,
             pending_simple_final_message_separator: false,
             separator_baseline: None,
@@ -218,6 +220,7 @@ impl ExecHumanRenderer {
                 self.model_context_window = ev.model_context_window;
                 self.context_output_level = EXEC_REASONING_CONTEXT_MAX_LEVEL;
                 self.reasoning_status.reset();
+                self.turn_has_non_commentary_agent_message = false;
             }
             EventMsg::PotterProjectStarted {
                 working_dir,
@@ -291,8 +294,25 @@ impl ExecHumanRenderer {
                 self.session_meta = None;
                 self.pending_round_marker = None;
             }
-            EventMsg::TurnComplete(_) => {
-                out.extend(self.flush_agent_output(true)?);
+            EventMsg::TurnComplete(ev) => {
+                if let Some(message) = ev.last_agent_message.as_deref()
+                    && !message.is_empty()
+                    && !self.turn_has_non_commentary_agent_message
+                {
+                    self.pending_minimal_agent_message_lines = None;
+                    self.pending_minimal_agent_message_visible = false;
+                    if self.saw_agent_delta {
+                        let _ = self.stream.take_finalized_lines();
+                        self.saw_agent_delta = false;
+                    }
+                    let lines = self.build_agent_message_lines(message);
+                    if !lines.is_empty() {
+                        out.push(self.render_agent_message_block(lines, false)?);
+                    }
+                    self.turn_has_non_commentary_agent_message = true;
+                } else {
+                    out.extend(self.flush_agent_output(true)?);
+                }
                 out.extend(self.flush_plan_stream()?);
                 if let Some(summary) = self.pending_project_summary.take() {
                     out.push(self.render_project_summary(summary)?);
@@ -343,6 +363,9 @@ impl ExecHumanRenderer {
                 self.reasoning_status.on_final();
             }
             EventMsg::AgentMessage(ev) => {
+                if ev.phase != Some(MessagePhase::Commentary) {
+                    self.turn_has_non_commentary_agent_message = true;
+                }
                 if self.verbosity == Verbosity::Minimal {
                     if ev.phase == Some(MessagePhase::Commentary) {
                         if self.saw_agent_delta {
