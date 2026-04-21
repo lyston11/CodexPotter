@@ -134,6 +134,16 @@ pub fn read_final_agent_message_from_rollout(
             continue;
         }
 
+        let payload = value.get("payload");
+        let payload_type = payload
+            .and_then(|payload| payload.get("type"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if payload_type != "agent_message" {
+            continue;
+        }
+        let payload = payload.context("rollout agent_message event missing payload")?;
+
         let Some(ts) = value.get("timestamp").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -141,17 +151,6 @@ pub fn read_final_agent_message_from_rollout(
             .with_context(|| format!("parse rollout timestamp {ts:?}"))?;
         let unix_secs = u64::try_from(parsed.timestamp())
             .context("convert rollout timestamp to unix seconds")?;
-
-        let payload = value
-            .get("payload")
-            .context("rollout event_msg missing payload")?;
-        let payload_type = payload
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if payload_type != "agent_message" {
-            continue;
-        }
 
         let Some(message) = payload.get("message").and_then(serde_json::Value::as_str) else {
             continue;
@@ -286,6 +285,23 @@ mod tests {
         let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
         assert_eq!(secs, None);
         assert_eq!(message, None);
+    }
+
+    #[test]
+    fn final_agent_message_ignores_invalid_timestamps_on_non_agent_events() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = temp.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout_path,
+            r#"{"timestamp":"not-a-date","type":"event_msg","payload":{"type":"token_count"}}
+{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"final","phase":"final_answer"}}
+"#,
+        )
+        .expect("write rollout");
+
+        let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
+        assert_eq!(secs, Some(1_772_323_201));
+        assert_eq!(message.as_deref(), Some("final"));
     }
 
     #[test]
