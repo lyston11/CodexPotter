@@ -57,14 +57,16 @@ fn prepare_project_stop_hook_request(
                               round_current: u32,
                               rollout_path: &Path,
                               warnings: &mut Vec<String>| {
-        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+        match crate::workflow::projects_overlay_details::read_final_agent_message_for_replay(
             workdir,
             rollout_path,
-        );
-        match crate::workflow::projects_overlay_details::read_final_agent_message_from_rollout(&abs)
-        {
+        ) {
             Ok((_, message)) => message.unwrap_or_default(),
             Err(err) => {
+                let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+                    workdir,
+                    rollout_path,
+                );
                 warnings.push(format!(
                     "Potter.ProjectStop hooks: failed to read final assistant message for {round_label} {round_current} from rollout {}: {err:#}",
                     abs.display()

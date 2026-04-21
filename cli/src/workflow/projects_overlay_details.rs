@@ -57,11 +57,7 @@ fn build_project_details_for_overlay_inner(
     let mut rounds = Vec::new();
 
     let read_round_message = |rollout_path: &Path| -> (Option<u64>, Option<String>) {
-        let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
-            workdir,
-            rollout_path,
-        );
-        read_final_agent_message_from_rollout(&abs).unwrap_or((None, None))
+        read_final_agent_message_for_replay(workdir, rollout_path).unwrap_or((None, None))
     };
 
     for round in index.completed_rounds {
@@ -201,6 +197,18 @@ pub fn read_final_agent_message_from_rollout(
     }
 }
 
+/// Resolve a recorded rollout path against `workdir` and read its final assistant message.
+pub fn read_final_agent_message_for_replay(
+    workdir: &Path,
+    rollout_path: &Path,
+) -> anyhow::Result<(Option<u64>, Option<String>)> {
+    let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+        workdir,
+        rollout_path,
+    );
+    read_final_agent_message_from_rollout(&abs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +250,26 @@ mod tests {
         let (secs, message) = read_final_agent_message_from_rollout(&rollout_path).expect("read");
         assert_eq!(secs, Some(1_772_323_201));
         assert_eq!(message.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn final_agent_message_for_replay_resolves_relative_rollout_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let rollout_rel = Path::new("nested/rollout.jsonl");
+        let rollout_path = workdir.join(rollout_rel);
+        std::fs::create_dir_all(rollout_path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &rollout_path,
+            r#"{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"final","phase":"final_answer"}}
+"#,
+        )
+        .expect("write rollout");
+
+        let (secs, message) =
+            read_final_agent_message_for_replay(workdir, rollout_rel).expect("read");
+        assert_eq!(secs, Some(1_772_323_201));
+        assert_eq!(message.as_deref(), Some("final"));
     }
 
     #[test]
