@@ -2616,7 +2616,7 @@ impl RenderAppState {
         );
 
         match &event.msg {
-            EventMsg::PotterRoundFinished { outcome } if should_exit_on_round_end => {
+            EventMsg::PotterRoundFinished { outcome, .. } if should_exit_on_round_end => {
                 let exit_reason = match outcome {
                     codex_protocol::protocol::PotterRoundOutcome::Completed => {
                         ExitReason::Completed
@@ -3734,6 +3734,7 @@ mod tests {
                     outcome: codex_protocol::protocol::PotterRoundOutcome::TaskFailed {
                         message: "stream recovery gave up".to_string(),
                     },
+                    duration_secs: 0,
                 },
             },
         )
@@ -4848,6 +4849,7 @@ mod tests {
                 id: "round-finished".into(),
                 msg: EventMsg::PotterRoundFinished {
                     outcome: codex_protocol::protocol::PotterRoundOutcome::Interrupted,
+                    duration_secs: 0,
                 },
             },
         )
@@ -7522,6 +7524,7 @@ mod tests {
             id: "round-finished".into(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         });
 

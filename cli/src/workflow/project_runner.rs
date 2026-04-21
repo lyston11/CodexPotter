@@ -484,7 +484,7 @@ mod tests {
                 } = params;
 
                 while let Some(event) = codex_event_rx.recv().await {
-                    if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                    if let EventMsg::PotterRoundFinished { outcome, .. } = &event.msg {
                         return Ok(codex_tui::AppExitInfo {
                             token_usage: TokenUsage::default(),
                             thread_id: None,
@@ -634,6 +634,7 @@ mod tests {
                         id: String::new(),
                         msg: EventMsg::PotterRoundFinished {
                             outcome: PotterRoundOutcome::Interrupted,
+                            duration_secs: 0,
                         },
                     },
                     Event {
@@ -676,6 +677,7 @@ mod tests {
                             id: String::new(),
                             msg: EventMsg::PotterRoundFinished {
                                 outcome: PotterRoundOutcome::Completed,
+                                duration_secs: 0,
                             },
                         },
                         Event {
@@ -760,6 +762,7 @@ mod tests {
                         id: String::new(),
                         msg: EventMsg::PotterRoundFinished {
                             outcome: PotterRoundOutcome::Completed,
+                            duration_secs: 0,
                         },
                     },
                     Event {
@@ -1059,6 +1062,7 @@ mod tests {
                         outcome: PotterRoundOutcome::Fatal {
                             message: String::from("access token refresh failed"),
                         },
+                        duration_secs: 0,
                     },
                 },
             ],
@@ -1074,6 +1078,7 @@ mod tests {
                     id: String::new(),
                     msg: EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        duration_secs: 0,
                     },
                 },
                 Event {

@@ -147,6 +147,11 @@ pub enum EventMsg {
     /// with the provided outcome.
     PotterRoundFinished {
         outcome: PotterRoundOutcome,
+        /// Total wall time spent in this round, in whole seconds.
+        ///
+        /// This is measured by the CodexPotter control plane (not derived from upstream rollout
+        /// timestamps), so it remains stable across different UI renderers.
+        duration_secs: u64,
     },
 
     /// `codex-potter` stream recovery update.

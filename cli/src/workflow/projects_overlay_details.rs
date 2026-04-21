@@ -335,6 +335,7 @@ mod tests {
             &potter_rollout_path,
             &PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Interrupted,
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");

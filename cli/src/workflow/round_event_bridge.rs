@@ -126,7 +126,11 @@ impl PotterRoundEventBridge {
 
         let mut injected = Vec::new();
         let mut should_run_project_stop_hook = None;
-        if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+        if let EventMsg::PotterRoundFinished {
+            outcome,
+            duration_secs,
+        } = &event.msg
+        {
             if matches!(outcome, PotterRoundOutcome::Interrupted) {
                 // Live ESC interruptions do not immediately finalize the round in
                 // `potter-rollout.jsonl`. The round stays open until the user resolves the paused
@@ -216,6 +220,7 @@ impl PotterRoundEventBridge {
                 &self.potter_rollout_path,
                 &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                     outcome: outcome.clone(),
+                    duration_secs: *duration_secs,
                 },
             )
             .context("append potter-rollout round_finished")?;
@@ -363,6 +368,7 @@ potter.xmodel: {potter_xmodel}
             potter_rollout_path,
             &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");
@@ -477,6 +483,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
         let injected = bridge
@@ -679,6 +686,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
         let injected = bridge
@@ -786,6 +794,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
         let injected = bridge
@@ -966,6 +975,7 @@ potter.xmodel: {potter_xmodel}
                 id: "event_2".to_string(),
                 msg: EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 733,
                 },
             };
 
@@ -987,7 +997,8 @@ potter.xmodel: {potter_xmodel}
             assert!(matches!(
                 &lines[1],
                 crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                    outcome: PotterRoundOutcome::Completed
+                    outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 733,
                 }
             ));
         }
@@ -1021,6 +1032,7 @@ potter.xmodel: {potter_xmodel}
                 id: "event_2".to_string(),
                 msg: EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 0,
                 },
             };
 
@@ -1035,7 +1047,8 @@ potter.xmodel: {potter_xmodel}
             assert!(matches!(
                 &lines[0],
                 crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                    outcome: PotterRoundOutcome::Completed
+                    outcome: PotterRoundOutcome::Completed,
+                    ..
                 }
             ));
         }
@@ -1047,6 +1060,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
 
@@ -1096,7 +1110,8 @@ potter.xmodel: {potter_xmodel}
             assert!(matches!(
                 &lines[0],
                 crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                    outcome: PotterRoundOutcome::Completed
+                    outcome: PotterRoundOutcome::Completed,
+                    ..
                 }
             ));
         }
@@ -1147,7 +1162,8 @@ potter.xmodel: {potter_xmodel}
             assert!(matches!(
                 &lines[0],
                 crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                    outcome: PotterRoundOutcome::Completed
+                    outcome: PotterRoundOutcome::Completed,
+                    ..
                 }
             ));
         }
@@ -1184,6 +1200,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
 
@@ -1201,7 +1218,8 @@ potter.xmodel: {potter_xmodel}
         assert!(matches!(
             &lines[0],
             crate::workflow::rollout::PotterRolloutLine::RoundFinished {
-                outcome: PotterRoundOutcome::Completed
+                outcome: PotterRoundOutcome::Completed,
+                ..
             }
         ));
     }
@@ -1236,6 +1254,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Interrupted,
+                duration_secs: 0,
             },
         };
 
@@ -1280,6 +1299,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
 
@@ -1330,6 +1350,7 @@ potter.xmodel: {potter_xmodel}
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         };
 
@@ -1347,6 +1368,7 @@ potter.xmodel: {potter_xmodel}
             lines,
             vec![crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             }]
         );
     }

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::app_server::stream_recovery::ContinueRetryDecision;
 use crate::app_server::stream_recovery::ContinueRetryPlan;
@@ -196,6 +197,7 @@ struct StreamRecoveryContext {
     last_context_compaction_turn_id: Option<String>,
     has_sent_turn_start: bool,
     has_finished_round: bool,
+    round_started_at: Instant,
     last_turn_start_was_recovery_continue: bool,
     event_mode: AppServerEventMode,
     server_request_policy: ServerRequestPolicy,
@@ -274,6 +276,7 @@ pub async fn run_app_server_backend(
                 id: "".to_string(),
                 msg: EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::TaskFailed { message },
+                    duration_secs: 0,
                 },
             });
 
@@ -356,6 +359,7 @@ async fn run_app_server_backend_inner(
         last_context_compaction_turn_id: None,
         has_sent_turn_start: false,
         has_finished_round: false,
+        round_started_at: Instant::now(),
         last_turn_start_was_recovery_continue: false,
         event_mode,
         server_request_policy: ServerRequestPolicy {
@@ -2076,7 +2080,10 @@ fn handle_codex_event(
         recovery.has_finished_round = true;
         let _ = event_tx.send(Event {
             id: event_id,
-            msg: EventMsg::PotterRoundFinished { outcome },
+            msg: EventMsg::PotterRoundFinished {
+                outcome,
+                duration_secs: recovery.round_started_at.elapsed().as_secs(),
+            },
         });
     }
 }
@@ -2559,6 +2566,7 @@ mod stream_recovery_tests {
             last_context_compaction_turn_id: None,
             has_sent_turn_start,
             has_finished_round: false,
+            round_started_at: Instant::now(),
             last_turn_start_was_recovery_continue: false,
             event_mode,
             server_request_policy: ServerRequestPolicy::default(),
@@ -2708,7 +2716,8 @@ mod stream_recovery_tests {
         assert!(matches!(
             round_finished.msg,
             EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::Fatal { .. }
+                outcome: PotterRoundOutcome::Fatal { .. },
+                ..
             }
         ));
         assert!(
@@ -2822,7 +2831,8 @@ mod stream_recovery_tests {
         assert!(matches!(
             round_finished.msg,
             EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::TaskFailed { .. }
+                outcome: PotterRoundOutcome::TaskFailed { .. },
+                ..
             }
         ));
 
@@ -2865,7 +2875,8 @@ mod stream_recovery_tests {
         assert!(matches!(
             round_finished.msg,
             EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::Fatal { .. }
+                outcome: PotterRoundOutcome::Fatal { .. },
+                ..
             }
         ));
         assert!(
@@ -3059,6 +3070,7 @@ mod tests {
             last_context_compaction_turn_id: None,
             has_sent_turn_start: true,
             has_finished_round: false,
+            round_started_at: Instant::now(),
             last_turn_start_was_recovery_continue: false,
             event_mode,
             server_request_policy: ServerRequestPolicy::default(),
@@ -3625,6 +3637,7 @@ done
                     }
                     EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        ..
                     } => {
                         return saw_turn_started;
                     }
@@ -3731,6 +3744,7 @@ done
             while let Some(event) = event_rx.recv().await {
                 if let EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Completed,
+                    ..
                 } = event.msg
                 {
                     return true;
@@ -3827,6 +3841,7 @@ echo '{"id":1,"result":null}'
                 PotterRoundOutcome::TaskFailed {
                     message: finished_message,
                 },
+            ..
         } = finished_event.msg
         else {
             panic!(
@@ -3998,6 +4013,7 @@ done
                     }
                     EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        ..
                     } => {
                         return saw_turn_started && saw_decode_warning;
                     }
@@ -4077,6 +4093,7 @@ done
                 PotterRoundOutcome::TaskFailed {
                     message: finished_message,
                 },
+            ..
         } = finished_event.msg
         else {
             panic!(
@@ -4222,6 +4239,7 @@ done
                     },
                     EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        ..
                     } => {
                         return saw_request_user_input
                             && saw_request_permissions
@@ -4330,6 +4348,7 @@ done
             while let Some(event) = event_rx.recv().await {
                 if let EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Fatal { message },
+                    ..
                 } = event.msg
                 {
                     return Some(message);
@@ -4432,6 +4451,7 @@ done
             while let Some(event) = event_rx.recv().await {
                 if let EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Fatal { message },
+                    ..
                 } = event.msg
                 {
                     return Some(message);
@@ -4824,7 +4844,8 @@ done
                 if matches!(
                     event.msg,
                     EventMsg::PotterRoundFinished {
-                        outcome: PotterRoundOutcome::Interrupted
+                        outcome: PotterRoundOutcome::Interrupted,
+                        ..
                     }
                 ) {
                     return true;

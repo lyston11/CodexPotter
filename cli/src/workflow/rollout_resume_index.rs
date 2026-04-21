@@ -36,6 +36,7 @@ pub struct CompletedRoundIndex {
     pub configured: Option<RoundConfigurationIndex>,
     pub project_succeeded: Option<ProjectSucceededIndex>,
     pub outcome: PotterRoundOutcome,
+    pub duration_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +143,10 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                     git_commit_end: git_commit_end.clone(),
                 });
             }
-            PotterRolloutLine::RoundFinished { outcome } => {
+            PotterRolloutLine::RoundFinished {
+                outcome,
+                duration_secs,
+            } => {
                 let Some(builder) = current.take() else {
                     anyhow::bail!("potter-rollout: round_finished without round_started");
                 };
@@ -174,6 +178,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                     configured,
                     project_succeeded: builder.project_succeeded,
                     outcome: outcome.clone(),
+                    duration_secs: *duration_secs,
                 });
             }
         }
@@ -295,6 +300,7 @@ mod tests {
             }
             lines.push(PotterRolloutLine::RoundFinished {
                 outcome: case.outcome.clone(),
+                duration_secs: 42,
             });
 
             let index = build_resume_index(&lines).expect("build resume index");
@@ -315,6 +321,7 @@ mod tests {
                         }),
                         project_succeeded: expected_project_succeeded,
                         outcome: case.outcome,
+                        duration_secs: 42,
                     }],
                     unfinished_round: None,
                 },
@@ -394,6 +401,7 @@ mod tests {
                 outcome: PotterRoundOutcome::TaskFailed {
                     message: "nope".to_string(),
                 },
+                duration_secs: 0,
             },
         ];
 
@@ -423,6 +431,7 @@ mod tests {
                 outcome: PotterRoundOutcome::TaskFailed {
                     message: "init failed".to_string(),
                 },
+                duration_secs: 0,
             },
         ];
 
@@ -437,6 +446,7 @@ mod tests {
                 outcome: PotterRoundOutcome::TaskFailed {
                     message: "init failed".to_string(),
                 },
+                duration_secs: 0,
             }]
         );
     }
@@ -454,6 +464,7 @@ mod tests {
             },
             PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         ];
 

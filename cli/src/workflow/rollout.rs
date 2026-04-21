@@ -52,6 +52,8 @@ pub enum PotterRolloutLine {
     },
     RoundFinished {
         outcome: PotterRoundOutcome,
+        #[serde(default)]
+        duration_secs: u64,
     },
 }
 

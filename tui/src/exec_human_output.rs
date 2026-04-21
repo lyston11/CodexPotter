@@ -1353,6 +1353,7 @@ mod tests {
         let blocks = renderer
             .handle_event(&EventMsg::PotterRoundFinished {
                 outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                duration_secs: 0,
             })
             .expect("emit summary");
         assert_eq!(blocks.len(), 1);
@@ -1387,6 +1388,7 @@ mod tests {
             let blocks = renderer
                 .handle_event(&EventMsg::PotterRoundFinished {
                     outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                    duration_secs: 0,
                 })
                 .expect("emit summary");
             assert_eq!(blocks.len(), 1);
@@ -1411,6 +1413,7 @@ mod tests {
             let blocks = renderer
                 .handle_event(&EventMsg::PotterRoundFinished {
                     outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                    duration_secs: 0,
                 })
                 .expect("emit summary");
             assert_eq!(blocks.len(), 1);

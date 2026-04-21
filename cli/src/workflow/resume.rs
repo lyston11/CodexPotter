@@ -798,6 +798,7 @@ fn build_round_replay_plans(
 
         events.push(EventMsg::PotterRoundFinished {
             outcome: round.outcome.clone(),
+            duration_secs: round.duration_secs,
         });
 
         rounds.push(RoundReplayPlan {
@@ -881,6 +882,7 @@ fn build_unfinished_round_pre_action_events(
     });
     events.push(EventMsg::PotterRoundFinished {
         outcome: PotterRoundOutcome::Completed,
+        duration_secs: 0,
     });
     events
 }
@@ -1103,7 +1105,7 @@ mod tests {
                     mut codex_event_rx, ..
                 } = params;
                 while let Some(event) = codex_event_rx.recv().await {
-                    if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                    if let EventMsg::PotterRoundFinished { outcome, .. } = &event.msg {
                         return Ok(codex_tui::AppExitInfo {
                             token_usage: TokenUsage::default(),
                             thread_id: None,
@@ -1383,6 +1385,7 @@ mod tests {
                     },
                     EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        duration_secs: 0,
                     },
                 ],
                 remaining_rounds_including_current: 1,
@@ -1395,6 +1398,7 @@ mod tests {
                     id: String::new(),
                     msg: EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        duration_secs: 0,
                     },
                 },
                 Event {
@@ -1472,6 +1476,7 @@ mod tests {
                         id: String::new(),
                         msg: EventMsg::PotterRoundFinished {
                             outcome: PotterRoundOutcome::Interrupted,
+                            duration_secs: 0,
                         },
                     },
                     Event {
@@ -1489,6 +1494,7 @@ mod tests {
                             id: String::new(),
                             msg: EventMsg::PotterRoundFinished {
                                 outcome: PotterRoundOutcome::Completed,
+                                duration_secs: 0,
                             },
                         },
                         Event {
@@ -1588,6 +1594,7 @@ mod tests {
                         id: String::new(),
                         msg: EventMsg::PotterRoundFinished {
                             outcome: PotterRoundOutcome::Interrupted,
+                            duration_secs: 0,
                         },
                     },
                     Event {
@@ -1689,6 +1696,7 @@ mod tests {
                         outcome: PotterRoundOutcome::Fatal {
                             message: String::from("access token refresh failed"),
                         },
+                        duration_secs: 0,
                     },
                 },
                 Event {
@@ -1702,6 +1710,7 @@ mod tests {
                     id: String::new(),
                     msg: EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::Completed,
+                        duration_secs: 0,
                     },
                 },
                 Event {
@@ -1994,6 +2003,7 @@ mod tests {
             },
             crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
             crate::workflow::rollout::PotterRolloutLine::RoundStarted {
                 current: 2,
@@ -2025,7 +2035,8 @@ mod tests {
             matches!(
                 round.events.last(),
                 Some(EventMsg::PotterRoundFinished {
-                    outcome: PotterRoundOutcome::Completed
+                    outcome: PotterRoundOutcome::Completed,
+                    ..
                 })
             ),
             "unexpected last replay event: {:?}",
@@ -2085,6 +2096,7 @@ mod tests {
                     message: "Failed to run `codex app-server`: decode initialize response"
                         .to_string(),
                 },
+                duration_secs: 0,
             },
         ];
 
@@ -2118,6 +2130,7 @@ mod tests {
             round.events.last(),
             Some(EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::TaskFailed { message },
+                ..
             }) if message == "Failed to run `codex app-server`: decode initialize response"
         ));
         assert!(plans.unfinished_round.is_none());
@@ -2172,7 +2185,7 @@ mod tests {
             assert_eq!(*current, 1);
             assert_eq!(*total, 10);
 
-            let EventMsg::PotterRoundFinished { outcome } = &events[2] else {
+            let EventMsg::PotterRoundFinished { outcome, .. } = &events[2] else {
                 panic!("expected PotterRoundFinished, got: {:?}", events[2]);
             };
             assert_eq!(*outcome, PotterRoundOutcome::Completed);
@@ -2199,7 +2212,7 @@ mod tests {
             assert_eq!(*current, 2);
             assert_eq!(*total, 10);
 
-            let EventMsg::PotterRoundFinished { outcome } = &events[1] else {
+            let EventMsg::PotterRoundFinished { outcome, .. } = &events[1] else {
                 panic!("expected PotterRoundFinished, got: {:?}", events[1]);
             };
             assert_eq!(*outcome, PotterRoundOutcome::Completed);

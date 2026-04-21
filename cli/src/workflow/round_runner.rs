@@ -138,6 +138,7 @@ pub struct PotterRoundResult {
     pub stop_due_to_finite_incantatem: bool,
     pub thread_id: Option<ThreadId>,
     pub session_model: Option<String>,
+    pub duration_secs: u64,
 }
 
 pub async fn run_potter_round(
@@ -254,6 +255,7 @@ async fn run_potter_round_inner(
     let (ui_event_tx, ui_event_rx) = unbounded_channel::<Event>();
     let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
     let (session_model_tx, session_model_rx) = watch::channel::<Option<String>>(None);
+    let (round_duration_secs_tx, round_duration_secs_rx) = watch::channel::<u64>(0u64);
 
     if let Some(project_started) = project_started {
         let _ = ui_event_tx.send(Event {
@@ -309,6 +311,7 @@ async fn run_potter_round_inner(
         let potter_rollout_path = context.potter_rollout_path.clone();
         let fatal_exit_tx = fatal_exit_tx.clone();
         let session_model_tx = session_model_tx.clone();
+        let round_duration_secs_tx = round_duration_secs_tx.clone();
         let mut bridge = super::round_event_bridge::PotterRoundEventBridge::new(
             super::round_event_bridge::PotterRoundEventBridgeConfig {
                 record_round_configured,
@@ -331,6 +334,9 @@ async fn run_potter_round_inner(
             while let Some(event) = backend_event_rx.recv().await {
                 if let EventMsg::SessionConfigured(cfg) = &event.msg {
                     session_model_tx.send_replace(Some(cfg.model.clone()));
+                }
+                if let EventMsg::PotterRoundFinished { duration_secs, .. } = &event.msg {
+                    round_duration_secs_tx.send_replace(*duration_secs);
                 }
 
                 let injected = match bridge.observe_backend_event(&event).await {
@@ -433,6 +439,7 @@ async fn run_potter_round_inner(
                 stop_due_to_finite_incantatem: false,
                 thread_id,
                 session_model: session_model_rx.borrow().clone(),
+                duration_secs: *round_duration_secs_rx.borrow(),
             });
         }
     }
@@ -454,6 +461,7 @@ async fn run_potter_round_inner(
         stop_due_to_finite_incantatem,
         thread_id,
         session_model: session_model_rx.borrow().clone(),
+        duration_secs: *round_duration_secs_rx.borrow(),
     })
 }
 

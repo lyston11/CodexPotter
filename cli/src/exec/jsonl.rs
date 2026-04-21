@@ -505,7 +505,7 @@ impl ExecJsonlEventProcessor {
                     },
                 )]
             }
-            EventMsg::PotterRoundFinished { outcome } => {
+            EventMsg::PotterRoundFinished { outcome, .. } => {
                 vec![ExecJsonlEvent::PotterRoundCompleted(
                     potter_round_completed_from_outcome(outcome),
                 )]
@@ -1480,6 +1480,7 @@ mod tests {
                 outcome: PotterRoundOutcome::TaskFailed {
                     message: "nope".to_string()
                 },
+                duration_secs: 0,
             }),
             vec![ExecJsonlEvent::PotterRoundCompleted(
                 PotterRoundCompletedEvent {

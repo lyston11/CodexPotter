@@ -123,7 +123,9 @@ impl<W: Write> ExecHumanRoundUi<W> {
         self.write_blocks(blocks)?;
 
         let exit_reason = match &event.msg {
-            EventMsg::PotterRoundFinished { outcome } => Some(exit_reason_from_outcome(outcome)),
+            EventMsg::PotterRoundFinished { outcome, .. } => {
+                Some(exit_reason_from_outcome(outcome))
+            }
             _ => None,
         };
 
@@ -413,6 +415,7 @@ mod tests {
                         id: "round-finished".to_string(),
                         msg: EventMsg::PotterRoundFinished {
                             outcome: PotterRoundOutcome::Completed,
+                            duration_secs: 0,
                         },
                     })
                     .expect("send PotterRoundFinished");
@@ -454,6 +457,7 @@ mod tests {
                 id: "round-finished".to_string(),
                 msg: EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 0,
                 },
             })
             .expect("send PotterRoundFinished");
@@ -517,6 +521,7 @@ mod tests {
                 id: "round-finished".to_string(),
                 msg: EventMsg::PotterRoundFinished {
                     outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 0,
                 },
             })
             .expect("send PotterRoundFinished");

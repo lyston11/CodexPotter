@@ -434,7 +434,10 @@ original goal line
             };
             crate::workflow::rollout::append_line(
                 &potter_rollout_path,
-                &crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome },
+                &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                    outcome,
+                    duration_secs: 0,
+                },
             )
             .expect("append round_finished");
         }
@@ -600,6 +603,7 @@ original goal line
             &potter_rollout_path,
             &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");
@@ -683,6 +687,7 @@ original goal line
             &potter_rollout_path,
             &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");
@@ -721,6 +726,7 @@ original goal line
             &potter_rollout_path,
             &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");

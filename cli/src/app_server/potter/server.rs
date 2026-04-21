@@ -101,6 +101,7 @@ struct InterruptedProject {
     workdir: PathBuf,
     git_commit_start: String,
     project_started_at: Instant,
+    interrupted_round_duration_secs: u64,
     continue_round: ContinueRoundPlan,
     plan: InterruptedProjectPlan,
 }
@@ -675,6 +676,7 @@ async fn resolve_interrupt_project(
                 interrupted.plan.potter_rollout_path(),
                 &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                     outcome: PotterRoundOutcome::Interrupted,
+                    duration_secs: interrupted.interrupted_round_duration_secs,
                 },
             )
             .context("append interrupted round_finished after resolve_interrupt(stop)")?;
@@ -916,6 +918,7 @@ fn build_resume_replay(
 
         events.push(EventMsg::PotterRoundFinished {
             outcome: round.outcome.clone(),
+            duration_secs: round.duration_secs,
         });
 
         completed_rounds.push(ProjectResumeReplayRound {
@@ -952,6 +955,7 @@ fn build_unfinished_round_pre_action(
     });
     pre_action_events.push(EventMsg::PotterRoundFinished {
         outcome: PotterRoundOutcome::Completed,
+        duration_secs: 0,
     });
 
     let remaining_rounds_including_current =
@@ -1385,6 +1389,7 @@ async fn run_fresh_project(
                     workdir: plan.workdir.clone(),
                     git_commit_start: plan.git_commit_start.clone(),
                     project_started_at: plan.project_started_at,
+                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Fresh(continuation_plan.clone()),
                 })));
@@ -1509,6 +1514,7 @@ async fn run_fresh_project(
                     workdir: plan.workdir.clone(),
                     git_commit_start: plan.git_commit_start.clone(),
                     project_started_at: plan.project_started_at,
+                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Fresh(continuation_plan.clone()),
                 })));
@@ -1770,6 +1776,7 @@ async fn run_resumed_project(
                     workdir: resumed.resolved.workdir.clone(),
                     git_commit_start: git_commit_start.clone(),
                     project_started_at,
+                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Resumed(continuation_plan.clone()),
                 })));
@@ -1894,6 +1901,7 @@ async fn run_resumed_project(
                     workdir: resumed.resolved.workdir.clone(),
                     git_commit_start: git_commit_start.clone(),
                     project_started_at,
+                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Resumed(continuation_plan.clone()),
                 })));
@@ -2033,6 +2041,7 @@ impl EventForwardingRoundUi {
                     outcome: PotterRoundOutcome::Fatal {
                         message: message.to_string(),
                     },
+                    duration_secs: 0,
                 },
             };
             self.forward_event(&finished);
@@ -2087,7 +2096,7 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
             loop {
                 while let Ok(event) = codex_event_rx.try_recv() {
                     self.forward_event(&event);
-                    if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                    if let EventMsg::PotterRoundFinished { outcome, .. } = &event.msg {
                         return Ok(codex_tui::AppExitInfo {
                             token_usage: self.token_usage.clone(),
                             thread_id: self.thread_id,
@@ -2134,7 +2143,7 @@ impl crate::workflow::round_runner::PotterRoundUi for EventForwardingRoundUi {
                             });
                         };
                         self.forward_event(&event);
-                        if let EventMsg::PotterRoundFinished { outcome } = &event.msg {
+                        if let EventMsg::PotterRoundFinished { outcome, .. } = &event.msg {
                             return Ok(codex_tui::AppExitInfo {
                                 token_usage: self.token_usage.clone(),
                                 thread_id: self.thread_id,
@@ -2458,6 +2467,7 @@ git_branch: "main"
             &potter_rollout_path,
             &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Interrupted,
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");
@@ -2534,6 +2544,7 @@ git_branch: "main"
             replay_round.events.last(),
             Some(EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::Interrupted,
+                ..
             })
         ));
 
@@ -2602,6 +2613,7 @@ git_branch: "main"
                     message: "Failed to run `codex app-server`: decode initialize response"
                         .to_string(),
                 },
+                duration_secs: 0,
             },
         )
         .expect("append round_finished");
@@ -2671,6 +2683,7 @@ git_branch: "main"
             replay_round.events.last(),
             Some(EventMsg::PotterRoundFinished {
                 outcome: PotterRoundOutcome::TaskFailed { message },
+                ..
             }) if message == "Failed to run `codex app-server`: decode initialize response"
         ));
 
@@ -2734,6 +2747,7 @@ git_branch: "main"
                     id: String::new(),
                     msg: EventMsg::PotterRoundFinished {
                         outcome: PotterRoundOutcome::UserRequested,
+                        duration_secs: 0,
                     },
                 })
                 .expect("round finished");
@@ -3005,6 +3019,7 @@ done
                             outcome: PotterRoundOutcome::TaskFailed {
                                 message: String::from("previous"),
                             },
+                            duration_secs: 0,
                         },
                     ],
                     unfinished_round: None,
@@ -3039,7 +3054,7 @@ done
         let round_outcomes = events
             .iter()
             .filter_map(|event| match &event.msg {
-                EventMsg::PotterRoundFinished { outcome } => Some(outcome.clone()),
+                EventMsg::PotterRoundFinished { outcome, .. } => Some(outcome.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -3180,7 +3195,7 @@ git_branch: "main"
         let round_outcomes = events
             .iter()
             .filter_map(|event| match &event.msg {
-                EventMsg::PotterRoundFinished { outcome } => Some(outcome.clone()),
+                EventMsg::PotterRoundFinished { outcome, .. } => Some(outcome.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -3209,7 +3224,7 @@ git_branch: "main"
         let rollout_round_outcomes = rollout_lines
             .iter()
             .filter_map(|line| match line {
-                crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome } => {
+                crate::workflow::rollout::PotterRolloutLine::RoundFinished { outcome, .. } => {
                     Some(outcome.clone())
                 }
                 _ => None,
@@ -3322,6 +3337,7 @@ git_branch: "main"
                             outcome: PotterRoundOutcome::TaskFailed {
                                 message: String::from("nope"),
                             },
+                            duration_secs: 0,
                         },
                     )
                     .expect("append round_finished");
@@ -3768,6 +3784,7 @@ git_branch: "main"
             workdir: plan.workdir.clone(),
             git_commit_start: plan.git_commit_start.clone(),
             project_started_at: plan.project_started_at,
+            interrupted_round_duration_secs: 0,
             continue_round: ContinueRoundPlan {
                 round_current: 1,
                 round_total: 1,
@@ -3929,6 +3946,7 @@ git_branch: "main"
             workdir: plan.workdir.clone(),
             git_commit_start: plan.git_commit_start.clone(),
             project_started_at: plan.project_started_at,
+            interrupted_round_duration_secs: 0,
             continue_round: ContinueRoundPlan {
                 round_current: 2,
                 round_total: 3,
@@ -3980,6 +3998,7 @@ git_branch: "main"
             rollout_lines,
             vec![crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Interrupted,
+                duration_secs: 0,
             }]
         );
 
@@ -4106,6 +4125,7 @@ git_branch: "main"
             workdir: plan.workdir.clone(),
             git_commit_start: plan.git_commit_start.clone(),
             project_started_at: plan.project_started_at,
+            interrupted_round_duration_secs: 0,
             continue_round: ContinueRoundPlan {
                 round_current: 2,
                 round_total: 3,

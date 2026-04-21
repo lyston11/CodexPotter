@@ -134,7 +134,9 @@ impl<W: Write> ExecJsonRoundUi<W> {
         }
 
         let exit_reason = match &event.msg {
-            EventMsg::PotterRoundFinished { outcome } => Some(exit_reason_from_outcome(outcome)),
+            EventMsg::PotterRoundFinished { outcome, .. } => {
+                Some(exit_reason_from_outcome(outcome))
+            }
             _ => None,
         };
 
