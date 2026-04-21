@@ -524,7 +524,9 @@ struct AppServerEventProcessor {
     pending_compact_patch_preview: Option<history_cell::PlainHistoryCell>,
     /// Divergence (codex-potter): render the latest `phase = commentary` agent message as a
     /// transient dim preview in `Verbosity::Minimal` instead of pushing it into shimmer/status or
-    /// transcript history.
+    /// transcript history. Ordinary tool/history output does not clear this preview; it stays
+    /// visible until replaced by newer commentary, superseded by non-commentary agent output, or
+    /// the turn ends.
     pending_minimal_commentary_message_lines: Option<Vec<Line<'static>>>,
     /// Divergence (codex-potter): keep the latest completed non-commentary agent message pending
     /// in `Verbosity::Minimal` until a transcript barrier (tool output / `TurnComplete`).
@@ -671,7 +673,7 @@ impl AppServerEventProcessor {
         self.flush_pending_live_activity_cells();
         self.clear_pending_minimal_commentary();
         self.flush_pending_compact_patch_changes();
-        self.flush_agent_output(false);
+        self.drop_incomplete_minimal_agent_stream_or_flush();
         self.flush_plan_stream();
         self.adaptive_chunking.reset();
         self.app_event_tx.send(AppEvent::StopCommitAnimation);
@@ -689,7 +691,6 @@ impl AppServerEventProcessor {
     /// pending `Verbosity::Minimal` agent message / compact patch preview so
     /// transcript-suppressed protocol events cannot break coalescing.
     fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
-        self.clear_pending_minimal_commentary();
         self.flush_pending_minimal_agent_message(false);
         self.flush_pending_compact_patch_changes();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
@@ -742,6 +743,32 @@ impl AppServerEventProcessor {
         self.clear_pending_minimal_commentary();
         self.flush_pending_minimal_agent_message(false);
         self.pending_minimal_agent_message_lines = Some(lines);
+    }
+
+    /// Flush only completed Minimal-mode agent output at tool/history barriers.
+    ///
+    /// In Minimal mode, active `AgentMessageDelta` text has unknown phase until the completed
+    /// `AgentMessage` arrives. Tool results must not commit that in-flight stream into transcript
+    /// history, otherwise commentary deltas leak as normal agent messages.
+    fn flush_barrier_agent_output(&mut self) {
+        if self.verbosity == Verbosity::Minimal {
+            self.flush_pending_minimal_agent_message(false);
+        } else {
+            self.flush_agent_output(false);
+        }
+    }
+
+    /// Drop incomplete Minimal-mode agent streams at abnormal boundaries.
+    ///
+    /// A live `AgentMessageDelta` has no phase metadata. If the turn aborts or the stream errors
+    /// before the matching completed `AgentMessage` arrives, the partial text is not trustworthy
+    /// enough to commit into transcript history.
+    fn drop_incomplete_minimal_agent_stream_or_flush(&mut self) {
+        if self.verbosity == Verbosity::Minimal && self.saw_agent_delta {
+            let _ = self.take_streamed_agent_message_lines();
+        } else {
+            self.flush_agent_output(false);
+        }
     }
 
     fn flush_agent_output(&mut self, _final_message: bool) {
@@ -1057,7 +1084,7 @@ impl AppServerEventProcessor {
             EventMsg::TurnAborted(ev) => {
                 self.flush_pending_live_activity_cells();
                 self.clear_pending_minimal_commentary();
-                self.flush_agent_output(false);
+                self.drop_incomplete_minimal_agent_stream_or_flush();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
 
@@ -1070,18 +1097,18 @@ impl AppServerEventProcessor {
             }
             EventMsg::Warning(ev) => {
                 self.flush_pending_live_activity_cells();
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_warning_event(ev.message)));
             }
             EventMsg::ContextCompacted(_) => {
                 self.flush_pending_live_activity_cells();
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.emit_agent_message("Context compacted", false);
             }
             EventMsg::DeprecationNotice(ev) => {
                 self.flush_pending_live_activity_cells();
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_deprecation_notice(
                     ev.summary, ev.details,
@@ -1090,7 +1117,7 @@ impl AppServerEventProcessor {
             EventMsg::RequestPermissions(ev) => {
                 // Align with upstream behavior: flush any newline-gated agent output before
                 // rendering the tool result so ordering matches "agent explains -> tool runs -> agent continues".
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.flush_plan_stream();
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
@@ -1100,7 +1127,7 @@ impl AppServerEventProcessor {
                 self.emit_history_cell(Box::new(history_cell::new_request_permissions_event(ev)));
             }
             EventMsg::RequestUserInput(ev) => {
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.flush_plan_stream();
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
@@ -1110,7 +1137,7 @@ impl AppServerEventProcessor {
                 self.emit_history_cell(Box::new(history_cell::new_request_user_input_event(ev)));
             }
             EventMsg::ElicitationRequest(ev) => {
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.flush_plan_stream();
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
@@ -1120,7 +1147,7 @@ impl AppServerEventProcessor {
                 self.emit_history_cell(Box::new(history_cell::new_elicitation_request_event(ev)));
             }
             EventMsg::GuardianAssessment(ev) => {
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.flush_plan_stream();
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
@@ -1232,9 +1259,8 @@ impl AppServerEventProcessor {
             }
             EventMsg::PatchApplyEnd(ev) => {
                 self.flush_pending_live_activity_cells();
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 if ev.success && self.verbosity == Verbosity::Minimal {
-                    self.clear_pending_minimal_commentary();
                     self.pending_compact_patch_changes.push(ev.changes);
                     self.pending_compact_patch_preview =
                         Some(history_cell::new_coalesced_compact_patch_event(
@@ -1260,7 +1286,7 @@ impl AppServerEventProcessor {
             EventMsg::HookStarted(ev) => {
                 // Align with upstream behavior: flush any newline-gated agent output before
                 // rendering the tool result so ordering matches "agent explains -> tool runs -> agent continues".
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.flush_plan_stream();
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
@@ -1279,7 +1305,7 @@ impl AppServerEventProcessor {
                 self.emit_history_cell(Box::new(history_cell::new_info_event(message, None)));
             }
             EventMsg::HookCompleted(ev) => {
-                self.flush_agent_output(false);
+                self.flush_barrier_agent_output();
                 self.flush_plan_stream();
                 self.flush_pending_live_activity_cells();
                 self.flush_pending_compact_patch_changes();
@@ -1328,7 +1354,7 @@ impl AppServerEventProcessor {
             }
             EventMsg::Error(ev) => {
                 self.flush_pending_live_activity_cells();
-                self.flush_agent_output(false);
+                self.drop_incomplete_minimal_agent_stream_or_flush();
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
                 self.saw_plan_delta = false;
@@ -2946,6 +2972,7 @@ mod tests {
     use codex_protocol::request_user_input::RequestUserInputQuestion;
     use codex_protocol::request_user_input::RequestUserInputQuestionOption;
     use insta::assert_snapshot;
+    use ratatui::backend::Backend;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
     use std::collections::HashMap;
@@ -3071,6 +3098,61 @@ mod tests {
             proc.on_commit_tick();
             drain_render_history_events(rx, terminal, width, has_emitted_history_lines);
         }
+    }
+
+    fn draw_inline_runner_frame(
+        terminal: &mut crate::custom_terminal::Terminal<VT100Backend>,
+        app: &mut RenderAppState,
+    ) {
+        let screen = terminal.size().expect("terminal size");
+        let width = screen.width.max(1);
+        app.processor.last_rendered_width = Some(width);
+
+        let pane_height = app.bottom_pane.desired_height(width).max(1);
+        let transient_lines = app.build_transient_lines(width);
+        let transient_height = u16::try_from(transient_lines.len()).unwrap_or(u16::MAX);
+        let viewport_height = pane_height
+            .saturating_add(transient_height)
+            .min(screen.height);
+
+        let mut area = terminal.viewport_area;
+        area.height = viewport_height;
+        area.width = screen.width;
+        if area.bottom() > screen.height {
+            terminal
+                .backend_mut()
+                .scroll_region_up(0..area.top(), area.bottom() - screen.height)
+                .expect("scroll viewport");
+            area.y = screen.height - area.height;
+        }
+        if area != terminal.viewport_area {
+            terminal.clear().expect("clear viewport");
+            terminal.set_viewport_area(area);
+        }
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                ratatui::widgets::Clear.render(area, frame.buffer_mut());
+                render_runner_viewport(area, frame.buffer_mut(), &app.bottom_pane, transient_lines);
+                let pane_height = app
+                    .bottom_pane
+                    .desired_height(area.width)
+                    .max(1)
+                    .min(area.height);
+                let pane_area = ratatui::layout::Rect::new(
+                    area.x,
+                    area.bottom().saturating_sub(pane_height),
+                    area.width,
+                    pane_height,
+                );
+                let cursor = app
+                    .bottom_pane
+                    .cursor_pos(pane_area)
+                    .unwrap_or((area.x, area.bottom().saturating_sub(1)));
+                frame.set_cursor_position(cursor);
+            })
+            .expect("draw inline runner frame");
     }
 
     fn make_round_renderer_processor(
@@ -6746,6 +6828,139 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_minimal_commentary_does_not_leave_stale_lines_in_inline_viewport() {
+        let width: u16 = 80;
+        let height: u16 = 10;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
+        terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary-1".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nFirst commentary body".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected commentary preview to stay transient-only"
+        );
+        draw_inline_runner_frame(&mut terminal, &mut app);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary-2".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Patching**\n\nSecond commentary body with more lines\n\nLine three"
+                    .to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected replacement commentary preview to stay transient-only"
+        );
+        draw_inline_runner_frame(&mut terminal, &mut app);
+
+        let screen = terminal.backend().vt100().screen().contents();
+        assert!(
+            screen.contains("Second commentary body with more lines"),
+            "expected latest commentary body in viewport: {screen:?}"
+        );
+        assert!(
+            !screen.contains("Inspecting"),
+            "expected replaced commentary to be cleared instead of lingering in transcript: {screen:?}"
+        );
+        assert!(
+            !screen.contains("First commentary body"),
+            "expected replaced commentary body to be cleared instead of lingering in transcript: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_compact_patch_preview_does_not_leave_stale_blocks_in_inline_viewport()
+    {
+        let width: u16 = 80;
+        let height: u16 = 12;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal =
+            crate::custom_terminal::Terminal::with_options(backend).expect("create terminal");
+        terminal.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        let mut changes_a: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_a.insert(
+            PathBuf::from("a.txt"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: diffy::create_patch("old\n", "new\n").to_string(),
+                move_path: None,
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-a-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-a".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_a,
+            }),
+        });
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected first compact patch preview to stay transient-only"
+        );
+        draw_inline_runner_frame(&mut terminal, &mut app);
+
+        let mut changes_b: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_b.insert(
+            PathBuf::from("b.txt"),
+            codex_protocol::protocol::FileChange::Add {
+                content: "new\n".to_string(),
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-b-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-b".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_b,
+            }),
+        });
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected coalesced compact patch preview to stay transient-only"
+        );
+        draw_inline_runner_frame(&mut terminal, &mut app);
+
+        let screen = terminal.backend().vt100().screen().contents();
+        assert!(
+            screen.contains("• Changed 2 files (+2 -1)"),
+            "expected current coalesced patch preview in viewport: {screen:?}"
+        );
+        assert!(
+            !screen.contains("• Edited a.txt (+1 -1)"),
+            "expected stale one-file patch preview to be cleared instead of lingering in transcript: {screen:?}"
+        );
+        assert!(
+            screen.contains("└ Edited a.txt (+1 -1)"),
+            "expected current coalesced preview to retain file list ordering: {screen:?}"
+        );
+        assert!(
+            screen.contains("Added b.txt (+1 -0)"),
+            "expected current coalesced preview to include latest file: {screen:?}"
+        );
+    }
+
+    #[test]
     fn round_renderer_minimal_final_agent_message_clears_commentary_preview() {
         let width: u16 = 80;
 
@@ -6817,6 +7032,51 @@ mod tests {
         assert!(
             !transient_blob.contains("Inspecting"),
             "expected interrupted rounds to clear commentary preview: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_turn_aborted_discards_incomplete_streamed_agent_message() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "agent-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                // Phase is unknown until the completed AgentMessage arrives, so interrupted
+                // commentary streams must not leak into transcript history.
+                delta: "inspect workspace".to_string(),
+            }),
+        });
+
+        app.processor.handle_codex_event(Event {
+            id: "turn-aborted".into(),
+            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some("turn-1".to_string()),
+                reason: TurnAbortReason::Interrupted,
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert_eq!(cells.len(), 1, "expected exactly one interrupt error cell");
+        assert!(
+            cells[0].iter().any(|line| line
+                .contains("Conversation interrupted - tell the model what to do differently.")),
+            "expected interrupt error cell content; got: {cells:?}"
+        );
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .all(|line| !line.contains("inspect workspace")),
+            "expected interrupted streamed agent text to be discarded: {cells:?}"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            !transient_blob.contains("inspect workspace"),
+            "expected interrupted streamed agent text to be cleared from transient preview: {transient_blob:?}"
         );
     }
 
@@ -6910,6 +7170,121 @@ mod tests {
         assert!(
             drain_history_cell_strings(&mut rx_app, width).is_empty(),
             "expected compact patch preview to remain transient-only"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_patch_preview_keeps_commentary_visible() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nReviewing current progress".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        let mut changes: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes.insert(
+            PathBuf::from("file.txt"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: diffy::create_patch("old\n", "new\n").to_string(),
+                move_path: None,
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-1".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes,
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected commentary + patch preview to stay transient-only"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("Inspecting"),
+            "expected commentary preview to remain visible across patch barrier: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("Reviewing current progress"),
+            "expected commentary body to remain visible across patch barrier: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("Edited file.txt (+1 -1)"),
+            "expected compact patch preview to stay visible: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_patch_barrier_does_not_commit_inflight_commentary_delta() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "Inspecting progress file".to_string(),
+            }),
+        });
+
+        let mut changes: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes.insert(
+            PathBuf::from(".codexpotter/projects/2026/04/21/13/MAIN.md"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: diffy::create_patch("old\n", "new\n").to_string(),
+                move_path: None,
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-1".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes,
+            }),
+        });
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nInspecting progress file".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .all(|line| !line.contains("Inspecting progress file")),
+            "expected patch barrier not to commit in-flight commentary delta into transcript history: {cells:?}"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("Inspecting progress file"),
+            "expected completed commentary preview to remain visible transiently: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("Edited .codexpotter/projects/2026/04/21/13/MAIN.md"),
+            "expected compact patch preview to remain visible transiently: {transient_blob:?}"
         );
     }
 

@@ -43,9 +43,10 @@ Divergences must be documented in places below to avoid regression when syncing 
   - `Explored` items are more aggressively collapsed.
   Minimal mode:
   - With all the above Simple-mode suppressions, plus:
-  - `phase = commentary` agent messages render as a single dim transient transcript block that updates in place, never enters transcript history, and clears when later visible output or the final message supersedes it (append-only exec still prints them as status hints).
+  - `phase = commentary` agent messages render as a single dim transient transcript block that updates in place, never enters transcript history, stays visible across ordinary tool/history output, and clears only when replaced by newer commentary, superseded by non-commentary/final agent output, or the turn ends (append-only exec still prints them as status hints).
   - Non-commentary agent messages are rendered without dimming (no gray agent messages in the transcript).
   - Streamed agent text is committed only after completion; the latest completed non-commentary agent message may stay pending until a transcript barrier or `TurnComplete`.
+  - Tool/result barriers flush only completed Minimal-mode agent messages; in-flight `AgentMessageDelta` text waits for the completed `AgentMessage` (or is dropped on abnormal termination) so commentary deltas cannot leak into transcript history.
   - `TurnComplete.last_agent_message` is rendered as the final answer when no non-commentary agent message was emitted (legacy/replay compatibility).
   - Plan tool output is hidden
   - All `Ran` and `Explored` items are hidden
