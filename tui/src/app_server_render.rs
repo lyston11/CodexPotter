@@ -721,6 +721,10 @@ impl AppServerEventProcessor {
         lines
     }
 
+    fn discard_streamed_agent_message_lines(&mut self) {
+        let _ = self.take_streamed_agent_message_lines();
+    }
+
     fn take_agent_message_lines(&mut self, message: &str) -> Vec<Line<'static>> {
         if self.saw_agent_delta {
             self.take_streamed_agent_message_lines()
@@ -773,7 +777,7 @@ impl AppServerEventProcessor {
     /// enough to commit into transcript history.
     fn drop_incomplete_minimal_agent_stream_or_flush(&mut self) {
         if self.verbosity == Verbosity::Minimal && self.saw_agent_delta {
-            let _ = self.take_streamed_agent_message_lines();
+            self.discard_streamed_agent_message_lines();
         } else {
             self.flush_agent_output(false);
         }
@@ -1037,7 +1041,7 @@ impl AppServerEventProcessor {
                 if self.verbosity == Verbosity::Minimal {
                     if ev.phase == Some(MessagePhase::Commentary) {
                         if self.saw_agent_delta {
-                            let _ = self.take_streamed_agent_message_lines();
+                            self.discard_streamed_agent_message_lines();
                         }
                         self.store_pending_minimal_commentary(
                             self.build_agent_message_lines(&ev.message),
@@ -1071,7 +1075,7 @@ impl AppServerEventProcessor {
                 {
                     self.pending_minimal_agent_message_lines = None;
                     if self.saw_agent_delta {
-                        let _ = self.take_streamed_agent_message_lines();
+                        self.discard_streamed_agent_message_lines();
                     }
                     self.insert_agent_message_lines_direct(
                         self.build_agent_message_lines(message),

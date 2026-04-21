@@ -302,7 +302,7 @@ impl ExecHumanRenderer {
                     self.pending_minimal_agent_message_lines = None;
                     self.pending_minimal_agent_message_visible = false;
                     if self.saw_agent_delta {
-                        let _ = self.take_streamed_agent_message_lines();
+                        self.discard_streamed_agent_message_lines();
                     }
                     let lines = self.build_agent_message_lines(message);
                     if !lines.is_empty() {
@@ -368,7 +368,7 @@ impl ExecHumanRenderer {
                 if self.verbosity == Verbosity::Minimal {
                     if ev.phase == Some(MessagePhase::Commentary) {
                         if self.saw_agent_delta {
-                            let _ = self.take_streamed_agent_message_lines();
+                            self.discard_streamed_agent_message_lines();
                         }
                         if let Some(header) =
                             crate::commentary_status::status_header_from_commentary(&ev.message)
@@ -718,6 +718,10 @@ impl ExecHumanRenderer {
         lines
     }
 
+    fn discard_streamed_agent_message_lines(&mut self) {
+        let _ = self.take_streamed_agent_message_lines();
+    }
+
     fn take_agent_message_lines(&mut self, message: &str) -> Vec<Line<'static>> {
         if self.saw_agent_delta {
             self.take_streamed_agent_message_lines()
@@ -783,7 +787,7 @@ impl ExecHumanRenderer {
 
     fn drop_incomplete_minimal_agent_stream_or_flush(&mut self) -> io::Result<Vec<String>> {
         if self.verbosity == Verbosity::Minimal && self.saw_agent_delta {
-            let _ = self.take_streamed_agent_message_lines();
+            self.discard_streamed_agent_message_lines();
             return Ok(Vec::new());
         }
 
