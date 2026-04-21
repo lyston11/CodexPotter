@@ -305,22 +305,7 @@ async fn handle_request(
             send_response(writer_tx, request_id, serde_json::json!({}));
         }
         PotterAppServerClientRequest::ProjectStart { request_id, params } => {
-            if state.running.is_some() {
-                send_error(
-                    writer_tx,
-                    request_id,
-                    -32000,
-                    "a project is already running".to_string(),
-                );
-                return Ok(());
-            }
-            if state.interrupted.is_some() {
-                send_error(
-                    writer_tx,
-                    request_id,
-                    -32000,
-                    "a project is interrupted; resolve it first".to_string(),
-                );
+            if !ensure_project_is_idle(state, writer_tx, &request_id) {
                 return Ok(());
             }
 
@@ -330,22 +315,7 @@ async fn handle_request(
             }
         }
         PotterAppServerClientRequest::ProjectResume { request_id, params } => {
-            if state.running.is_some() {
-                send_error(
-                    writer_tx,
-                    request_id,
-                    -32000,
-                    "a project is already running".to_string(),
-                );
-                return Ok(());
-            }
-            if state.interrupted.is_some() {
-                send_error(
-                    writer_tx,
-                    request_id,
-                    -32000,
-                    "a project is interrupted; resolve it first".to_string(),
-                );
+            if !ensure_project_is_idle(state, writer_tx, &request_id) {
                 return Ok(());
             }
 
@@ -355,22 +325,7 @@ async fn handle_request(
             }
         }
         PotterAppServerClientRequest::ProjectStartRounds { request_id, params } => {
-            if state.running.is_some() {
-                send_error(
-                    writer_tx,
-                    request_id,
-                    -32000,
-                    "a project is already running".to_string(),
-                );
-                return Ok(());
-            }
-            if state.interrupted.is_some() {
-                send_error(
-                    writer_tx,
-                    request_id,
-                    -32000,
-                    "a project is interrupted; resolve it first".to_string(),
-                );
+            if !ensure_project_is_idle(state, writer_tx, &request_id) {
                 return Ok(());
             }
 
@@ -406,6 +361,34 @@ fn clear_finished_running_project(state: &mut ServerState) {
     }
 }
 
+fn ensure_project_is_idle(
+    state: &ServerState,
+    writer_tx: &UnboundedSender<JSONRPCMessage>,
+    request_id: &RequestId,
+) -> bool {
+    if state.running.is_some() {
+        send_error(
+            writer_tx,
+            request_id.clone(),
+            -32000,
+            "a project is already running".to_string(),
+        );
+        return false;
+    }
+
+    if state.interrupted.is_some() {
+        send_error(
+            writer_tx,
+            request_id.clone(),
+            -32000,
+            "a project is interrupted; resolve it first".to_string(),
+        );
+        return false;
+    }
+
+    true
+}
+
 async fn start_project(
     state: &mut ServerState,
     params: ProjectStartParams,
@@ -438,11 +421,7 @@ async fn start_project(
     let git_branch = crate::workflow::project::progress_file_git_branch(&progress_file_abs)
         .context("read git_branch from progress file")?;
 
-    let rounds_total_u32 = match rounds {
-        Some(rounds) if rounds > 0 => rounds,
-        Some(_) => anyhow::bail!("rounds must be >= 1"),
-        None => crate::rounds::round_budget_to_u32(state.config.rounds)?,
-    };
+    let rounds_total_u32 = resolve_rounds_total(rounds, state.config.rounds)?;
     let mode = event_mode.unwrap_or_default();
 
     let project_id = progress_file_abs.to_string_lossy().to_string();
@@ -554,11 +533,7 @@ async fn start_rounds(
     let mode = event_mode.unwrap_or_default();
     let resume_policy = resume_policy.unwrap_or_default();
 
-    let rounds_total_u32 = match rounds {
-        Some(rounds) if rounds > 0 => rounds,
-        Some(_) => anyhow::bail!("rounds must be >= 1"),
-        None => crate::rounds::round_budget_to_u32(state.config.rounds)?,
-    };
+    let rounds_total_u32 = resolve_rounds_total(rounds, state.config.rounds)?;
 
     let potter_rollout_path =
         crate::workflow::rollout::potter_rollout_path(&resumed.resolved.project_dir);
@@ -830,13 +805,25 @@ fn send_error(
 }
 
 fn emit_potter_event(writer_tx: &UnboundedSender<JSONRPCMessage>, event: Event) {
-    let Ok(params) = serde_json::to_value(event) else {
-        return;
+    let params = match serde_json::to_value(event) {
+        Ok(params) => params,
+        Err(err) => {
+            eprintln!("potter app-server failed to serialize event: {err:#}");
+            return;
+        }
     };
     let _ = writer_tx.send(JSONRPCMessage::Notification(JSONRPCNotification {
         method: POTTER_EVENT_NOTIFICATION_METHOD.to_string(),
         params: Some(params),
     }));
+}
+
+fn resolve_rounds_total(rounds: Option<u32>, default_rounds: NonZeroUsize) -> anyhow::Result<u32> {
+    match rounds {
+        Some(rounds) if rounds > 0 => Ok(rounds),
+        Some(_) => anyhow::bail!("rounds must be >= 1"),
+        None => crate::rounds::round_budget_to_u32(default_rounds),
+    }
 }
 
 fn load_potter_rollout_lines(
