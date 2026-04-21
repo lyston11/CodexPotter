@@ -2082,7 +2082,7 @@ fn handle_codex_event(
             id: event_id,
             msg: EventMsg::PotterRoundFinished {
                 outcome,
-                duration_secs: recovery.round_started_at.elapsed().as_secs(),
+                duration_secs: measured_round_duration_secs(recovery.round_started_at),
             },
         });
     }
@@ -2536,9 +2536,17 @@ fn next_request_id(next_id: &mut i64) -> RequestId {
     RequestId::Integer(id)
 }
 
+/// `0` is reserved for synthetic or legacy "duration unavailable" round markers.
+/// Real measured round durations therefore round up to at least one second.
+fn measured_round_duration_secs(round_started_at: Instant) -> u64 {
+    round_started_at.elapsed().as_secs().max(1)
+}
+
 #[cfg(test)]
 mod stream_recovery_tests {
     use super::*;
+    use std::time::Duration;
+
     use codex_protocol::protocol::AgentMessageDeltaEvent;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ThreadRolledBackEvent;
@@ -2595,6 +2603,88 @@ mod stream_recovery_tests {
             message: "unexpected status 401: Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.".to_string(),
             codex_error_info: Some(CodexErrorInfo::Unauthorized),
         }
+    }
+
+    #[test]
+    fn completed_rounds_round_up_short_measured_duration_to_preserve_zero_sentinel() {
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, false);
+        harness.recovery.round_started_at = Instant::now() - Duration::from_millis(100);
+
+        handle_codex_event(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-1".to_string(),
+                    model_context_window: None,
+                }),
+            },
+            &mut harness.recovery,
+            &harness.event_tx,
+        );
+        handle_codex_event(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-1".to_string(),
+                    last_agent_message: None,
+                }),
+            },
+            &mut harness.recovery,
+            &harness.event_tx,
+        );
+
+        let events = std::iter::from_fn(|| harness.event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(matches!(
+            events.last(),
+            Some(Event {
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 1,
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn interrupted_rounds_round_up_short_measured_duration_to_preserve_zero_sentinel() {
+        let mut harness = recovery_harness(AppServerEventMode::Interactive, false);
+        harness.recovery.round_started_at = Instant::now() - Duration::from_millis(100);
+
+        handle_codex_event(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-1".to_string(),
+                    model_context_window: None,
+                }),
+            },
+            &mut harness.recovery,
+            &harness.event_tx,
+        );
+        handle_codex_event(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                    turn_id: Some("turn-1".to_string()),
+                    reason: TurnAbortReason::Interrupted,
+                }),
+            },
+            &mut harness.recovery,
+            &harness.event_tx,
+        );
+
+        let events = std::iter::from_fn(|| harness.event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(matches!(
+            events.last(),
+            Some(Event {
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Interrupted,
+                    duration_secs: 1,
+                },
+                ..
+            })
+        ));
     }
 
     #[test]
