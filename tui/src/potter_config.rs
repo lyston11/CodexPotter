@@ -29,10 +29,10 @@ pub fn persist_potter_tui_verbosity(verbosity: Verbosity) -> io::Result<()> {
 ///
 /// This is backed by `~/.codexpotter/config.toml` under the top-level `yolo` key.
 ///
-/// When only the legacy `[potter].yolo` key is present, this returns its value and best-effort
-/// migrates it to the canonical top-level key.
+/// When an older on-disk encoding is detected, this reads it and best-effort rewrites the file to
+/// use the canonical top-level key.
 ///
-/// Returns `false` when neither key is present.
+/// Returns `false` when the setting is not configured.
 pub fn load_potter_yolo_enabled() -> io::Result<bool> {
     let path = potter_config_path()?;
     load_yolo_from_path(&path)
