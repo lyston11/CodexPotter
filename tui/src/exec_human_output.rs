@@ -1675,6 +1675,61 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
     }
 
     #[test]
+    fn minimal_commentary_stays_append_only_in_exec_mode() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        let mut blocks = Vec::new();
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(12));
+        blocks.extend(
+            renderer
+                .handle_event(&EventMsg::AgentMessage(
+                    codex_protocol::protocol::AgentMessageEvent {
+                        message: "**Inspecting**\n\nWorking...".to_string(),
+                        phase: Some(MessagePhase::Commentary),
+                    },
+                ))
+                .expect("first commentary agent message"),
+        );
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(18));
+        blocks.extend(
+            renderer
+                .handle_event(&EventMsg::AgentMessage(
+                    codex_protocol::protocol::AgentMessageEvent {
+                        message: "**Patching**\n\nUpdating files...".to_string(),
+                        phase: Some(MessagePhase::Commentary),
+                    },
+                ))
+                .expect("second commentary agent message"),
+        );
+
+        blocks.extend(
+            renderer
+                .handle_event(&EventMsg::TurnComplete(
+                    codex_protocol::protocol::TurnCompleteEvent {
+                        turn_id: "turn-1".to_string(),
+                        last_agent_message: Some("final".to_string()),
+                    },
+                ))
+                .expect("turn complete"),
+        );
+
+        assert_eq!(
+            blocks,
+            vec![
+                "@12s: Inspecting".to_string(),
+                "@18s: Patching".to_string(),
+                "final".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn minimal_commentary_turn_uses_turn_complete_last_agent_message_as_final() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
         let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
