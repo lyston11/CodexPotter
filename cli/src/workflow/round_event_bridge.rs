@@ -703,6 +703,136 @@ potter.xmodel: {potter_xmodel}
         );
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn project_stop_hook_treats_resumed_unfinished_round_as_new_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let hooks_codex_home_dir = workdir.join("codex-home");
+        std::fs::create_dir_all(&hooks_codex_home_dir).expect("create hooks codex home dir");
+
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/20/3/MAIN.md");
+        write_progress_file(workdir, &progress_file_rel, false);
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: progress_file_rel.clone(),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 1,
+            },
+        )
+        .expect("append round_started");
+
+        let thread_id =
+            ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c555").expect("thread id");
+        let upstream = workdir.join("unfinished-round.jsonl");
+        write_upstream_rollout_final_answer(&upstream, "resumed final");
+        let upstream = upstream.canonicalize().expect("canonical upstream");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: upstream.clone(),
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round_configured");
+
+        let hook_output_path = workdir.join("hook-input.json");
+        let hooks_json = serde_json::json!({
+            "hooks": {
+                "Potter.ProjectStop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("cat > '{}'", hook_output_path.display()),
+                    }],
+                }],
+            },
+        });
+        std::fs::write(
+            hooks_codex_home_dir.join("hooks.json"),
+            hooks_json.to_string(),
+        )
+        .expect("write hooks.json");
+
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: false,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            baseline_round_count: 0,
+            hooks_codex_home_dir: Some(hooks_codex_home_dir),
+            potter_xmodel_runtime: false,
+            user_prompt_file: progress_file_rel,
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 1,
+            round_total: 1,
+            project_rounds_run: 1,
+        });
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+            },
+        };
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .await
+            .expect("observe finished");
+
+        assert!(matches!(
+            injected.first().map(|event| &event.msg),
+            Some(EventMsg::PotterProjectBudgetExhausted { rounds: 1, .. })
+        ));
+
+        let payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
+        )
+        .expect("parse hook input json");
+
+        assert_eq!(
+            payload
+                .get("all_session_ids")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(thread_id.to_string())])
+        );
+        assert_eq!(
+            payload
+                .get("new_session_ids")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(thread_id.to_string())])
+        );
+        assert_eq!(
+            payload
+                .get("all_assistant_messages")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(
+                "resumed final".to_string()
+            )])
+        );
+        assert_eq!(
+            payload
+                .get("new_assistant_messages")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String(
+                "resumed final".to_string()
+            )])
+        );
+    }
+
     #[tokio::test]
     async fn observe_backend_event_records_round_configured_once() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -27,14 +27,14 @@
       "type": "string"
     },
     "new_assistant_messages": {
-      "description": "Final assistant messages created since the current resume boundary.",
+      "description": "Final assistant messages for rounds completed since the current resume boundary.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "new_session_ids": {
-      "description": "Session IDs created since the current resume boundary.",
+      "description": "Session IDs for rounds completed since the current resume boundary.\n\nThis may include a reused thread id when resume continues an unfinished round.",
       "items": {
         "type": "string"
       },

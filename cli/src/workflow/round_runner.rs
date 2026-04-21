@@ -77,7 +77,9 @@ pub struct PotterRoundContext {
     /// Number of completed rounds that existed before the current iteration window began.
     ///
     /// This is used for `Potter.ProjectStop` hook input fields so `new_session_ids` /
-    /// `new_assistant_messages` can reflect only sessions produced since a resume started.
+    /// `new_assistant_messages` reflect only rounds completed in the current iteration window.
+    /// When resume continues an unfinished round, that round still belongs to the new_* slice even
+    /// though it reuses an existing thread id.
     pub baseline_round_count: usize,
     pub user_prompt_file: PathBuf,
     pub git_commit_start: String,

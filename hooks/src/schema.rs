@@ -34,11 +34,13 @@ pub struct PotterProjectStopCommandInput {
     pub user_prompt: String,
     /// Session IDs for every round recorded in the project.
     pub all_session_ids: Vec<String>,
-    /// Session IDs created since the current resume boundary.
+    /// Session IDs for rounds completed since the current resume boundary.
+    ///
+    /// This may include a reused thread id when resume continues an unfinished round.
     pub new_session_ids: Vec<String>,
     /// Final assistant messages for every recorded round.
     pub all_assistant_messages: Vec<String>,
-    /// Final assistant messages created since the current resume boundary.
+    /// Final assistant messages for rounds completed since the current resume boundary.
     pub new_assistant_messages: Vec<String>,
     /// Stable stop reason code such as `succeeded` or `budget_exhausted`.
     pub stop_reason_code: String,
