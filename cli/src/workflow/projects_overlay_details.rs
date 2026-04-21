@@ -48,8 +48,7 @@ fn build_project_details_for_overlay_inner(
         .context("read git_branch from progress file")?;
 
     let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
-    let potter_lines = crate::workflow::rollout::read_lines(&potter_rollout_path)
-        .with_context(|| format!("read {}", potter_rollout_path.display()))?;
+    let potter_lines = crate::workflow::rollout::read_project_rollout_lines(&potter_rollout_path)?;
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_lines)
         .with_context(|| format!("parse {}", potter_rollout_path.display()))?;
 
@@ -363,5 +362,26 @@ mod tests {
             "expected details to surface the original user task message"
         );
         assert_eq!(details.git_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn overlay_details_reports_empty_potter_rollout_with_shared_contract() {
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let project_dir_abs = workdir.path().join(&project_dir);
+        std::fs::create_dir_all(&project_dir_abs).expect("create project dir");
+
+        let progress_file_abs = project_dir_abs.join("MAIN.md");
+        std::fs::write(&progress_file_abs, "---\ngit_branch: \"main\"\n---\n").expect("write MAIN");
+
+        let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
+        std::fs::write(&potter_rollout_path, "").expect("write empty rollout");
+
+        let details = build_project_details_for_overlay(workdir.path(), &project_dir);
+        let error = details.error.expect("expected overlay error");
+        assert!(
+            error.contains("potter-rollout is empty"),
+            "unexpected error: {error}"
+        );
     }
 }
