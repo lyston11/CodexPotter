@@ -522,6 +522,10 @@ struct AppServerEventProcessor {
     /// compact `Edited ...` summary when `Verbosity::Minimal`.
     pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
     pending_compact_patch_preview: Option<history_cell::PlainHistoryCell>,
+    /// Divergence (codex-potter): render the latest `phase = commentary` agent message as a
+    /// transient dim preview in `Verbosity::Minimal` instead of pushing it into shimmer/status or
+    /// transcript history.
+    pending_minimal_commentary_message_lines: Option<Vec<Line<'static>>>,
     /// Divergence (codex-potter): keep the latest completed non-commentary agent message pending
     /// in `Verbosity::Minimal` until a transcript barrier (tool output / `TurnComplete`).
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
@@ -589,6 +593,7 @@ impl AppServerEventProcessor {
             pending_web_search_queries: Vec::new(),
             pending_compact_patch_changes: Vec::new(),
             pending_compact_patch_preview: None,
+            pending_minimal_commentary_message_lines: None,
             pending_minimal_agent_message_lines: None,
             turn_has_non_commentary_agent_message: false,
             potter_resume_command_global_args: Vec::new(),
@@ -664,6 +669,7 @@ impl AppServerEventProcessor {
 
     fn handle_retryable_stream_error(&mut self) {
         self.flush_pending_live_activity_cells();
+        self.clear_pending_minimal_commentary();
         self.flush_pending_compact_patch_changes();
         self.flush_agent_output(false);
         self.flush_plan_stream();
@@ -683,6 +689,7 @@ impl AppServerEventProcessor {
     /// pending `Verbosity::Minimal` agent message / compact patch preview so
     /// transcript-suppressed protocol events cannot break coalescing.
     fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
+        self.clear_pending_minimal_commentary();
         self.flush_pending_minimal_agent_message(false);
         self.flush_pending_compact_patch_changes();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
@@ -698,6 +705,7 @@ impl AppServerEventProcessor {
         if lines.is_empty() {
             return;
         }
+        self.clear_pending_minimal_commentary();
         if dim {
             dim_lines(&mut lines);
         }
@@ -712,6 +720,14 @@ impl AppServerEventProcessor {
         lines
     }
 
+    fn clear_pending_minimal_commentary(&mut self) {
+        self.pending_minimal_commentary_message_lines = None;
+    }
+
+    fn store_pending_minimal_commentary(&mut self, lines: Vec<Line<'static>>) {
+        self.pending_minimal_commentary_message_lines = (!lines.is_empty()).then_some(lines);
+    }
+
     fn flush_pending_minimal_agent_message(&mut self, dim: bool) {
         let Some(lines) = self.pending_minimal_agent_message_lines.take() else {
             return;
@@ -723,6 +739,7 @@ impl AppServerEventProcessor {
         if lines.is_empty() {
             return;
         }
+        self.clear_pending_minimal_commentary();
         self.flush_pending_minimal_agent_message(false);
         self.pending_minimal_agent_message_lines = Some(lines);
     }
@@ -752,6 +769,7 @@ impl AppServerEventProcessor {
     /// history cell so the transcript stays free of gray agent messages.
     fn flush_live_transcript_buffers(&mut self) {
         self.flush_pending_live_activity_cells();
+        self.clear_pending_minimal_commentary();
         self.flush_agent_output(false);
         self.flush_plan_stream();
         self.flush_pending_compact_patch_changes();
@@ -904,6 +922,7 @@ impl AppServerEventProcessor {
             }
             EventMsg::PotterRoundFinished { duration_secs, .. } => {
                 self.flush_pending_live_activity_cells();
+                self.clear_pending_minimal_commentary();
                 if duration_secs > 0 {
                     self.emit_history_cell(Box::new(
                         crate::history_cell_potter::PotterRoundFinishedSeparator::new(
@@ -985,6 +1004,9 @@ impl AppServerEventProcessor {
                         if self.saw_agent_delta {
                             let _ = self.take_streamed_agent_message_lines();
                         }
+                        self.store_pending_minimal_commentary(
+                            self.build_agent_message_lines(&ev.message),
+                        );
                         return;
                     }
                     if !self.saw_agent_delta {
@@ -1010,6 +1032,7 @@ impl AppServerEventProcessor {
             }
             EventMsg::TurnComplete(ev) => {
                 self.flush_pending_live_activity_cells();
+                self.clear_pending_minimal_commentary();
                 if let Some(message) = ev.last_agent_message.as_deref()
                     && !message.is_empty()
                     && !self.turn_has_non_commentary_agent_message
@@ -1033,6 +1056,7 @@ impl AppServerEventProcessor {
             }
             EventMsg::TurnAborted(ev) => {
                 self.flush_pending_live_activity_cells();
+                self.clear_pending_minimal_commentary();
                 self.flush_agent_output(false);
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
@@ -1210,6 +1234,7 @@ impl AppServerEventProcessor {
                 self.flush_pending_live_activity_cells();
                 self.flush_agent_output(false);
                 if ev.success && self.verbosity == Verbosity::Minimal {
+                    self.clear_pending_minimal_commentary();
                     self.pending_compact_patch_changes.push(ev.changes);
                     self.pending_compact_patch_preview =
                         Some(history_cell::new_coalesced_compact_patch_event(
@@ -1617,6 +1642,21 @@ impl RenderAppState {
         }
 
         if self.processor.verbosity == Verbosity::Minimal {
+            let commentary_lines = self
+                .processor
+                .pending_minimal_commentary_message_lines
+                .as_ref()
+                .cloned();
+
+            if let Some(mut commentary_lines) = commentary_lines {
+                dim_lines(&mut commentary_lines);
+                transient_lines.push(Line::from(""));
+                transient_lines.extend(
+                    history_cell::AgentMessageCell::new(commentary_lines, true)
+                        .display_lines(width),
+                );
+            }
+
             let preview_lines = self
                 .processor
                 .pending_minimal_agent_message_lines
@@ -2612,16 +2652,6 @@ impl RenderAppState {
                 self.unified_exec_wait = None;
                 self.bottom_pane
                     .update_status_header(String::from("Working"));
-            }
-            EventMsg::AgentMessage(ev) => {
-                if self.processor.verbosity == Verbosity::Minimal
-                    && ev.phase == Some(MessagePhase::Commentary)
-                    && self.unified_exec_wait.is_none()
-                    && let Some(header) =
-                        crate::commentary_status::status_header_from_commentary(&ev.message)
-                {
-                    self.bottom_pane.update_status_header(header);
-                }
             }
             EventMsg::AgentReasoningDelta(ev) => {
                 if let Some(header) = self.reasoning_status.on_delta(&ev.delta)
@@ -6626,7 +6656,7 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_minimal_suppresses_commentary_agent_message_and_updates_shimmer_header() {
+    fn round_renderer_minimal_renders_commentary_agent_message_in_transient_lines() {
         let width: u16 = 80;
 
         let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
@@ -6672,15 +6702,121 @@ mod tests {
         )
         .expect("handle commentary agent message");
 
-        assert_eq!(app.bottom_pane.status_header(), "Inspecting");
+        assert_eq!(app.bottom_pane.status_header(), "Working");
         assert!(
             drain_history_cell_strings(&mut rx_app, width).is_empty(),
             "expected minimal mode to suppress commentary agent message history cells"
         );
+        assert_line_with_text_dimmed(&app.build_transient_lines(width), "Inspecting", true);
+    }
+
+    #[test]
+    fn round_renderer_minimal_commentary_preview_replaces_previous_commentary() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        for (id, message) in [
+            ("commentary-1", "**Inspecting**\n\nFirst pass"),
+            ("commentary-2", "**Patching**\n\nSecond pass"),
+        ] {
+            app.processor.handle_codex_event(Event {
+                id: id.into(),
+                msg: EventMsg::AgentMessage(AgentMessageEvent {
+                    message: message.to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                }),
+            });
+        }
+
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected commentary preview to stay transient-only"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("Patching"),
+            "expected latest commentary preview to be visible: {transient_blob:?}"
+        );
+        assert!(
+            !transient_blob.contains("Inspecting"),
+            "expected older commentary preview to be replaced: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_final_agent_message_clears_commentary_preview() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nWorking...".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        app.processor.handle_codex_event(Event {
+            id: "final".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "done".to_string(),
+                phase: None,
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected final agent message to remain pending in minimal mode"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("done"),
+            "expected pending final agent message to be visible: {transient_blob:?}"
+        );
+        assert!(
+            !transient_blob.contains("Inspecting"),
+            "expected commentary preview to clear once final agent message arrives: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_turn_aborted_clears_commentary_preview() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nWorking...".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        app.processor.handle_codex_event(Event {
+            id: "turn-aborted".into(),
+            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some("turn-1".to_string()),
+                reason: TurnAbortReason::Interrupted,
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert_eq!(cells.len(), 1, "expected exactly one interrupt error cell");
+        assert!(
+            cells[0].iter().any(|line| line
+                .contains("Conversation interrupted - tell the model what to do differently.")),
+            "expected interrupt error cell content; got: {cells:?}"
+        );
+
         let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
         assert!(
             !transient_blob.contains("Inspecting"),
-            "expected minimal mode to keep commentary out of transient transcript preview: {transient_blob:?}"
+            "expected interrupted rounds to clear commentary preview: {transient_blob:?}"
         );
     }
 

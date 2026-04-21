@@ -43,7 +43,7 @@ Divergences must be documented in places below to avoid regression when syncing 
   - `Explored` items are more aggressively collapsed.
   Minimal mode:
   - With all the above Simple-mode suppressions, plus:
-  - `phase = commentary` agent messages are not rendered; they update the shimmer/status header instead (exec prints them as status hints).
+  - `phase = commentary` agent messages render as a single dim transient transcript block that updates in place, never enters transcript history, and clears when later visible output or the final message supersedes it (append-only exec still prints them as status hints).
   - Non-commentary agent messages are rendered without dimming (no gray agent messages in the transcript).
   - Streamed agent text is committed only after completion; the latest completed non-commentary agent message may stay pending until a transcript barrier or `TurnComplete`.
   - `TurnComplete.last_agent_message` is rendered as the final answer when no non-commentary agent message was emitted (legacy/replay compatibility).

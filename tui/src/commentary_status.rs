@@ -1,7 +1,8 @@
 //! Helpers for extracting a compact status header from agent commentary markdown.
 //!
-//! In `Verbosity::Minimal`, CodexPotter treats `phase = commentary` agent messages as progress
-//! updates: they update the shimmer/status header instead of rendering as transcript items.
+//! Interactive TUI rendering now keeps Minimal-mode commentary in the transient transcript area,
+//! but append-only exec output still needs a short status-hint summary because it has no mutable
+//! preview region.
 
 /// Derive a single-line status header from `message`.
 ///
