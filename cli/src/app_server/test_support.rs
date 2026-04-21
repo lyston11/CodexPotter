@@ -34,7 +34,12 @@ pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
 
     tmp.as_file().sync_all().expect("sync dummy codex");
 
-    tmp.persist(path)
+    // `into_temp_path()` closes the writable file handle before the path is persisted. The
+    // shell-backed tests spawn the script immediately after this helper returns, so leaving the
+    // file open through `NamedTempFile::persist()` can trip Linux's `ETXTBSY` ("Text file busy")
+    // under parallel test load.
+    tmp.into_temp_path()
+        .persist(path)
         .map_err(|err| err.error)
         .expect("persist dummy codex");
 }
