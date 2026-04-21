@@ -32,6 +32,7 @@ use crate::human_time::human_time_ago;
 use crate::ui_colors::orange_color;
 
 const USER_TASK_PREVIEW_MAX_LINES: usize = 5;
+const NON_MAXIMIZED_DETAILS_MAX_CONTENT_WIDTH: usize = 120;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct OverlayMetrics {
@@ -666,7 +667,11 @@ impl ProjectsOverlay {
             return Vec::new();
         }
 
-        let wrap_width = usize::from(area.width.max(1));
+        let wrap_width = if self.maximized {
+            usize::from(area.width.max(1))
+        } else {
+            usize::from(area.width.max(1)).min(NON_MAXIMIZED_DETAILS_MAX_CONTENT_WIDTH)
+        };
 
         if self.projects.is_empty() && self.list_loading {
             return wrap_plain_lines(
@@ -1266,6 +1271,72 @@ mod tests {
         let terminal =
             render_overlay_to_terminal(&mut overlay, 80, 18, UNIX_EPOCH + Duration::from_secs(120));
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn projects_overlay_limits_details_width_when_not_maximized() {
+        let mut overlay = ProjectsOverlay::default();
+        overlay.open_or_refresh();
+
+        overlay.on_projects_list(
+            vec![PotterProjectListEntry {
+                project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+                progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+                description: "Details width cap".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            }],
+            None,
+        );
+
+        let long_line = (0..20)
+            .map(|idx| format!("word{idx:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        overlay.on_project_details(PotterProjectDetails {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            git_branch: Some("main".to_string()),
+            user_message: Some(long_line.clone()),
+            rounds: Vec::new(),
+            error: None,
+        });
+
+        let lines = overlay.build_right_lines(Rect::new(0, 0, 200, 18), UNIX_EPOCH);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        insta::assert_snapshot!(rendered);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let maximized_lines = overlay.build_right_lines(Rect::new(0, 0, 200, 18), UNIX_EPOCH);
+        let maximized_rendered: Vec<String> = maximized_lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(
+            maximized_rendered
+                .iter()
+                .filter(|line| line.as_str() == long_line)
+                .count(),
+            1,
+            "expected maximized details view to keep the long task line unwrapped: {maximized_rendered:?}"
+        );
     }
 
     #[test]
