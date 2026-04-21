@@ -34,7 +34,7 @@ pub async fn run_resume_picker_prompt_with_tui(
     tui: &mut Tui,
     projects_overlay_provider: crate::ProjectsOverlayProviderChannels,
 ) -> anyhow::Result<ResumePickerOutcome> {
-    let alt = AltScreenGuard::enter(tui);
+    let alt = AltScreenGuard::enter(tui)?;
 
     let mut response_rx = projects_overlay_provider.response_rx;
     let request_tx = projects_overlay_provider.request_tx;
@@ -96,9 +96,9 @@ struct AltScreenGuard<'a> {
 }
 
 impl<'a> AltScreenGuard<'a> {
-    fn enter(tui: &'a mut Tui) -> Self {
-        let _ = tui.enter_alt_screen();
-        Self { tui }
+    fn enter(tui: &'a mut Tui) -> anyhow::Result<Self> {
+        tui.enter_alt_screen()?;
+        Ok(Self { tui })
     }
 }
 
