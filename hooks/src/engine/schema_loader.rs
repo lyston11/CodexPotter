@@ -2,9 +2,15 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-#[allow(dead_code)]
 pub(super) struct GeneratedHookSchemas {
     pub potter_project_stop_command_input: Value,
+}
+
+pub(super) fn validate_generated_hook_schemas_loaded() {
+    // Touch each field so dead-code warnings are meaningful and schema decoding is validated at
+    // startup.
+    let schemas = generated_hook_schemas();
+    let _ = &schemas.potter_project_stop_command_input;
 }
 
 pub(super) fn generated_hook_schemas() -> &'static GeneratedHookSchemas {

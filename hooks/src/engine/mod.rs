@@ -95,7 +95,7 @@ impl HooksEngine {
             };
         }
 
-        let _ = schema_loader::generated_hook_schemas();
+        schema_loader::validate_generated_hook_schemas_loaded();
         let discovered = discovery::discover_handlers(cwd, codex_home_dir);
         Self {
             handlers: discovered.handlers,
