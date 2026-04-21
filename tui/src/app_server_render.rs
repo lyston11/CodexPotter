@@ -245,17 +245,10 @@ pub async fn prompt_user_with_tui(
         should_pad_prompt_viewport,
         *verbosity,
     );
-    app.projects_overlay = std::mem::take(projects_overlay_state);
-
-    let (overlay_request_tx, mut overlay_response_rx) = match projects_overlay_provider {
-        Some(provider) => (Some(provider.request_tx), Some(provider.response_rx)),
-        None => (None, None),
-    };
-    app.projects_overlay_request_tx = overlay_request_tx;
-    if app.projects_overlay.is_open() && app.projects_overlay_request_tx.is_some() {
-        let request = app.projects_overlay.open_or_refresh();
-        app.send_projects_overlay_request(request);
-    }
+    let mut overlay_response_rx = app.restore_projects_overlay(
+        std::mem::take(projects_overlay_state),
+        projects_overlay_provider,
+    );
 
     let result = app
         .run(
@@ -475,19 +468,10 @@ pub async fn run_round_with_tui_options_and_queue(
         file_search,
         queued_user_messages_state,
     );
-    app.projects_overlay = projects_overlay_state;
+    let mut overlay_response_rx =
+        app.restore_projects_overlay(projects_overlay_state, projects_overlay_provider);
     app.has_emitted_history_lines = options.pad_before_first_cell;
     app.refresh_queued_user_messages();
-
-    let (overlay_request_tx, mut overlay_response_rx) = match projects_overlay_provider {
-        Some(provider) => (Some(provider.request_tx), Some(provider.response_rx)),
-        None => (None, None),
-    };
-    app.projects_overlay_request_tx = overlay_request_tx;
-    if app.projects_overlay.is_open() && app.projects_overlay_request_tx.is_some() {
-        let request = app.projects_overlay.open_or_refresh();
-        app.send_projects_overlay_request(request);
-    }
 
     let result = app
         .run(
@@ -1844,6 +1828,24 @@ impl RenderAppState {
             return;
         };
         let _ = tx.send(request);
+    }
+
+    fn restore_projects_overlay(
+        &mut self,
+        projects_overlay_state: crate::projects_overlay::ProjectsOverlay,
+        projects_overlay_provider: Option<crate::ProjectsOverlayProviderChannels>,
+    ) -> Option<UnboundedReceiver<crate::ProjectsOverlayResponse>> {
+        self.projects_overlay = projects_overlay_state;
+        let (overlay_request_tx, overlay_response_rx) = match projects_overlay_provider {
+            Some(provider) => (Some(provider.request_tx), Some(provider.response_rx)),
+            None => (None, None),
+        };
+        self.projects_overlay_request_tx = overlay_request_tx;
+        if self.projects_overlay.is_open() && self.projects_overlay_request_tx.is_some() {
+            let request = self.projects_overlay.open_or_refresh();
+            self.send_projects_overlay_request(request);
+        }
+        overlay_response_rx
     }
 
     fn maybe_send_projects_overlay_auto_refresh(
@@ -5293,6 +5295,111 @@ mod tests {
         match overlay_request_rx.try_recv() {
             Ok(crate::ProjectsOverlayRequest::List) => {}
             other => panic!("expected list request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restored_projects_overlay_keeps_open_state_and_refreshes_selected_project() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let first_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/1");
+        let second_project_dir = PathBuf::from(".codexpotter/projects/2026/04/16/2");
+        let projects = vec![
+            PotterProjectListEntry {
+                project_dir: first_project_dir.clone(),
+                progress_file: first_project_dir.join("MAIN.md"),
+                description: "First overlay project".to_string(),
+                started_at_unix_secs: Some(1),
+                rounds: 1,
+                status: PotterProjectListStatus::Succeeded,
+            },
+            PotterProjectListEntry {
+                project_dir: second_project_dir.clone(),
+                progress_file: second_project_dir.join("MAIN.md"),
+                description: "Second overlay project".to_string(),
+                started_at_unix_secs: Some(2),
+                rounds: 2,
+                status: PotterProjectListStatus::Interrupted,
+            },
+        ];
+
+        let (mut first_app, _rx) = make_round_renderer_app(Verbosity::default());
+        let (first_request_tx, mut first_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        first_app.projects_overlay_request_tx = Some(first_request_tx);
+        first_app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+        match first_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected initial list request, got {other:?}"),
+        }
+        first_app.handle_projects_overlay_response(
+            crate::tui::FrameRequester::test_dummy(),
+            crate::ProjectsOverlayResponse::List {
+                projects: projects.clone(),
+                error: None,
+            },
+        );
+        match first_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, first_project_dir);
+            }
+            other => panic!("expected initial details request, got {other:?}"),
+        }
+
+        first_app.handle_key_event(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+        match first_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected second-project details request, got {other:?}"),
+        }
+
+        let saved_overlay = first_app.projects_overlay;
+
+        let (mut second_app, _rx) = make_round_renderer_app(Verbosity::default());
+        let (second_request_tx, mut second_request_rx) =
+            unbounded_channel::<crate::ProjectsOverlayRequest>();
+        let (_second_response_tx, second_response_rx) =
+            unbounded_channel::<crate::ProjectsOverlayResponse>();
+        let _overlay_response_rx = second_app.restore_projects_overlay(
+            saved_overlay,
+            Some(crate::ProjectsOverlayProviderChannels {
+                request_tx: second_request_tx,
+                response_rx: second_response_rx,
+            }),
+        );
+
+        assert!(
+            second_app.projects_overlay.is_open(),
+            "expected restored overlay to remain open"
+        );
+        match second_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::List) => {}
+            other => panic!("expected restore-time list refresh, got {other:?}"),
+        }
+
+        second_app.handle_projects_overlay_response(
+            crate::tui::FrameRequester::test_dummy(),
+            crate::ProjectsOverlayResponse::List {
+                projects,
+                error: None,
+            },
+        );
+        match second_request_rx.try_recv() {
+            Ok(crate::ProjectsOverlayRequest::Details { project_dir }) => {
+                assert_eq!(project_dir, second_project_dir);
+            }
+            other => panic!("expected restored selection details request, got {other:?}"),
         }
     }
 
