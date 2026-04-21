@@ -16,17 +16,31 @@ const POTTER_PROJECT_STOP_INPUT_FIXTURE: &str = "potter-project-stop.command.inp
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "potter-project-stop.command.input")]
+/// JSON payload written to stdin for `Potter.ProjectStop` command hooks.
+///
+/// The generated schema fixture is derived from this type, so field names and requiredness define
+/// the contract between CodexPotter and external hook commands.
 pub struct PotterProjectStopCommandInput {
+    /// Absolute path to the project directory containing `MAIN.md`.
     pub project_dir: String,
+    /// Absolute path to the project progress file (`MAIN.md`).
     pub project_file_path: String,
+    /// Working directory used for hook discovery and as the hook process CWD.
     pub cwd: String,
+    /// Stable hook event name. Always `Potter.ProjectStop`.
     #[schemars(schema_with = "potter_project_stop_hook_event_name_schema")]
     pub hook_event_name: String,
+    /// Original user prompt captured when the project started.
     pub user_prompt: String,
+    /// Session IDs for every round recorded in the project.
     pub all_session_ids: Vec<String>,
+    /// Session IDs created since the current resume boundary.
     pub new_session_ids: Vec<String>,
+    /// Final assistant messages for every recorded round.
     pub all_assistant_messages: Vec<String>,
+    /// Final assistant messages created since the current resume boundary.
     pub new_assistant_messages: Vec<String>,
+    /// Stable stop reason code such as `succeeded` or `budget_exhausted`.
     pub stop_reason_code: String,
 }
 
@@ -34,6 +48,7 @@ fn potter_project_stop_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Sch
     string_const_schema("Potter.ProjectStop")
 }
 
+/// Regenerate committed JSON schema fixtures under `schema/generated/`.
 pub fn write_schema_fixtures(schema_root: &Path) -> anyhow::Result<()> {
     let generated_dir = schema_root.join("generated");
     ensure_empty_dir(&generated_dir)?;

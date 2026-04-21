@@ -1,48 +1,59 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
+  "description": "JSON payload written to stdin for `Potter.ProjectStop` command hooks.\n\nThe generated schema fixture is derived from this type, so field names and requiredness define the contract between CodexPotter and external hook commands.",
   "properties": {
     "all_assistant_messages": {
+      "description": "Final assistant messages for every recorded round.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "all_session_ids": {
+      "description": "Session IDs for every round recorded in the project.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "cwd": {
+      "description": "Working directory used for hook discovery and as the hook process CWD.",
       "type": "string"
     },
     "hook_event_name": {
       "const": "Potter.ProjectStop",
+      "description": "Stable hook event name. Always `Potter.ProjectStop`.",
       "type": "string"
     },
     "new_assistant_messages": {
+      "description": "Final assistant messages created since the current resume boundary.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "new_session_ids": {
+      "description": "Session IDs created since the current resume boundary.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "project_dir": {
+      "description": "Absolute path to the project directory containing `MAIN.md`.",
       "type": "string"
     },
     "project_file_path": {
+      "description": "Absolute path to the project progress file (`MAIN.md`).",
       "type": "string"
     },
     "stop_reason_code": {
+      "description": "Stable stop reason code such as `succeeded` or `budget_exhausted`.",
       "type": "string"
     },
     "user_prompt": {
+      "description": "Original user prompt captured when the project started.",
       "type": "string"
     }
   },
