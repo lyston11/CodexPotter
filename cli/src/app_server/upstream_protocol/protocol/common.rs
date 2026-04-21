@@ -576,14 +576,14 @@ mod tests {
     }
 
     #[test]
-    fn serialize_initialize_request() {
+    fn serialize_initialize_request_uses_upstream_tui_client_identity() {
         let request = ClientRequest::Initialize {
             request_id: RequestId::Integer(4),
             params: v1::InitializeParams {
                 client_info: ClientInfo {
-                    name: "codex-potter".to_string(),
-                    title: Some("codex-potter".to_string()),
-                    version: "0.0.0".to_string(),
+                    name: "codex-tui".to_string(),
+                    title: None,
+                    version: "0.121.0".to_string(),
                 },
                 capabilities: Some(InitializeCapabilities {
                     experimental_api: true,
@@ -595,7 +595,11 @@ mod tests {
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["method"], "initialize");
         assert_eq!(value["id"], 4);
-        assert_eq!(value["params"]["clientInfo"]["name"], "codex-potter");
+        assert_eq!(value["params"]["clientInfo"]["name"], "codex-tui");
+        assert_eq!(
+            value["params"]["clientInfo"]["title"],
+            serde_json::Value::Null
+        );
         assert_eq!(value["params"]["capabilities"]["experimentalApi"], true);
     }
 
@@ -666,9 +670,9 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v1::InitializeParams {
                 client_info: ClientInfo {
-                    name: "codex-potter".to_string(),
+                    name: "codex-tui".to_string(),
                     title: None,
-                    version: "0.0.0".to_string(),
+                    version: "0.121.0".to_string(),
                 },
                 capabilities: None,
             },

@@ -3303,6 +3303,74 @@ mod tests {
         parse_codex_cli_version("codex-cli not-a-version").expect_err("bad version should fail");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_upstream_client_info_uses_codex_tui_name_and_cli_version() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        write_dummy_codex_script(
+            &codex_bin,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "codex-cli 0.121.0"
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+
+        let client_info =
+            resolve_upstream_client_info(codex_bin.to_str().expect("utf-8 path")).await;
+        assert_eq!(
+            client_info,
+            ClientInfo {
+                name: "codex-tui".to_string(),
+                title: None,
+                version: "0.121.0".to_string(),
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_upstream_client_info_falls_back_to_codex_potter_version() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        write_dummy_codex_script(
+            &codex_bin,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "boom" >&2
+  exit 17
+fi
+
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+
+        let client_info =
+            resolve_upstream_client_info(codex_bin.to_str().expect("utf-8 path")).await;
+        assert_eq!(
+            client_info,
+            ClientInfo {
+                name: "codex-tui".to_string(),
+                title: None,
+                version: codex_tui::CODEX_POTTER_VERSION.to_string(),
+            }
+        );
+    }
+
     #[test]
     fn thread_start_settings_into_params_preserves_model_override() {
         let params = ThreadStartSettings {
