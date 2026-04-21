@@ -34,5 +34,6 @@ pub struct ProjectStopRequest {
 /// Outcome of running `Potter.ProjectStop` hooks.
 #[derive(Debug)]
 pub struct ProjectStopOutcome {
+    /// Completed hook runs emitted for this project-stop execution window.
     pub hook_events: Vec<HookCompletedEvent>,
 }

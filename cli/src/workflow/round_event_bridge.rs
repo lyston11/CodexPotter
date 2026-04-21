@@ -24,9 +24,16 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 /// Configuration for [`PotterRoundEventBridge`].
 #[derive(Debug, Clone)]
 pub struct PotterRoundEventBridgeConfig {
+    /// Whether this round should persist a fresh `RoundConfigured` marker when the backend emits
+    /// `SessionConfigured`.
+    ///
+    /// Resumed unfinished rounds set this to `false` because their persisted
+    /// `RoundConfigured` marker is replayed instead of written again.
     pub record_round_configured: bool,
-
+    /// Repository/worktree root used for progress-file reads, git metadata, and hook rollout
+    /// resolution.
     pub workdir: PathBuf,
+    /// Workdir-relative path to the project progress file (`.codexpotter/projects/.../MAIN.md`).
     pub progress_file_rel: PathBuf,
     /// Number of completed rounds that existed before the current iteration window began.
     ///
@@ -37,12 +44,19 @@ pub struct PotterRoundEventBridgeConfig {
     ///
     /// When unset, hook discovery follows the same rules as upstream Codex.
     pub hooks_codex_home_dir: Option<PathBuf>,
+    /// Process-local `--xmodel` flag for the active CodexPotter session.
     pub potter_xmodel_runtime: bool,
+    /// Workdir-relative prompt file path shown in project completion summaries.
     pub user_prompt_file: PathBuf,
+    /// Git commit captured when the project started.
     pub git_commit_start: String,
+    /// Absolute path to the project's `potter-rollout.jsonl`.
     pub potter_rollout_path: PathBuf,
+    /// Start instant for the current iteration window.
     pub project_started_at: Instant,
+    /// 1-based index of the active round within the project budget.
     pub round_current: u32,
+    /// Configured round budget for the project.
     pub round_total: u32,
     /// Number of rounds executed in the current iteration window, including the active round.
     ///
