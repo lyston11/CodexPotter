@@ -126,6 +126,11 @@ pub struct PotterContinueRoundOptions {
     /// preserve the original round position (for example `7/10`) while summary metrics should
     /// reflect only the newly executed rounds since the resume continuation began.
     pub project_rounds_run: u32,
+    /// Duration already spent in this same round before it was interrupted and continued.
+    ///
+    /// This stays `0` for ordinary unfinished-round resume replay and is only non-zero when a
+    /// live `Continue iterate` resumes an interrupted round.
+    pub carried_duration_secs: u64,
     /// Existing Codex thread to resume for this unfinished round.
     pub resume_thread_id: codex_protocol::ThreadId,
     /// Persisted EventMsg items from the upstream rollout to replay before continuing.
@@ -165,6 +170,7 @@ pub async fn run_potter_round(
             round_total,
             potter_xmodel_force_gpt_5_4,
             project_rounds_run,
+            carried_duration_secs: 0,
             prompt: context.turn_prompt.clone(),
             resume_thread_id: None,
             emit_round_started_event: true,
@@ -190,6 +196,7 @@ pub async fn continue_potter_round(
         round_current,
         round_total,
         project_rounds_run,
+        carried_duration_secs,
         resume_thread_id,
         replay_event_msgs,
     } = options;
@@ -204,6 +211,7 @@ pub async fn continue_potter_round(
             round_total,
             potter_xmodel_force_gpt_5_4: false,
             project_rounds_run,
+            carried_duration_secs,
             prompt: context.turn_prompt.clone(),
             resume_thread_id: Some(resume_thread_id),
             emit_round_started_event: false,
@@ -222,6 +230,7 @@ struct PotterRoundInnerOptions {
     round_total: u32,
     potter_xmodel_force_gpt_5_4: bool,
     project_rounds_run: u32,
+    carried_duration_secs: u64,
     prompt: String,
     resume_thread_id: Option<codex_protocol::ThreadId>,
     emit_round_started_event: bool,
@@ -242,6 +251,7 @@ async fn run_potter_round_inner(
         round_total,
         potter_xmodel_force_gpt_5_4,
         project_rounds_run,
+        carried_duration_secs,
         prompt,
         resume_thread_id,
         emit_round_started_event,
@@ -255,7 +265,8 @@ async fn run_potter_round_inner(
     let (ui_event_tx, ui_event_rx) = unbounded_channel::<Event>();
     let (fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
     let (session_model_tx, session_model_rx) = watch::channel::<Option<String>>(None);
-    let (round_duration_secs_tx, round_duration_secs_rx) = watch::channel::<u64>(0u64);
+    let (round_duration_secs_tx, round_duration_secs_rx) =
+        watch::channel::<u64>(carried_duration_secs);
 
     if let Some(project_started) = project_started {
         let _ = ui_event_tx.send(Event {
@@ -332,6 +343,7 @@ async fn run_potter_round_inner(
 
         tokio::spawn(async move {
             while let Some(event) = backend_event_rx.recv().await {
+                let event = apply_carried_round_duration(event, carried_duration_secs);
                 if let EventMsg::SessionConfigured(cfg) = &event.msg {
                     session_model_tx.send_replace(Some(cfg.model.clone()));
                 }
@@ -465,6 +477,18 @@ async fn run_potter_round_inner(
     })
 }
 
+fn apply_carried_round_duration(mut event: Event, carried_duration_secs: u64) -> Event {
+    if carried_duration_secs == 0 {
+        return event;
+    }
+
+    if let EventMsg::PotterRoundFinished { duration_secs, .. } = &mut event.msg {
+        *duration_secs = carried_duration_secs.saturating_add(*duration_secs);
+    }
+
+    event
+}
+
 fn prepare_upstream_cli_args_for_round(
     mut upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     round_current: u32,
@@ -567,5 +591,49 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn apply_carried_round_duration_adds_prior_elapsed_time_to_round_finish() {
+        let adjusted = apply_carried_round_duration(
+            Event {
+                id: "round-finished".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                    duration_secs: 12,
+                },
+            },
+            30,
+        );
+
+        assert_eq!(adjusted.id, "round-finished");
+        assert!(matches!(
+            adjusted.msg,
+            EventMsg::PotterRoundFinished {
+                outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                duration_secs: 42,
+            }
+        ));
+    }
+
+    #[test]
+    fn apply_carried_round_duration_leaves_non_finished_events_unchanged() {
+        let event = Event {
+            id: "round-started".to_string(),
+            msg: EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 2,
+            },
+        };
+
+        let adjusted = apply_carried_round_duration(event, 30);
+        assert_eq!(adjusted.id, "round-started");
+        assert!(matches!(
+            adjusted.msg,
+            EventMsg::PotterRoundStarted {
+                current: 1,
+                total: 2,
+            }
+        ));
     }
 }

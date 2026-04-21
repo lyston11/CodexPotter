@@ -101,7 +101,6 @@ struct InterruptedProject {
     workdir: PathBuf,
     git_commit_start: String,
     project_started_at: Instant,
-    interrupted_round_duration_secs: u64,
     continue_round: ContinueRoundPlan,
     plan: InterruptedProjectPlan,
 }
@@ -676,7 +675,7 @@ async fn resolve_interrupt_project(
                 interrupted.plan.potter_rollout_path(),
                 &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                     outcome: PotterRoundOutcome::Interrupted,
-                    duration_secs: interrupted.interrupted_round_duration_secs,
+                    duration_secs: interrupted.continue_round.carried_duration_secs,
                 },
             )
             .context("append interrupted round_finished after resolve_interrupt(stop)")?;
@@ -693,6 +692,7 @@ async fn resolve_interrupt_project(
                 git_commit_start,
                 project_started_at,
                 plan,
+                continue_round: _,
                 ..
             } = interrupted;
 
@@ -1020,6 +1020,7 @@ struct ContinueRoundPlan {
     round_current: u32,
     round_total: u32,
     project_rounds_run: u32,
+    carried_duration_secs: u64,
     resume_thread_id: ThreadId,
     replay_event_msgs: Vec<EventMsg>,
 }
@@ -1162,6 +1163,7 @@ fn interrupted_continue_round(
     round_current: u32,
     round_total: u32,
     project_rounds_run: u32,
+    carried_duration_secs: u64,
 ) -> anyhow::Result<ContinueRoundPlan> {
     let resume_thread_id = thread_id.context(format!(
         "interrupted round {round_current}/{round_total} is missing a thread id"
@@ -1171,6 +1173,7 @@ fn interrupted_continue_round(
         round_current,
         round_total,
         project_rounds_run,
+        carried_duration_secs,
         resume_thread_id,
         replay_event_msgs: Vec::new(),
     })
@@ -1205,6 +1208,7 @@ async fn run_continue_round(
             round_current: continue_round.round_current,
             round_total: continue_round.round_total,
             project_rounds_run: continue_round.project_rounds_run,
+            carried_duration_secs: continue_round.carried_duration_secs,
             resume_thread_id: continue_round.resume_thread_id,
             replay_event_msgs: continue_round.replay_event_msgs.clone(),
         },
@@ -1377,6 +1381,7 @@ async fn run_fresh_project(
                     initial_continue_round.round_current,
                     initial_continue_round.round_total,
                     initial_continue_round.project_rounds_run,
+                    round_result.duration_secs,
                 )?;
                 return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
                     project_id: plan
@@ -1389,7 +1394,6 @@ async fn run_fresh_project(
                     workdir: plan.workdir.clone(),
                     git_commit_start: plan.git_commit_start.clone(),
                     project_started_at: plan.project_started_at,
-                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Fresh(continuation_plan.clone()),
                 })));
@@ -1502,6 +1506,7 @@ async fn run_fresh_project(
                     current_round,
                     plan.rounds_total,
                     current_round,
+                    round_result.duration_secs,
                 )?;
                 return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
                     project_id: plan
@@ -1514,7 +1519,6 @@ async fn run_fresh_project(
                     workdir: plan.workdir.clone(),
                     git_commit_start: plan.git_commit_start.clone(),
                     project_started_at: plan.project_started_at,
-                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Fresh(continuation_plan.clone()),
                 })));
@@ -1682,6 +1686,7 @@ async fn run_resumed_project(
             round_current: unfinished.round_current,
             round_total: unfinished.round_total,
             project_rounds_run: 1,
+            carried_duration_secs: 0,
             resume_thread_id: unfinished.thread_id,
             replay_event_msgs,
         });
@@ -1768,6 +1773,7 @@ async fn run_resumed_project(
                     initial_continue_round.round_current,
                     initial_continue_round.round_total,
                     initial_continue_round.project_rounds_run,
+                    round_result.duration_secs,
                 )?;
                 return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
                     project_id: resumed.project_id.clone(),
@@ -1776,7 +1782,6 @@ async fn run_resumed_project(
                     workdir: resumed.resolved.workdir.clone(),
                     git_commit_start: git_commit_start.clone(),
                     project_started_at,
-                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Resumed(continuation_plan.clone()),
                 })));
@@ -1893,6 +1898,7 @@ async fn run_resumed_project(
                     current_round,
                     display_round_total,
                     project_rounds_run,
+                    round_result.duration_secs,
                 )?;
                 return Ok(ProjectRunExit::Interrupted(Box::new(InterruptedProject {
                     project_id: resumed.project_id.clone(),
@@ -1901,7 +1907,6 @@ async fn run_resumed_project(
                     workdir: resumed.resolved.workdir.clone(),
                     git_commit_start: git_commit_start.clone(),
                     project_started_at,
-                    interrupted_round_duration_secs: round_result.duration_secs,
                     continue_round,
                     plan: InterruptedProjectPlan::Resumed(continuation_plan.clone()),
                 })));
@@ -3784,11 +3789,11 @@ git_branch: "main"
             workdir: plan.workdir.clone(),
             git_commit_start: plan.git_commit_start.clone(),
             project_started_at: plan.project_started_at,
-            interrupted_round_duration_secs: 0,
             continue_round: ContinueRoundPlan {
                 round_current: 1,
                 round_total: 1,
                 project_rounds_run: 1,
+                carried_duration_secs: 0,
                 resume_thread_id: ThreadId::default(),
                 replay_event_msgs: Vec::new(),
             },
@@ -3851,6 +3856,7 @@ git_branch: "main"
                     round_current: 1,
                     round_total: 3,
                     project_rounds_run: 1,
+                    carried_duration_secs: 0,
                     resume_thread_id: ThreadId::default(),
                     replay_event_msgs: Vec::new(),
                 }),
@@ -3895,6 +3901,20 @@ git_branch: "main"
                 "expected continuation to retry the last round instead of exhausting the budget"
             );
         }
+    }
+
+    #[test]
+    fn interrupted_continue_round_preserves_carried_duration() {
+        let thread_id = ThreadId::default();
+        let plan = interrupted_continue_round(Some(thread_id), 2, 3, 2, 733)
+            .expect("build continue round");
+
+        assert_eq!(plan.round_current, 2);
+        assert_eq!(plan.round_total, 3);
+        assert_eq!(plan.project_rounds_run, 2);
+        assert_eq!(plan.carried_duration_secs, 733);
+        assert_eq!(plan.resume_thread_id, thread_id);
+        assert!(plan.replay_event_msgs.is_empty());
     }
 
     #[tokio::test]
@@ -3946,11 +3966,11 @@ git_branch: "main"
             workdir: plan.workdir.clone(),
             git_commit_start: plan.git_commit_start.clone(),
             project_started_at: plan.project_started_at,
-            interrupted_round_duration_secs: 0,
             continue_round: ContinueRoundPlan {
                 round_current: 2,
                 round_total: 3,
                 project_rounds_run: 2,
+                carried_duration_secs: 733,
                 resume_thread_id: ThreadId::default(),
                 replay_event_msgs: Vec::new(),
             },
@@ -3998,7 +4018,7 @@ git_branch: "main"
             rollout_lines,
             vec![crate::workflow::rollout::PotterRolloutLine::RoundFinished {
                 outcome: PotterRoundOutcome::Interrupted,
-                duration_secs: 0,
+                duration_secs: 733,
             }]
         );
 
@@ -4125,11 +4145,11 @@ git_branch: "main"
             workdir: plan.workdir.clone(),
             git_commit_start: plan.git_commit_start.clone(),
             project_started_at: plan.project_started_at,
-            interrupted_round_duration_secs: 0,
             continue_round: ContinueRoundPlan {
                 round_current: 2,
                 round_total: 3,
                 project_rounds_run: 2,
+                carried_duration_secs: 0,
                 resume_thread_id: ThreadId::default(),
                 replay_event_msgs: Vec::new(),
             },
