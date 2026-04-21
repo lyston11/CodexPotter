@@ -302,6 +302,8 @@ async fn run_app_server_backend_inner(
         resume_thread_id,
         event_mode,
     } = config;
+
+    let client_info = resolve_upstream_client_info(&codex_bin).await;
     let (mut child, stdin, stdout, stderr) = spawn_app_server(
         &codex_bin,
         launch,
@@ -374,6 +376,7 @@ async fn run_app_server_backend_inner(
                 .context("codex app-server stdin unavailable")?,
             &mut lines,
             &mut next_id,
+            client_info,
             &mut recovery,
             event_tx,
         )
@@ -665,6 +668,7 @@ async fn initialize_app_server(
     stdin: &mut ChildStdin,
     lines: &mut tokio::io::Lines<BufReader<ChildStdout>>,
     next_id: &mut i64,
+    client_info: ClientInfo,
     recovery: &mut StreamRecoveryContext,
     event_tx: &UnboundedSender<Event>,
 ) -> anyhow::Result<()> {
@@ -672,11 +676,7 @@ async fn initialize_app_server(
     let request = ClientRequest::Initialize {
         request_id: request_id.clone(),
         params: InitializeParams {
-            client_info: ClientInfo {
-                name: "codex-potter".to_string(),
-                title: Some("codex-potter".to_string()),
-                version: codex_tui::CODEX_POTTER_VERSION.to_string(),
-            },
+            client_info,
             capabilities: Some(InitializeCapabilities {
                 experimental_api: true,
                 opt_out_notification_methods: None,
@@ -687,6 +687,101 @@ async fn initialize_app_server(
 
     send_message(stdin, &ClientNotification::Initialized).await?;
     Ok(())
+}
+
+async fn resolve_upstream_client_info(codex_bin: &str) -> ClientInfo {
+    let version = match read_codex_cli_version(codex_bin).await {
+        Ok(version) => version,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                codex_bin,
+                "Failed to resolve upstream codex version; falling back to CodexPotter build version."
+            );
+            codex_tui::CODEX_POTTER_VERSION.to_string()
+        }
+    };
+
+    ClientInfo {
+        name: "codex-tui".to_string(),
+        title: None,
+        version,
+    }
+}
+
+async fn read_codex_cli_version(codex_bin: &str) -> anyhow::Result<String> {
+    let output = Command::new(codex_bin)
+        .arg("--version")
+        .output()
+        .await
+        .with_context(|| format!("run `{codex_bin} --version`"))?;
+
+    anyhow::ensure!(
+        output.status.success(),
+        "`{codex_bin} --version` failed with status {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    parse_codex_cli_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_codex_cli_version(output: &str) -> anyhow::Result<String> {
+    let trimmed = output.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "empty stdout from `codex --version`");
+
+    for token in trimmed.split_whitespace() {
+        let token = token.trim_matches(|ch: char| matches!(ch, ',' | ';' | ')' | '('));
+        let token = token.strip_prefix('v').unwrap_or(token);
+        if looks_like_semver(token) {
+            return Ok(token.to_string());
+        }
+    }
+
+    anyhow::bail!("failed to find a version token in `codex --version` output: {trimmed:?}")
+}
+
+fn looks_like_semver(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut idx = 0usize;
+
+    let start = idx;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx == start || idx >= bytes.len() || bytes[idx] != b'.' {
+        return false;
+    }
+    idx += 1;
+
+    let start = idx;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx == start || idx >= bytes.len() || bytes[idx] != b'.' {
+        return false;
+    }
+    idx += 1;
+
+    let start = idx;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx == start {
+        return false;
+    }
+    if idx == bytes.len() {
+        return true;
+    }
+
+    match bytes[idx] {
+        b'-' | b'+' => {}
+        _ => return false,
+    }
+
+    bytes[idx + 1..]
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
 }
 
 async fn send_client_request(
@@ -3186,6 +3281,26 @@ mod tests {
             event_mode,
             server_request_policy: ServerRequestPolicy::default(),
         }
+    }
+
+    #[test]
+    fn parse_codex_cli_version_extracts_semver_from_codex_version_output() {
+        let version = parse_codex_cli_version("codex-cli 0.121.0\n").expect("parse version");
+        assert_eq!(version, "0.121.0");
+
+        let version = parse_codex_cli_version("codex-cli v1.2.3").expect("parse version");
+        assert_eq!(version, "1.2.3");
+
+        let version =
+            parse_codex_cli_version("codex-cli (0.121.0-alpha.1)").expect("parse version");
+        assert_eq!(version, "0.121.0-alpha.1");
+    }
+
+    #[test]
+    fn parse_codex_cli_version_rejects_empty_or_unparseable_outputs() {
+        parse_codex_cli_version("").expect_err("empty output should fail");
+        parse_codex_cli_version("codex-cli").expect_err("no version token should fail");
+        parse_codex_cli_version("codex-cli not-a-version").expect_err("bad version should fail");
     }
 
     #[test]
