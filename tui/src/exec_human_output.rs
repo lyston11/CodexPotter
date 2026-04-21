@@ -1376,6 +1376,35 @@ mod tests {
     }
 
     #[test]
+    fn round_finished_separator_precedes_summary_when_duration_is_available() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let blocks = renderer
+            .handle_event(&EventMsg::PotterProjectBudgetExhausted {
+                rounds: 5,
+                duration: Duration::from_secs(7328),
+                user_prompt_file: PathBuf::from(".codexpotter/projects/2026/03/26/3/MAIN.md"),
+                git_commit_start: "96ca8c6abc".to_string(),
+                git_commit_end: "0919e7bdef".to_string(),
+            })
+            .expect("store summary");
+        assert!(blocks.is_empty());
+
+        let blocks = renderer
+            .handle_event(&EventMsg::PotterRoundFinished {
+                outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                duration_secs: 733,
+            })
+            .expect("emit separator and summary");
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].contains("Round finished in 12m 13s"));
+        assert!(
+            blocks[1].starts_with("CodexPotter summary: 5 rounds in 2h 02m 08s"),
+            "unexpected summary block: {:?}",
+            blocks[1]
+        );
+    }
+
+    #[test]
     fn summary_omits_view_changes_when_git_commits_are_missing() {
         let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/03/26/3/MAIN.md");
 

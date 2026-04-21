@@ -13,12 +13,12 @@ expression: terminal.backend().vt100().screen().contents()
 
 
 
-
-
 › test prompt
 
 
 • - Finished the project.
+
+─ Round finished in 12m 13s ────────────────────────────────────────────────────
 
 ─ CodexPotter summary: 4 rounds in 24m 34s ─────────────────────────────────────
 

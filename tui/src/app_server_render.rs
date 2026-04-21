@@ -7465,6 +7465,13 @@ mod tests {
             }),
         });
         proc.handle_codex_event(Event {
+            id: "turn-complete".into(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+            }),
+        });
+        proc.handle_codex_event(Event {
             id: "potter-succeeded".into(),
             msg: EventMsg::PotterProjectSucceeded {
                 rounds: 4,
@@ -7475,11 +7482,11 @@ mod tests {
             },
         });
         proc.handle_codex_event(Event {
-            id: "turn-complete".into(),
-            msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: "turn-1".to_string(),
-                last_agent_message: None,
-            }),
+            id: "round-finished".into(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
+                duration_secs: 733,
+            },
         });
 
         drain_render_history_events(
