@@ -2049,6 +2049,77 @@ mod tests {
     }
 
     #[test]
+    fn build_round_replay_plans_preserves_round_duration_and_summary_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _main = write_main(temp.path(), ".codexpotter/projects/2026/02/01/1");
+        let resolved =
+            resolve_project_paths(temp.path(), Path::new("2026/02/01/1")).expect("resolve");
+
+        std::fs::write(resolved.workdir.join("rollout.jsonl"), "").expect("write rollout");
+
+        let thread_id =
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id");
+        let user_prompt_file = PathBuf::from(".codexpotter/projects/2026/02/01/1/MAIN.md");
+        let potter_rollout_lines = vec![
+            crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: user_prompt_file.clone(),
+            },
+            crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 3,
+            },
+            crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id,
+                rollout_path: PathBuf::from("rollout.jsonl"),
+                service_tier: Some(ServiceTier::Fast),
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+            crate::workflow::rollout::PotterRolloutLine::ProjectSucceeded {
+                rounds: 1,
+                duration_secs: 91,
+                user_prompt_file: user_prompt_file.clone(),
+                git_commit_start: "start".to_string(),
+                git_commit_end: "end".to_string(),
+            },
+            crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 733,
+            },
+        ];
+
+        let plans =
+            build_round_replay_plans(&resolved, &potter_rollout_lines).expect("build plans");
+        assert!(plans.unfinished_round.is_none());
+        assert_eq!(plans.completed_rounds.len(), 1);
+
+        let round = plans.completed_rounds.first().expect("completed round");
+        assert_eq!(round.outcome, PotterRoundOutcome::Completed);
+        assert!(matches!(
+            round.events.get(round.events.len().saturating_sub(2)),
+            Some(EventMsg::PotterProjectSucceeded {
+                rounds: 1,
+                duration,
+                user_prompt_file: actual_user_prompt_file,
+                git_commit_start,
+                git_commit_end,
+            }) if *duration == std::time::Duration::from_secs(91)
+                && actual_user_prompt_file == &user_prompt_file
+                && git_commit_start == "start"
+                && git_commit_end == "end"
+        ));
+        assert!(matches!(
+            round.events.last(),
+            Some(EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 733,
+            })
+        ));
+    }
+
+    #[test]
     fn build_round_replay_plans_errors_when_unfinished_round_is_missing_config() {
         let temp = tempfile::tempdir().expect("tempdir");
         let _main = write_main(temp.path(), ".codexpotter/projects/2026/02/01/1");
