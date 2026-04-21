@@ -298,6 +298,9 @@ pub struct PotterRoundCompletedEvent {
     pub outcome: PotterRoundCompletedOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Mirrors `EventMsg::PotterRoundFinished.duration_secs`; `0` means unavailable.
+    #[serde(default)]
+    pub duration_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -505,9 +508,12 @@ impl ExecJsonlEventProcessor {
                     },
                 )]
             }
-            EventMsg::PotterRoundFinished { outcome, .. } => {
+            EventMsg::PotterRoundFinished {
+                outcome,
+                duration_secs,
+            } => {
                 vec![ExecJsonlEvent::PotterRoundCompleted(
-                    potter_round_completed_from_outcome(outcome),
+                    potter_round_completed_from_outcome(outcome, *duration_secs),
                 )]
             }
             EventMsg::PotterProjectSucceeded {
@@ -1118,31 +1124,37 @@ impl From<&codex_protocol::protocol::AgentStatus> for CollabAgentState {
 
 fn potter_round_completed_from_outcome(
     outcome: &codex_protocol::protocol::PotterRoundOutcome,
+    duration_secs: u64,
 ) -> PotterRoundCompletedEvent {
     match outcome {
         codex_protocol::protocol::PotterRoundOutcome::Completed => PotterRoundCompletedEvent {
             outcome: PotterRoundCompletedOutcome::Completed,
             message: None,
+            duration_secs,
         },
         codex_protocol::protocol::PotterRoundOutcome::Interrupted => PotterRoundCompletedEvent {
             outcome: PotterRoundCompletedOutcome::Fatal,
             message: Some(String::from("interrupted")),
+            duration_secs,
         },
         codex_protocol::protocol::PotterRoundOutcome::TaskFailed { message } => {
             PotterRoundCompletedEvent {
                 outcome: PotterRoundCompletedOutcome::TaskFailed,
                 message: Some(message.clone()),
+                duration_secs,
             }
         }
         codex_protocol::protocol::PotterRoundOutcome::Fatal { message } => {
             PotterRoundCompletedEvent {
                 outcome: PotterRoundCompletedOutcome::Fatal,
                 message: Some(message.clone()),
+                duration_secs,
             }
         }
         codex_protocol::protocol::PotterRoundOutcome::UserRequested => PotterRoundCompletedEvent {
             outcome: PotterRoundCompletedOutcome::Fatal,
             message: Some(String::from("user requested")),
+            duration_secs,
         },
     }
 }
@@ -1480,12 +1492,13 @@ mod tests {
                 outcome: PotterRoundOutcome::TaskFailed {
                     message: "nope".to_string()
                 },
-                duration_secs: 0,
+                duration_secs: 733,
             }),
             vec![ExecJsonlEvent::PotterRoundCompleted(
                 PotterRoundCompletedEvent {
                     outcome: PotterRoundCompletedOutcome::TaskFailed,
                     message: Some("nope".to_string()),
+                    duration_secs: 733,
                 }
             )]
         );

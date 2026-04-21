@@ -570,6 +570,7 @@ impl<W: Write> ExecJsonlEmitter<W> {
                 crate::exec::PotterRoundCompletedEvent {
                     outcome: crate::exec::PotterRoundCompletedOutcome::Fatal,
                     message: Some(message.to_string()),
+                    duration_secs: 0,
                 },
             ))?;
             self.round_in_progress = false;

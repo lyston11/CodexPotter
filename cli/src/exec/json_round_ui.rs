@@ -169,6 +169,7 @@ impl<W: Write> ExecJsonRoundUi<W> {
                 crate::exec::PotterRoundCompletedEvent {
                     outcome: crate::exec::PotterRoundCompletedOutcome::Fatal,
                     message: Some(message.to_string()),
+                    duration_secs: 0,
                 },
             ))?;
             self.saw_round_finished = true;
@@ -283,6 +284,79 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     #[tokio::test]
+    async fn completed_round_keeps_duration_secs_in_json_output() {
+        let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
+        let (codex_event_tx, codex_event_rx) = unbounded_channel::<Event>();
+        let (_fatal_exit_tx, fatal_exit_rx) = unbounded_channel::<String>();
+
+        codex_event_tx
+            .send(Event {
+                id: "round-start".to_string(),
+                msg: EventMsg::PotterRoundStarted {
+                    current: 1,
+                    total: 3,
+                },
+            })
+            .expect("send PotterRoundStarted");
+        codex_event_tx
+            .send(Event {
+                id: "round-finished".to_string(),
+                msg: EventMsg::PotterRoundFinished {
+                    outcome: PotterRoundOutcome::Completed,
+                    duration_secs: 733,
+                },
+            })
+            .expect("send PotterRoundFinished");
+        drop(codex_event_tx);
+
+        let mut ui = ExecJsonRoundUi::new(Vec::new(), PathBuf::from("/tmp"));
+        let exit_info = ui
+            .render_round(codex_tui::RenderRoundParams {
+                prompt: "Continue working according to the WORKFLOW_INSTRUCTIONS".to_string(),
+                pad_before_first_cell: false,
+                status_header_prefix: None,
+                prompt_footer: codex_tui::PromptFooterContext::new(PathBuf::from("."), None),
+                codex_op_tx,
+                codex_event_rx,
+                fatal_exit_rx,
+                projects_overlay_provider: None,
+            })
+            .await
+            .expect("render_round");
+
+        let op = codex_op_rx.try_recv().expect("expected Op::UserInput");
+        assert!(matches!(op, Op::UserInput { .. }));
+        assert!(matches!(exit_info.exit_reason, ExitReason::Completed));
+
+        let output = String::from_utf8(ui.into_output()).expect("utf8");
+        let events = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str::<crate::exec::ExecJsonlEvent>)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("parse JSONL");
+
+        assert_eq!(
+            events,
+            vec![
+                crate::exec::ExecJsonlEvent::PotterRoundStarted(
+                    crate::exec::PotterRoundStartedEvent {
+                        current: 1,
+                        total: 3
+                    }
+                ),
+                crate::exec::ExecJsonlEvent::PotterRoundCompleted(
+                    crate::exec::PotterRoundCompletedEvent {
+                        outcome: crate::exec::PotterRoundCompletedOutcome::Completed,
+                        message: None,
+                        duration_secs: 733,
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn elicitation_request_fails_fast_with_closure_events() {
         let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
         let (codex_event_tx, codex_event_rx) = unbounded_channel::<Event>();
@@ -377,6 +451,7 @@ mod tests {
                     crate::exec::PotterRoundCompletedEvent {
                         outcome: crate::exec::PotterRoundCompletedOutcome::Fatal,
                         message: Some(expected_error_message),
+                        duration_secs: 0,
                     }
                 ),
             ]
@@ -463,6 +538,7 @@ mod tests {
                     crate::exec::PotterRoundCompletedEvent {
                         outcome: crate::exec::PotterRoundCompletedOutcome::Fatal,
                         message: Some("fatal exit".to_string()),
+                        duration_secs: 0,
                     }
                 ),
             ]
