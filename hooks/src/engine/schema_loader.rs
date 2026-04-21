@@ -2,24 +2,18 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-pub(super) struct GeneratedHookSchemas {
-    pub potter_project_stop_command_input: Value,
-}
-
 pub(super) fn validate_generated_hook_schemas_loaded() {
-    // Touch each field so dead-code warnings are meaningful and schema decoding is validated at
-    // startup.
-    let schemas = generated_hook_schemas();
-    let _ = &schemas.potter_project_stop_command_input;
+    // Decode the generated schema at startup so invalid checked-in fixtures fail fast.
+    let _ = potter_project_stop_command_input_schema();
 }
 
-pub(super) fn generated_hook_schemas() -> &'static GeneratedHookSchemas {
-    static SCHEMAS: OnceLock<GeneratedHookSchemas> = OnceLock::new();
-    SCHEMAS.get_or_init(|| GeneratedHookSchemas {
-        potter_project_stop_command_input: parse_json_schema(
+fn potter_project_stop_command_input_schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        parse_json_schema(
             "potter-project-stop.command.input",
             include_str!("../../schema/generated/potter-project-stop.command.input.schema.json"),
-        ),
+        )
     })
 }
 
@@ -32,11 +26,11 @@ fn parse_json_schema(name: &str, schema: &str) -> Value {
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::generated_hook_schemas;
+    use super::potter_project_stop_command_input_schema;
 
     #[test]
     fn loads_generated_hook_schemas() {
-        let schemas = generated_hook_schemas();
-        assert_eq!(schemas.potter_project_stop_command_input["type"], "object");
+        let schema = potter_project_stop_command_input_schema();
+        assert_eq!(schema["type"], "object");
     }
 }
