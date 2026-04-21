@@ -44,8 +44,7 @@ fn prepare_project_stop_hook_request(
         .context("derive project_dir from progress file path")?
         .to_path_buf();
 
-    let potter_lines = crate::workflow::rollout::read_lines(potter_rollout_path)
-        .with_context(|| format!("read {}", potter_rollout_path.display()))?;
+    let potter_lines = crate::workflow::rollout::read_project_rollout_lines(potter_rollout_path)?;
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_lines)
         .with_context(|| format!("parse {}", potter_rollout_path.display()))?;
 
@@ -246,4 +245,69 @@ pub async fn build_project_stop_hook_events(
     }
 
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn potter_project_stop_reason_code_matches_contract() {
+        assert_eq!(
+            potter_project_stop_reason_code(&PotterProjectOutcome::Succeeded),
+            "succeeded"
+        );
+        assert_eq!(
+            potter_project_stop_reason_code(&PotterProjectOutcome::Interrupted),
+            "interrupted"
+        );
+        assert_eq!(
+            potter_project_stop_reason_code(&PotterProjectOutcome::BudgetExhausted),
+            "budget_exhausted"
+        );
+        assert_eq!(
+            potter_project_stop_reason_code(&PotterProjectOutcome::TaskFailed {
+                message: "failed".to_string(),
+            }),
+            "task_failed"
+        );
+        assert_eq!(
+            potter_project_stop_reason_code(&PotterProjectOutcome::Fatal {
+                message: "fatal".to_string(),
+            }),
+            "fatal"
+        );
+    }
+
+    #[test]
+    fn prepare_project_stop_hook_request_rejects_empty_rollout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/21/1/MAIN.md");
+        let progress_file = workdir.join(&progress_file_rel);
+        std::fs::create_dir_all(progress_file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&progress_file, "---\nstatus: open\n---\n").expect("write progress file");
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        std::fs::write(&potter_rollout_path, "").expect("write empty rollout");
+
+        let err = prepare_project_stop_hook_request(
+            workdir,
+            &progress_file_rel,
+            &potter_rollout_path,
+            0,
+            "succeeded",
+        )
+        .err()
+        .expect("expected empty rollout error");
+
+        assert!(
+            format!("{err:#}").contains("potter-rollout is empty"),
+            "unexpected error: {err:#}"
+        );
+    }
 }

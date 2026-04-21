@@ -18,6 +18,7 @@ use std::time::Instant;
 use anyhow::Context;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::PotterProjectOutcome;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::SessionConfiguredEvent;
 
@@ -123,7 +124,7 @@ impl PotterRoundEventBridge {
         }
 
         let mut injected = Vec::new();
-        let mut stop_reason_code = None;
+        let mut hook_project_outcome = None;
         if let EventMsg::PotterRoundFinished {
             outcome,
             duration_secs,
@@ -187,7 +188,7 @@ impl PotterRoundEventBridge {
                                     git_commit_end,
                                 },
                             });
-                            stop_reason_code = Some("succeeded");
+                            hook_project_outcome = Some(PotterProjectOutcome::Succeeded);
                         }
                     } else if is_last_round {
                         let git_commit_end =
@@ -203,19 +204,25 @@ impl PotterRoundEventBridge {
                                 git_commit_end,
                             },
                         });
-                        stop_reason_code = Some("budget_exhausted");
+                        hook_project_outcome = Some(PotterProjectOutcome::BudgetExhausted);
                     }
                 }
                 PotterRoundOutcome::UserRequested => {
-                    stop_reason_code = Some("fatal");
+                    hook_project_outcome = Some(PotterProjectOutcome::Fatal {
+                        message: "user requested".to_string(),
+                    });
                 }
-                PotterRoundOutcome::TaskFailed { .. } => {
-                    stop_reason_code = Some("task_failed");
+                PotterRoundOutcome::TaskFailed { message } => {
+                    hook_project_outcome = Some(PotterProjectOutcome::TaskFailed {
+                        message: message.clone(),
+                    });
                 }
-                PotterRoundOutcome::Fatal { .. } if is_last_round => {
+                PotterRoundOutcome::Fatal { message } if is_last_round => {
                     // Fatal rounds only terminate the project when no later budgeted round exists to
                     // recover from transient failures.
-                    stop_reason_code = Some("fatal");
+                    hook_project_outcome = Some(PotterProjectOutcome::Fatal {
+                        message: message.clone(),
+                    });
                 }
                 _ => {}
             }
@@ -229,7 +236,11 @@ impl PotterRoundEventBridge {
             )
             .context("append potter-rollout round_finished")?;
 
-            if let Some(stop_reason_code) = stop_reason_code {
+            if let Some(project_outcome) = hook_project_outcome.as_ref() {
+                let stop_reason_code =
+                    crate::workflow::project_stop_hooks::potter_project_stop_reason_code(
+                        project_outcome,
+                    );
                 let mut hook_events =
                     crate::workflow::project_stop_hooks::build_project_stop_hook_events(
                         &self.workdir,
@@ -712,6 +723,128 @@ potter.xmodel: {potter_xmodel}
                 .get("stop_reason_code")
                 .and_then(serde_json::Value::as_str),
             Some("budget_exhausted")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn project_stop_hook_runs_on_task_failed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        let hooks_codex_home_dir = workdir.join("codex-home");
+        std::fs::create_dir_all(&hooks_codex_home_dir).expect("create hooks codex home dir");
+
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/20/2/MAIN.md");
+        write_progress_file(workdir, &progress_file_rel, false);
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: progress_file_rel.clone(),
+            },
+        )
+        .expect("append project_started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 3,
+            },
+        )
+        .expect("append round_started");
+
+        let thread_id =
+            ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c445").expect("thread id");
+        let upstream = workdir.join("upstream.jsonl");
+        write_upstream_rollout_final_answer(&upstream, "final");
+        let upstream = upstream.canonicalize().expect("canonical upstream");
+
+        let hook_output_path = workdir.join("hook-input.json");
+        let hooks_json = serde_json::json!({
+            "hooks": {
+                "Potter.ProjectStop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("cat > '{}'", hook_output_path.display()),
+                    }],
+                }],
+            },
+        });
+        std::fs::write(
+            hooks_codex_home_dir.join("hooks.json"),
+            hooks_json.to_string(),
+        )
+        .expect("write hooks.json");
+
+        let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
+            record_round_configured: true,
+            workdir: workdir.to_path_buf(),
+            progress_file_rel: progress_file_rel.clone(),
+            baseline_round_count: 0,
+            hooks_codex_home_dir: Some(hooks_codex_home_dir),
+            potter_xmodel_runtime: false,
+            user_prompt_file: progress_file_rel.clone(),
+            git_commit_start: "start".to_string(),
+            potter_rollout_path: potter_rollout_path.clone(),
+            project_started_at: Instant::now(),
+            round_current: 1,
+            round_total: 3,
+            project_rounds_run: 1,
+        });
+
+        let ev = Event {
+            id: "event_1".to_string(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: thread_id,
+                forked_from_id: None,
+                model: "test".to_string(),
+                model_provider_id: "test".to_string(),
+                service_tier: None,
+                cwd: workdir.to_path_buf(),
+                reasoning_effort: None,
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                rollout_path: upstream.clone(),
+            }),
+        };
+        bridge
+            .observe_backend_event(&ev)
+            .await
+            .expect("observe configured");
+
+        let finished = Event {
+            id: "event_2".to_string(),
+            msg: EventMsg::PotterRoundFinished {
+                outcome: PotterRoundOutcome::TaskFailed {
+                    message: "tool failed".to_string(),
+                },
+                duration_secs: 0,
+            },
+        };
+        let injected = bridge
+            .observe_backend_event(&finished)
+            .await
+            .expect("observe finished");
+
+        assert!(
+            injected
+                .iter()
+                .any(|event| matches!(event.msg, EventMsg::HookStarted(_))),
+            "expected HookStarted event, got {injected:?}"
+        );
+
+        let payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
+        )
+        .expect("parse hook input json");
+        assert_eq!(
+            payload
+                .get("stop_reason_code")
+                .and_then(serde_json::Value::as_str),
+            Some("task_failed")
         );
     }
 
