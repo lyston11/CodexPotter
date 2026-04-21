@@ -95,6 +95,11 @@ pub fn resolve_git_branch(workdir: &Path) -> Option<String> {
     git_stdout_trimmed(workdir, &["symbolic-ref", "-q", "--short", "HEAD"])
 }
 
+/// Render the initial `MAIN.md` contents for a new CodexPotter project.
+///
+/// This fills the project template with git metadata and strips the directive form
+/// `/potter:xmodel ` from the user prompt while preserving the persisted `potter.xmodel` front
+/// matter flag.
 pub fn render_project_main(
     user_prompt: &str,
     git_commit: &str,
@@ -283,15 +288,19 @@ fn create_next_project_dir(
     month: &str,
     day: &str,
 ) -> anyhow::Result<(PathBuf, PathBuf)> {
+    let day_dir = projects_root.join(year).join(month).join(day);
+    std::fs::create_dir_all(&day_dir).with_context(|| format!("create {}", day_dir.display()))?;
+
     for idx in 1.. {
         let idx = idx.to_string();
-        let project_dir = projects_root.join(year).join(month).join(day).join(&idx);
-        if project_dir.exists() {
-            continue;
+        let project_dir = day_dir.join(&idx);
+        match std::fs::create_dir(&project_dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err).with_context(|| format!("create {}", project_dir.display()));
+            }
         }
-
-        std::fs::create_dir_all(&project_dir)
-            .with_context(|| format!("create {}", project_dir.display()))?;
 
         let progress_file_rel = PathBuf::from(".codexpotter")
             .join("projects")
