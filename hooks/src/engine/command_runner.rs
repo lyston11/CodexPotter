@@ -30,6 +30,8 @@ pub(super) async fn run_command(
 ) -> CommandRunResult {
     let started_at = chrono::Utc::now().timestamp();
     let started = Instant::now();
+    let completed_at = || chrono::Utc::now().timestamp();
+    let duration_ms = || started.elapsed().as_millis().try_into().unwrap_or(i64::MAX);
 
     let mut command = build_command(shell, handler);
     command
@@ -44,8 +46,8 @@ pub(super) async fn run_command(
         Err(err) => {
             return CommandRunResult {
                 started_at,
-                completed_at: chrono::Utc::now().timestamp(),
-                duration_ms: started.elapsed().as_millis().try_into().unwrap_or(i64::MAX),
+                completed_at: completed_at(),
+                duration_ms: duration_ms(),
                 exit_code: None,
                 stdout: String::new(),
                 stderr: String::new(),
@@ -60,8 +62,8 @@ pub(super) async fn run_command(
         let _ = child.kill().await;
         return CommandRunResult {
             started_at,
-            completed_at: chrono::Utc::now().timestamp(),
-            duration_ms: started.elapsed().as_millis().try_into().unwrap_or(i64::MAX),
+            completed_at: completed_at(),
+            duration_ms: duration_ms(),
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
@@ -73,8 +75,8 @@ pub(super) async fn run_command(
     match timeout(timeout_duration, child.wait_with_output()).await {
         Ok(Ok(output)) => CommandRunResult {
             started_at,
-            completed_at: chrono::Utc::now().timestamp(),
-            duration_ms: started.elapsed().as_millis().try_into().unwrap_or(i64::MAX),
+            completed_at: completed_at(),
+            duration_ms: duration_ms(),
             exit_code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -82,8 +84,8 @@ pub(super) async fn run_command(
         },
         Ok(Err(err)) => CommandRunResult {
             started_at,
-            completed_at: chrono::Utc::now().timestamp(),
-            duration_ms: started.elapsed().as_millis().try_into().unwrap_or(i64::MAX),
+            completed_at: completed_at(),
+            duration_ms: duration_ms(),
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
@@ -91,8 +93,8 @@ pub(super) async fn run_command(
         },
         Err(_) => CommandRunResult {
             started_at,
-            completed_at: chrono::Utc::now().timestamp(),
-            duration_ms: started.elapsed().as_millis().try_into().unwrap_or(i64::MAX),
+            completed_at: completed_at(),
+            duration_ms: duration_ms(),
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
@@ -105,16 +107,12 @@ fn build_command(shell: &CommandShell, handler: &ConfiguredHandler) -> Command {
     let mut command = if shell.program.is_empty() {
         default_shell_command()
     } else {
-        Command::new(&shell.program)
-    };
-    if shell.program.is_empty() {
-        command.arg(&handler.command);
-        command
-    } else {
+        let mut command = Command::new(&shell.program);
         command.args(&shell.args);
-        command.arg(&handler.command);
         command
-    }
+    };
+    command.arg(&handler.command);
+    command
 }
 
 fn default_shell_command() -> Command {

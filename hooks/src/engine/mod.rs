@@ -177,41 +177,38 @@ fn parse_project_stop_completed(
     run_result: command_runner::CommandRunResult,
     turn_id: Option<String>,
 ) -> HookCompletedEvent {
-    let mut status = HookRunStatus::Completed;
-    let mut entries = Vec::new();
-
-    match run_result.error.as_deref() {
-        Some(error) => {
-            status = HookRunStatus::Failed;
-            entries.push(HookOutputEntry {
+    let (status, entries) = match run_result.error.as_deref() {
+        Some(error) => (
+            HookRunStatus::Failed,
+            vec![HookOutputEntry {
                 kind: HookOutputEntryKind::Error,
                 text: error.to_string(),
-            });
-        }
+            }],
+        ),
         None => match run_result.exit_code {
-            Some(0) => {}
+            Some(0) => (HookRunStatus::Completed, Vec::new()),
             Some(code) => {
-                status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
+                let mut entries = vec![HookOutputEntry {
                     kind: HookOutputEntryKind::Error,
                     text: format!("hook exited with code {code}"),
-                });
+                }];
                 if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
                     entries.push(HookOutputEntry {
                         kind: HookOutputEntryKind::Error,
                         text: stderr,
                     });
                 }
+                (HookRunStatus::Failed, entries)
             }
-            None => {
-                status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
+            None => (
+                HookRunStatus::Failed,
+                vec![HookOutputEntry {
                     kind: HookOutputEntryKind::Error,
                     text: "hook exited without an exit code".to_string(),
-                });
-            }
+                }],
+            ),
         },
-    }
+    };
 
     HookCompletedEvent {
         turn_id,
