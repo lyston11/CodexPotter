@@ -1366,10 +1366,10 @@ impl AppServerEventProcessor {
     }
 
     fn on_collab_event(&mut self, cell: history_cell::PlainHistoryCell) {
-        // Align with upstream behavior: flush any newline-gated agent output before inserting the
-        // collab transcript cell, so ordering matches the semantic "agent explains -> collab
-        // action -> agent continues" flow.
-        self.flush_agent_output(false);
+        // Align with upstream ordering: flush completed agent output before inserting the collab
+        // transcript cell, but keep Minimal-mode in-flight deltas buffered until their completed
+        // `AgentMessage` reveals the phase.
+        self.flush_barrier_agent_output();
         self.flush_plan_stream();
         self.flush_pending_live_activity_cells();
         self.needs_final_message_separator = true;
@@ -2935,6 +2935,8 @@ mod tests {
     use codex_protocol::protocol::AgentReasoningEvent;
     use codex_protocol::protocol::BackgroundEventEvent;
     use codex_protocol::protocol::CodexErrorInfo;
+    use codex_protocol::protocol::CollabAgentRef;
+    use codex_protocol::protocol::CollabWaitingBeginEvent;
     use codex_protocol::protocol::ContextCompactedEvent;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::ExecCommandBeginEvent;
@@ -7285,6 +7287,70 @@ mod tests {
         assert!(
             transient_blob.contains("Edited .codexpotter/projects/2026/04/21/13/MAIN.md"),
             "expected compact patch preview to remain visible transiently: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_collab_barrier_does_not_commit_inflight_commentary_delta() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+        let sender_thread_id = ThreadId::new();
+        let receiver_thread_id = ThreadId::new();
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "Inspecting collaborator state".to_string(),
+            }),
+        });
+
+        app.handle_codex_event(
+            crate::tui::FrameRequester::test_dummy(),
+            Event {
+                id: "collab-wait".into(),
+                msg: EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
+                    sender_thread_id,
+                    receiver_thread_ids: vec![receiver_thread_id],
+                    receiver_agents: vec![CollabAgentRef {
+                        thread_id: receiver_thread_id,
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                    }],
+                    call_id: "call-wait".to_string(),
+                }),
+            },
+        )
+        .expect("handle collab waiting begin");
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nInspecting collaborator state".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .all(|line| !line.contains("Inspecting collaborator state")),
+            "expected collab barrier not to commit in-flight commentary delta into transcript history: {cells:?}"
+        );
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .any(|line| line.contains("Waiting for")),
+            "expected collab transcript cell to remain visible: {cells:?}"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("Inspecting collaborator state"),
+            "expected completed commentary preview to remain transient after collab barrier: {transient_blob:?}"
         );
     }
 

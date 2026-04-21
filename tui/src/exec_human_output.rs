@@ -319,7 +319,7 @@ impl ExecHumanRenderer {
                 }
             }
             EventMsg::TurnAborted(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.drop_incomplete_minimal_agent_stream_or_flush()?);
                 out.extend(self.flush_plan_stream()?);
                 if ev.reason == codex_protocol::protocol::TurnAbortReason::Interrupted {
                     out.push(
@@ -424,22 +424,22 @@ impl ExecHumanRenderer {
                 }
             }
             EventMsg::ContextCompacted(_) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_lines(vec![Line::from("Context compacted")])?);
             }
             EventMsg::Warning(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(new_warning_event(ev.message.clone())))?);
             }
             EventMsg::Error(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.drop_incomplete_minimal_agent_stream_or_flush()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(new_error_event(ev.message.clone())))?);
             }
             EventMsg::DeprecationNotice(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(new_deprecation_notice(
                     ev.summary.clone(),
@@ -447,7 +447,7 @@ impl ExecHumanRenderer {
                 )))?);
             }
             EventMsg::RequestPermissions(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(new_request_permissions_event(ev.clone())))?,
@@ -455,21 +455,21 @@ impl ExecHumanRenderer {
                 self.mark_work_activity();
             }
             EventMsg::RequestUserInput(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(new_request_user_input_event(ev.clone())))?,
                 );
             }
             EventMsg::ElicitationRequest(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(new_elicitation_request_event(ev.clone())))?,
                 );
             }
             EventMsg::GuardianAssessment(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(new_guardian_assessment_event(ev.clone())))?,
@@ -512,7 +512,7 @@ impl ExecHumanRenderer {
                 }
             }
             EventMsg::PatchApplyEnd(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 if ev.success {
                     let patch_blocks = self.render_patch_blocks(ev.changes.clone())?;
@@ -530,7 +530,7 @@ impl ExecHumanRenderer {
                 }
             }
             EventMsg::HookStarted(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 let label = hook_event_label(ev.run.event_name);
                 let mut message = format!("Running {label} hook");
@@ -544,7 +544,7 @@ impl ExecHumanRenderer {
                 self.mark_work_activity();
             }
             EventMsg::HookCompleted(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 let status = format!("{:?}", ev.run.status).to_lowercase();
                 let header = format!("{} hook ({status})", hook_event_label(ev.run.event_name));
@@ -563,13 +563,13 @@ impl ExecHumanRenderer {
                 self.mark_work_activity();
             }
             EventMsg::CollabAgentSpawnEnd(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::spawn_end(ev.clone())))?);
                 self.mark_work_activity();
             }
             EventMsg::CollabAgentInteractionEnd(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(multi_agents::interaction_end(ev.clone())))?,
@@ -577,7 +577,7 @@ impl ExecHumanRenderer {
                 self.mark_work_activity();
             }
             EventMsg::CollabWaitingBegin(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(multi_agents::waiting_begin(ev.clone())))?,
@@ -585,25 +585,25 @@ impl ExecHumanRenderer {
                 self.mark_work_activity();
             }
             EventMsg::CollabWaitingEnd(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::waiting_end(ev.clone())))?);
                 self.mark_work_activity();
             }
             EventMsg::CollabCloseEnd(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::close_end(ev.clone())))?);
                 self.mark_work_activity();
             }
             EventMsg::CollabResumeBegin(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::resume_begin(ev.clone())))?);
                 self.mark_work_activity();
             }
             EventMsg::CollabResumeEnd(ev) => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.flush_barrier_agent_output()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(multi_agents::resume_end(ev.clone())))?);
                 self.mark_work_activity();
@@ -613,7 +613,7 @@ impl ExecHumanRenderer {
                 max_attempts,
                 error_message,
             } => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.drop_incomplete_minimal_agent_stream_or_flush()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(
                     self.render_cell_block(Box::new(PotterStreamRecoveryRetryCell {
@@ -629,7 +629,7 @@ impl ExecHumanRenderer {
                 max_attempts,
                 ..
             } => {
-                out.extend(self.flush_agent_output(false)?);
+                out.extend(self.drop_incomplete_minimal_agent_stream_or_flush()?);
                 out.extend(self.flush_plan_stream()?);
                 out.push(self.render_cell_block(Box::new(
                     PotterStreamRecoveryUnrecoverableCell {
@@ -755,6 +755,32 @@ impl ExecHumanRenderer {
         }
 
         Ok(out)
+    }
+
+    fn flush_barrier_agent_output(&mut self) -> io::Result<Vec<String>> {
+        if self.verbosity == Verbosity::Minimal {
+            let mut out = Vec::new();
+            if let Some(lines) = self.pending_minimal_agent_message_lines.take() {
+                let was_visible = self.pending_minimal_agent_message_visible;
+                self.pending_minimal_agent_message_visible = false;
+                if !was_visible {
+                    out.push(self.render_agent_message_block(lines, true)?);
+                }
+            }
+            return Ok(out);
+        }
+
+        self.flush_agent_output(false)
+    }
+
+    fn drop_incomplete_minimal_agent_stream_or_flush(&mut self) -> io::Result<Vec<String>> {
+        if self.verbosity == Verbosity::Minimal && self.saw_agent_delta {
+            let _ = self.stream.take_finalized_lines();
+            self.saw_agent_delta = false;
+            return Ok(Vec::new());
+        }
+
+        self.flush_agent_output(false)
     }
 
     fn store_pending_minimal_agent_message(
@@ -1240,6 +1266,7 @@ mod tests {
     use codex_protocol::approvals::GuardianRiskLevel;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
+    use codex_protocol::protocol::AgentMessageDeltaEvent;
     use codex_protocol::protocol::AgentReasoningDeltaEvent;
     use codex_protocol::protocol::AgentReasoningEvent;
     use codex_protocol::protocol::EventMsg;
@@ -1727,6 +1754,110 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
                 "final".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn minimal_patch_barrier_does_not_flush_inflight_commentary_delta() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let repo = synthetic_absolute_path(&["repo"]);
+        renderer.cwd = repo.clone();
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        let delta_blocks = renderer
+            .handle_event(&EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "Inspecting progress file".to_string(),
+            }))
+            .expect("agent delta");
+        assert!(delta_blocks.is_empty());
+
+        let mut changes = HashMap::new();
+        changes.insert(
+            repo.join("file.txt"),
+            FileChange::Update {
+                unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                move_path: None,
+            },
+        );
+        let patch_blocks = renderer
+            .handle_event(&EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes,
+            }))
+            .expect("patch apply end");
+        assert!(
+            patch_blocks
+                .iter()
+                .all(|block| !block.contains("Inspecting progress file")),
+            "expected patch barrier not to flush in-flight commentary delta: {patch_blocks:?}"
+        );
+        assert!(
+            patch_blocks
+                .iter()
+                .any(|block| block.contains("Edited file.txt (+1 -1)")),
+            "expected patch block to stay visible: {patch_blocks:?}"
+        );
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(15));
+        let commentary_blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nInspecting progress file".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("commentary agent message");
+        assert_eq!(commentary_blocks, vec!["@15s: Inspecting".to_string()]);
+    }
+
+    #[test]
+    fn minimal_stream_recovery_retry_discards_inflight_commentary_delta() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        let delta_blocks = renderer
+            .handle_event(&EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "Inspecting progress file".to_string(),
+            }))
+            .expect("agent delta");
+        assert!(delta_blocks.is_empty());
+
+        let retry_blocks = renderer
+            .handle_event(&EventMsg::PotterStreamRecoveryUpdate {
+                attempt: 1,
+                max_attempts: 10,
+                error_message: "stream disconnected".to_string(),
+            })
+            .expect("stream recovery update");
+        assert_eq!(retry_blocks.len(), 1);
+        assert!(
+            retry_blocks[0].contains("CodexPotter: retry 1/10"),
+            "expected retry block to remain visible: {retry_blocks:?}"
+        );
+        assert!(
+            !retry_blocks[0].contains("Inspecting progress file"),
+            "expected retry barrier to discard in-flight commentary delta: {retry_blocks:?}"
+        );
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(21));
+        let commentary_blocks = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nInspecting progress file".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("commentary agent message");
+        assert_eq!(commentary_blocks, vec!["@21s: Inspecting".to_string()]);
     }
 
     #[test]
