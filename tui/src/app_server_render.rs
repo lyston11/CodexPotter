@@ -1104,6 +1104,7 @@ impl AppServerEventProcessor {
             EventMsg::ContextCompacted(_) => {
                 self.flush_pending_live_activity_cells();
                 self.flush_barrier_agent_output();
+                self.clear_pending_minimal_commentary();
                 self.emit_agent_message("Context compacted", false);
             }
             EventMsg::DeprecationNotice(ev) => {
@@ -6997,6 +6998,45 @@ mod tests {
         assert!(
             !transient_blob.contains("Inspecting"),
             "expected commentary preview to clear once final agent message arrives: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_context_compacted_clears_commentary_preview() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nReviewing previous turns".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        app.processor.handle_codex_event(Event {
+            id: "context-compacted".into(),
+            msg: EventMsg::ContextCompacted(ContextCompactedEvent),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .any(|line| line.contains("Context compacted")),
+            "expected context compacted message in transcript history: {cells:?}"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            !transient_blob.contains("Inspecting"),
+            "expected commentary preview to clear once context compacted enters transcript: {transient_blob:?}"
+        );
+        assert!(
+            !transient_blob.contains("Reviewing previous turns"),
+            "expected commentary body to clear once context compacted enters transcript: {transient_blob:?}"
         );
     }
 
