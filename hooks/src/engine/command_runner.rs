@@ -11,12 +11,12 @@ use super::CommandShell;
 use super::ConfiguredHandler;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(super) struct CommandRunResult {
     pub started_at: i64,
     pub completed_at: i64,
     pub duration_ms: i64,
     pub exit_code: Option<i32>,
+    #[allow(dead_code)]
     pub stdout: String,
     pub stderr: String,
     pub error: Option<String>,
