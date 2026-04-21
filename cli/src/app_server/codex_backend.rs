@@ -3371,6 +3371,90 @@ exit 1
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn backend_initializes_upstream_app_server_with_codex_tui_client_info() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "codex-cli 0.121.0"
+  exit 0
+fi
+
+if [[ "${1:-}" != "app-server" ]]; then
+  echo "expected app-server, got: $*" >&2
+  exit 1
+fi
+
+IFS= read -r initialize
+echo "$initialize" | grep -q '"method":"initialize"' || {
+  echo "expected initialize, got: $initialize" >&2
+  exit 1
+}
+echo "$initialize" | grep -q '"name":"codex-tui"' || {
+  echo "expected codex-tui clientInfo name, got: $initialize" >&2
+  exit 1
+}
+echo "$initialize" | grep -q '"title":null' || {
+  echo "expected null clientInfo title, got: $initialize" >&2
+  exit 1
+}
+echo "$initialize" | grep -q '"version":"0.121.0"' || {
+  echo "expected parsed codex version, got: $initialize" >&2
+  exit 1
+}
+echo "$initialize" | grep -q '"experimentalApi":true' || {
+  echo "expected experimentalApi capability, got: $initialize" >&2
+  exit 1
+}
+echo '{"id":1,"result":{"userAgent":"test-agent","platformFamily":"unix","platformOs":"test-os"}}'
+
+IFS= read -r _line
+IFS= read -r _line
+echo '{"id":2,"result":{"thread":{"id":"00000000-0000-0000-0000-000000000000","path":"rollout.jsonl"},"model":"test-model","modelProvider":"test-provider","cwd":"project","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+
+while IFS= read -r _line; do
+  :
+done
+"#;
+
+        write_dummy_codex_script(&codex_bin, script);
+
+        let (event_tx, _event_rx) = unbounded_channel::<Event>();
+        let (op_tx, mut op_rx) = unbounded_channel::<Op>();
+        drop(op_tx);
+
+        timeout(
+            Duration::from_secs(5),
+            run_app_server_backend_inner(
+                AppServerBackendConfig {
+                    codex_bin: codex_bin.display().to_string(),
+                    developer_instructions: None,
+                    launch: AppServerLaunchConfig {
+                        spawn_sandbox: None,
+                        thread_sandbox: None,
+                        bypass_approvals_and_sandbox: false,
+                    },
+                    upstream_cli_args: Default::default(),
+                    codex_home: None,
+                    thread_cwd: None,
+                    resume_thread_id: None,
+                    event_mode: AppServerEventMode::Interactive,
+                },
+                &mut op_rx,
+                &event_tx,
+            ),
+        )
+        .await
+        .expect("backend timed out")
+        .expect("backend failed");
+    }
+
     #[test]
     fn thread_start_settings_into_params_preserves_model_override() {
         let params = ThreadStartSettings {
