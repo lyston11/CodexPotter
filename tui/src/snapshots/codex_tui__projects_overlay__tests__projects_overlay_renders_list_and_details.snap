@@ -13,7 +13,7 @@ expression: terminal.backend()
 "                                Task line 5                                     "
 "                                ... (10 more lines)                             "
 "                                                                                "
-"                                ROUND 1 @ 1 minute ago                          "
+"                                ROUND 1 (took 30m 43s) @ 1 minute ago           "
 "                                                                                "
 "                                Done                                            "
 "                                                                                "

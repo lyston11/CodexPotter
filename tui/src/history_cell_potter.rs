@@ -85,6 +85,35 @@ pub fn new_potter_round_marker(
     PrefixedWrappedHistoryCell::new(text, "• ".dim(), "  ")
 }
 
+#[derive(Debug)]
+/// Separator rendered after each CodexPotter round finishes.
+///
+/// `duration_secs` comes from `EventMsg::PotterRoundFinished` (measured by the control plane).
+pub struct PotterRoundFinishedSeparator {
+    duration_secs: u64,
+}
+
+impl PotterRoundFinishedSeparator {
+    pub fn new(duration_secs: u64) -> Self {
+        Self { duration_secs }
+    }
+}
+
+impl HistoryCell for PotterRoundFinishedSeparator {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let elapsed = crate::status_indicator_widget::fmt_elapsed_compact(self.duration_secs);
+        let label = format!("─ Round finished in {elapsed} ─");
+        let label_width = label.width();
+        vec![
+            Line::from_iter([
+                label,
+                "─".repeat((width as usize).saturating_sub(label_width)),
+            ])
+            .dim(),
+        ]
+    }
+}
+
 /// Render a hint that points to the created project prompt file.
 pub fn new_potter_project_hint(user_prompt_file: PathBuf) -> PrefixedWrappedHistoryCell {
     let user_prompt_file = user_prompt_file.to_string_lossy().to_string();

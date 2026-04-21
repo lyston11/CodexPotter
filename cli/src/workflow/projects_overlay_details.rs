@@ -70,6 +70,7 @@ fn build_project_details_for_overlay_inner(
         rounds.push(PotterProjectRoundSummary {
             round_current: round.round_current,
             round_total: round.round_total,
+            duration_secs: round.duration_secs,
             final_message_unix_secs,
             final_message,
         });
@@ -80,6 +81,7 @@ fn build_project_details_for_overlay_inner(
         rounds.push(PotterProjectRoundSummary {
             round_current: unfinished.round_current,
             round_total: unfinished.round_total,
+            duration_secs: 0,
             final_message_unix_secs,
             final_message,
         });

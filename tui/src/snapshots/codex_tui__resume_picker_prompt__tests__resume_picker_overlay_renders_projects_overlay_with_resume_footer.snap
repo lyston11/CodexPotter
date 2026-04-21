@@ -8,7 +8,7 @@ expression: terminal.backend()
 "┃   overlay                                                                     "
 "                                Task line                                       "
 "                                                                                "
-"                                ROUND 1 @ 1 minute ago                          "
+"                                ROUND 1 (took 30m 43s) @ 1 minute ago           "
 "                                                                                "
 "                                Done                                            "
 "                                                                                "

@@ -240,6 +240,7 @@ mod tests {
                 rounds: vec![codex_protocol::protocol::PotterProjectRoundSummary {
                     round_current: 1,
                     round_total: 4,
+                    duration_secs: 1843,
                     final_message_unix_secs: Some(1),
                     final_message: Some(String::from("**Done**")),
                 }],
@@ -285,24 +286,28 @@ mod tests {
                     codex_protocol::protocol::PotterProjectRoundSummary {
                         round_current: 1,
                         round_total: 4,
+                        duration_secs: 0,
                         final_message_unix_secs: Some(1),
                         final_message: Some(String::from("Done")),
                     },
                     codex_protocol::protocol::PotterProjectRoundSummary {
                         round_current: 2,
                         round_total: 4,
+                        duration_secs: 0,
                         final_message_unix_secs: Some(1),
                         final_message: Some(String::from("Done")),
                     },
                     codex_protocol::protocol::PotterProjectRoundSummary {
                         round_current: 3,
                         round_total: 4,
+                        duration_secs: 0,
                         final_message_unix_secs: Some(1),
                         final_message: Some(String::from("Done")),
                     },
                     codex_protocol::protocol::PotterProjectRoundSummary {
                         round_current: 4,
                         round_total: 4,
+                        duration_secs: 0,
                         final_message_unix_secs: Some(1),
                         final_message: Some(String::from("Done")),
                     },

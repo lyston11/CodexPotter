@@ -53,6 +53,7 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Consecutive `Viewed Image` items are coalesced into one block in Simple mode, preserve event order, and render live as new paths arrive; Minimal mode hides them.
 - Consecutive `Searched` items are coalesced into one block in Simple mode and render live as new queries arrive; Minimal mode hides them.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success / budget exhaustion).
+- After each CodexPotter round finishes, emits a dim `─ Round finished in … ─` separator line in the transcript (before any CodexPotter summary blocks).
 - `codex-potter exec` without `--json`:
   - renders content similar to interactive mode, respect verbosity, but in append-only way — never folds/coalesces prior output.
   - additionally emits the text of the shimmer when it changes.
@@ -83,10 +84,12 @@ Behavior related
 - No desktop notifications when the terminal is unfocused.
 - Esc triggers project interrupt with an action selection UI instead of turn interrupt.
 - `Ctrl+L` (or `/list`) opens a full-screen projects list overlay with round summaries (also available on the prompt screen before any rounds start).
+- Projects overlay stays open across round boundaries (does not auto-close when a round ends).
 - Projects overlay auto-refreshes the list (and selected details) every minute while open, preserving selection + scroll positions when possible.
 - Projects overlay supports `Tab` to toggle a maximized details view (hide the list pane).
 - Projects overlay details text wraps to at most 100 columns while not maximized, even when the right pane is wider; maximized details view still uses the full pane width.
 - Projects overlay details pane shows a plain-text preview of the original user task message (first 5 lines + `... (N more lines)`) above the per-round final message summaries.
+- Projects overlay round headings show per-round duration when available: `ROUND N (took …) @ … ago` (otherwise `ROUND N`).
 - Project summary `Loop more rounds:` resume command includes the current process's non-default `codex-potter` global flags (aligns with the CLI exit resume note).
 
 Engineering related:

@@ -169,6 +169,7 @@ pub async fn prompt_user_with_tui(
     options: PromptScreenOptions,
     verbosity: &mut Verbosity,
     prompt_footer: PromptFooterContext,
+    projects_overlay_state: &mut crate::projects_overlay::ProjectsOverlay,
     projects_overlay_provider: Option<crate::ProjectsOverlayProviderChannels>,
 ) -> anyhow::Result<Option<String>> {
     let PromptScreenOptions {
@@ -244,14 +245,19 @@ pub async fn prompt_user_with_tui(
         should_pad_prompt_viewport,
         *verbosity,
     );
+    app.projects_overlay = std::mem::take(projects_overlay_state);
 
     let (overlay_request_tx, mut overlay_response_rx) = match projects_overlay_provider {
         Some(provider) => (Some(provider.request_tx), Some(provider.response_rx)),
         None => (None, None),
     };
     app.projects_overlay_request_tx = overlay_request_tx;
+    if app.projects_overlay.is_open() && app.projects_overlay_request_tx.is_some() {
+        let request = app.projects_overlay.open_or_refresh();
+        app.send_projects_overlay_request(request);
+    }
 
-    let _ = app
+    let result = app
         .run(
             tui,
             &mut app_event_rx,
@@ -259,10 +265,14 @@ pub async fn prompt_user_with_tui(
             None,
             overlay_response_rx.as_mut(),
         )
-        .await?;
-    *verbosity = app.processor.verbosity;
+        .await;
 
-    Ok(match app.prompt_action.take() {
+    let prompt_action = app.prompt_action.take();
+    *verbosity = app.processor.verbosity;
+    *projects_overlay_state = app.projects_overlay;
+    let _ = result?;
+
+    Ok(match prompt_action {
         Some(PromptScreenAction::Submitted(text)) => Some(text),
         Some(PromptScreenAction::CancelledByUser) | None => None,
     })
@@ -372,6 +382,8 @@ pub struct RoundUiState<'a> {
     pub composer_draft: &'a mut Option<crate::bottom_pane::ChatComposerDraft>,
     /// Current transcript verbosity preference.
     pub verbosity: &'a mut Verbosity,
+    /// Projects overlay UI state shared across rounds.
+    pub projects_overlay_state: &'a mut crate::projects_overlay::ProjectsOverlay,
 }
 
 /// Context that must persist across rounds within a CodexPotter project.
@@ -453,6 +465,7 @@ pub async fn run_round_with_tui_options_and_queue(
         .composer_mut()
         .set_history_metadata(history_log_id, history_entry_count);
     let queued_user_messages_state = std::mem::take(state.queued_user_messages);
+    let projects_overlay_state = std::mem::take(state.projects_overlay_state);
     let mut app = RenderAppState::new(
         driver,
         app_event_tx.clone(),
@@ -462,6 +475,7 @@ pub async fn run_round_with_tui_options_and_queue(
         file_search,
         queued_user_messages_state,
     );
+    app.projects_overlay = projects_overlay_state;
     app.has_emitted_history_lines = options.pad_before_first_cell;
     app.refresh_queued_user_messages();
 
@@ -470,6 +484,10 @@ pub async fn run_round_with_tui_options_and_queue(
         None => (None, None),
     };
     app.projects_overlay_request_tx = overlay_request_tx;
+    if app.projects_overlay.is_open() && app.projects_overlay_request_tx.is_some() {
+        let request = app.projects_overlay.open_or_refresh();
+        app.send_projects_overlay_request(request);
+    }
 
     let result = app
         .run(
@@ -483,6 +501,7 @@ pub async fn run_round_with_tui_options_and_queue(
     *state.queued_user_messages = app.queued_user_messages;
     *state.composer_draft = app.bottom_pane.composer_mut().take_draft();
     *state.verbosity = app.processor.verbosity;
+    *state.projects_overlay_state = app.projects_overlay;
     result
 }
 
@@ -891,8 +910,15 @@ impl AppServerEventProcessor {
                     git_commit_end,
                 });
             }
-            EventMsg::PotterRoundFinished { .. } => {
+            EventMsg::PotterRoundFinished { duration_secs, .. } => {
                 self.flush_pending_live_activity_cells();
+                if duration_secs > 0 {
+                    self.emit_history_cell(Box::new(
+                        crate::history_cell_potter::PotterRoundFinishedSeparator::new(
+                            duration_secs,
+                        ),
+                    ));
+                }
                 self.pending_potter_round_marker = None;
                 self.pending_potter_round_session = None;
                 self.maybe_emit_potter_project_summary();
@@ -2199,10 +2225,10 @@ impl RenderAppState {
 
     fn draw(&mut self, tui: &mut Tui) -> anyhow::Result<()> {
         if self.projects_overlay.is_open() {
-            if !self.projects_overlay_alt_screen_active && !tui.is_alt_screen_active() {
+            if !tui.is_alt_screen_active() {
                 let _ = tui.enter_alt_screen();
-                self.projects_overlay_alt_screen_active = tui.is_alt_screen_active();
             }
+            self.projects_overlay_alt_screen_active = tui.is_alt_screen_active();
             tui.draw(u16::MAX, |frame| {
                 let area = frame.area();
                 ratatui::widgets::Clear.render(area, frame.buffer_mut());

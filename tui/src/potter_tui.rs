@@ -72,6 +72,7 @@ pub struct CodexPotterTui {
     project_started_at: Option<Instant>,
     queued_user_prompts: VecDeque<String>,
     composer_draft: Option<crate::bottom_pane::ChatComposerDraft>,
+    projects_overlay_state: crate::projects_overlay::ProjectsOverlay,
     check_for_update_on_startup: bool,
     startup_warnings: Vec<String>,
     startup_codex_model_config: Option<crate::codex_config::ResolvedCodexModelConfig>,
@@ -113,6 +114,7 @@ impl CodexPotterTui {
             project_started_at: None,
             queued_user_prompts: VecDeque::new(),
             composer_draft: None,
+            projects_overlay_state: crate::projects_overlay::ProjectsOverlay::default(),
             check_for_update_on_startup: true,
             startup_warnings,
             startup_codex_model_config: None,
@@ -282,6 +284,7 @@ impl CodexPotterTui {
             },
             &mut self.verbosity,
             prompt_footer,
+            &mut self.projects_overlay_state,
             projects_overlay_provider,
         )
         .await
@@ -443,6 +446,7 @@ impl CodexPotterTui {
             queued_user_messages: &mut queued,
             composer_draft: &mut composer_draft,
             verbosity: &mut self.verbosity,
+            projects_overlay_state: &mut self.projects_overlay_state,
         };
         let result = crate::app_server_render::run_round_with_tui_options_and_queue(
             &mut self.tui,

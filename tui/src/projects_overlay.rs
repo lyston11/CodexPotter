@@ -1096,18 +1096,26 @@ fn append_round_details(
     wrap_width: usize,
     now: SystemTime,
 ) {
+    let took = if round.duration_secs > 0 {
+        Some(crate::status_indicator_widget::fmt_elapsed_compact(
+            round.duration_secs,
+        ))
+    } else {
+        None
+    };
     let when = round
         .final_message_unix_secs
         .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
-        .map(|ts| human_time_ago(ts, now))
-        .unwrap_or_else(|| "unknown".to_string());
+        .map(|ts| human_time_ago(ts, now));
+    let header = match (took, when) {
+        (Some(took), Some(when)) => {
+            format!("ROUND {} (took {took}) @ {when}", round.round_current)
+        }
+        (Some(took), None) => format!("ROUND {} (took {took})", round.round_current),
+        (None, _) => format!("ROUND {}", round.round_current),
+    };
     out.extend(wrap_plain_lines(
-        vec![
-            Line::from(vec![
-                Span::from(format!("ROUND {} @ {when}", round.round_current)).dim(),
-            ]),
-            Line::from(""),
-        ],
+        vec![Line::from(vec![Span::from(header).dim()]), Line::from("")],
         wrap_width,
     ));
 
@@ -1227,6 +1235,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 4,
+                duration_secs: 1843,
                 final_message_unix_secs: Some(1),
                 final_message: Some(String::from("**Done**")),
             }],
@@ -1263,6 +1272,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 4,
+                duration_secs: 1843,
                 final_message_unix_secs: Some(1),
                 final_message: Some(String::from("Done")),
             }],
@@ -1367,6 +1377,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("Done".to_string()),
             }],
@@ -1393,7 +1404,7 @@ mod tests {
             .unwrap_or_else(|| panic!("missing task preview line: {rendered:?}"));
         let round_idx = rendered
             .iter()
-            .position(|line| line == "ROUND 1 @ 1 minute ago")
+            .position(|line| line == "ROUND 1")
             .unwrap_or_else(|| panic!("missing round heading line: {rendered:?}"));
 
         assert_eq!(round_idx, task_idx + 2);
@@ -1473,6 +1484,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("old first details".to_string()),
             }],
@@ -1486,6 +1498,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(2),
                 final_message: Some("second details".to_string()),
             }],
@@ -1708,24 +1721,28 @@ mod tests {
                 PotterProjectRoundSummary {
                     round_current: 1,
                     round_total: 4,
+                    duration_secs: 0,
                     final_message_unix_secs: Some(1),
                     final_message: Some(String::from("Done")),
                 },
                 PotterProjectRoundSummary {
                     round_current: 2,
                     round_total: 4,
+                    duration_secs: 0,
                     final_message_unix_secs: Some(1),
                     final_message: Some(String::from("Done")),
                 },
                 PotterProjectRoundSummary {
                     round_current: 3,
                     round_total: 4,
+                    duration_secs: 0,
                     final_message_unix_secs: Some(1),
                     final_message: Some(String::from("Done")),
                 },
                 PotterProjectRoundSummary {
                     round_current: 4,
                     round_total: 4,
+                    duration_secs: 0,
                     final_message_unix_secs: Some(1),
                     final_message: Some(String::from("Done")),
                 },
@@ -1746,6 +1763,7 @@ mod tests {
             &PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: None,
             },
@@ -1795,6 +1813,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 12,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some(String::from("Done")),
             }],
@@ -1887,6 +1906,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("old details".to_string()),
             }],
@@ -1945,6 +1965,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("old details".to_string()),
             }],
@@ -1963,6 +1984,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("stale details".to_string()),
             }],
@@ -2020,6 +2042,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("details".to_string()),
             }],
@@ -2287,6 +2310,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("Done".to_string()),
             }],
@@ -2345,6 +2369,7 @@ mod tests {
             rounds: vec![PotterProjectRoundSummary {
                 round_current: 1,
                 round_total: 1,
+                duration_secs: 0,
                 final_message_unix_secs: Some(1),
                 final_message: Some("```text\n12345678901234567890\n```".to_string()),
             }],

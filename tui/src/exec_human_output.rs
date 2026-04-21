@@ -274,9 +274,16 @@ impl ExecHumanRenderer {
                     git_commit_end: git_commit_end.clone(),
                 });
             }
-            EventMsg::PotterRoundFinished { .. } => {
+            EventMsg::PotterRoundFinished { duration_secs, .. } => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
+                if *duration_secs > 0 {
+                    out.push(self.render_cell_block(Box::new(
+                        crate::history_cell_potter::PotterRoundFinishedSeparator::new(
+                            *duration_secs,
+                        ),
+                    ))?);
+                }
                 if let Some(summary) = self.pending_project_summary.take() {
                     out.push(self.render_project_summary(summary)?);
                 }

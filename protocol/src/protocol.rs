@@ -376,6 +376,11 @@ pub struct PotterProjectListEntry {
 pub struct PotterProjectRoundSummary {
     pub round_current: u32,
     pub round_total: u32,
+    /// Total wall time spent in this round, in whole seconds.
+    ///
+    /// `0` means the duration is unavailable (for example older rollout logs).
+    #[serde(default)]
+    pub duration_secs: u64,
     /// Event time for the final assistant message, derived from upstream rollouts.
     pub final_message_unix_secs: Option<u64>,
     /// The final assistant message content to render as markdown.
