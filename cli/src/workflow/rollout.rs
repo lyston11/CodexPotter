@@ -243,6 +243,24 @@ mod tests {
     }
 
     #[test]
+    fn read_project_rollout_lines_errors_when_path_is_not_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(POTTER_ROLLOUT_FILENAME);
+        std::fs::create_dir(&path).expect("create rollout directory");
+
+        let err = read_project_rollout_lines(&path).expect_err("expected non-file error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("expected a file"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains(POTTER_ROLLOUT_FILENAME),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
     fn read_project_rollout_lines_errors_when_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(POTTER_ROLLOUT_FILENAME);
