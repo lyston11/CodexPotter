@@ -11,11 +11,13 @@
 //! The backend emits a well-formed round boundary by synthesizing `EventMsg::PotterRoundFinished`,
 //! and applies additional event filtering depending on [`AppServerEventMode`].
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -689,24 +691,47 @@ async fn initialize_app_server(
     Ok(())
 }
 
+/// Cache successfully resolved upstream client identity per configured `codex_bin` so multi-round
+/// sessions do not pay an extra `codex --version` spawn on every round.
+fn upstream_client_info_cache() -> &'static Mutex<HashMap<String, ClientInfo>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, ClientInfo>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 async fn resolve_upstream_client_info(codex_bin: &str) -> ClientInfo {
-    let version = match read_codex_cli_version(codex_bin).await {
-        Ok(version) => version,
+    if let Some(client_info) = upstream_client_info_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(codex_bin)
+        .cloned()
+    {
+        return client_info;
+    }
+
+    let client_info = match read_codex_cli_version(codex_bin).await {
+        Ok(version) => ClientInfo {
+            name: "codex-tui".to_string(),
+            title: None,
+            version,
+        },
         Err(err) => {
             tracing::warn!(
                 error = %err,
                 codex_bin,
                 "Failed to resolve upstream codex version; falling back to CodexPotter build version."
             );
-            codex_tui::CODEX_POTTER_VERSION.to_string()
+            return ClientInfo {
+                name: "codex-tui".to_string(),
+                title: None,
+                version: codex_tui::CODEX_POTTER_VERSION.to_string(),
+            };
         }
     };
-
-    ClientInfo {
-        name: "codex-tui".to_string(),
-        title: None,
-        version,
-    }
+    upstream_client_info_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .insert(codex_bin.to_string(), client_info.clone());
+    client_info
 }
 
 async fn read_codex_cli_version(codex_bin: &str) -> anyhow::Result<String> {
@@ -3368,6 +3393,104 @@ exit 1
                 title: None,
                 version: codex_tui::CODEX_POTTER_VERSION.to_string(),
             }
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_upstream_client_info_caches_version_per_codex_bin() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+        let version_count = temp.path().join("version-count");
+
+        write_dummy_codex_script(
+            &codex_bin,
+            format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+
+COUNT_FILE={count_file:?}
+
+if [[ "${{1:-}}" == "--version" ]]; then
+  count=0
+  if [[ -f "$COUNT_FILE" ]]; then
+    count="$(cat "$COUNT_FILE")"
+  fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$COUNT_FILE"
+  echo "codex-cli 0.121.0"
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+                count_file = version_count.display().to_string(),
+            ),
+        );
+
+        let codex_bin = codex_bin.to_str().expect("utf-8 path");
+        let first = resolve_upstream_client_info(codex_bin).await;
+        let second = resolve_upstream_client_info(codex_bin).await;
+
+        assert_eq!(first, second);
+        assert_eq!(
+            std::fs::read_to_string(&version_count).expect("read version count"),
+            "1\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_upstream_client_info_does_not_cache_fallback_version() {
+        let _guard = lock_dummy_codex_test().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_bin = temp.path().join("dummy-codex");
+        let version_count = temp.path().join("version-count");
+
+        write_dummy_codex_script(
+            &codex_bin,
+            format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+
+COUNT_FILE={count_file:?}
+count=0
+if [[ -f "$COUNT_FILE" ]]; then
+  count="$(cat "$COUNT_FILE")"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$COUNT_FILE"
+
+if [[ "${{1:-}}" != "--version" ]]; then
+  echo "unexpected args: $*" >&2
+  exit 1
+fi
+
+if [[ "$count" -eq 1 ]]; then
+  echo "boom" >&2
+  exit 17
+fi
+
+echo "codex-cli 0.121.0"
+"#,
+                count_file = version_count.display().to_string(),
+            ),
+        );
+
+        let codex_bin = codex_bin.to_str().expect("utf-8 path");
+        let fallback = resolve_upstream_client_info(codex_bin).await;
+        let resolved = resolve_upstream_client_info(codex_bin).await;
+
+        assert_eq!(
+            fallback.version,
+            codex_tui::CODEX_POTTER_VERSION.to_string()
+        );
+        assert_eq!(resolved.version, "0.121.0");
+        assert_eq!(
+            std::fs::read_to_string(&version_count).expect("read version count"),
+            "2\n"
         );
     }
 
