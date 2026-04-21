@@ -617,13 +617,34 @@ async fn spawn_app_server(
         cmd.arg(super::sandbox_mode_cli_arg(mode));
     }
 
-    let mut child = cmd
-        .arg("app-server")
+    cmd.arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to start `{codex_bin}` app-server"))?;
+        .stderr(Stdio::piped());
+
+    let mut child = {
+        #[cfg(target_os = "linux")]
+        let mut attempts = 0usize;
+        loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(err) => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        const ETXTBSY: i32 = 26;
+                        if err.raw_os_error() == Some(ETXTBSY) && attempts < 5 {
+                            attempts += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                            continue;
+                        }
+                    }
+
+                    return Err(err)
+                        .with_context(|| format!("failed to start `{codex_bin}` app-server"));
+                }
+            }
+        }
+    };
 
     let stdin = child
         .stdin

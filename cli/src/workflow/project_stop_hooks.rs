@@ -169,29 +169,27 @@ pub async fn build_project_stop_hook_events(
     });
 
     let mut events = Vec::new();
+    let event = |msg| Event {
+        id: String::new(),
+        msg,
+    };
 
     for warning in hooks.startup_warnings() {
-        events.push(Event {
-            id: "".to_string(),
-            msg: EventMsg::Warning(WarningEvent {
-                message: warning.clone(),
-            }),
-        });
+        events.push(event(EventMsg::Warning(WarningEvent {
+            message: warning.clone(),
+        })));
     }
 
     let progress_file_path = workdir.join(progress_file_rel);
     let project_dir = match progress_file_path.parent() {
         Some(parent) => parent.to_path_buf(),
         None => {
-            events.push(Event {
-                id: "".to_string(),
-                msg: EventMsg::Warning(WarningEvent {
-                    message: format!(
-                        "Failed to derive project directory from progress file path: {}",
-                        progress_file_path.display()
-                    ),
-                }),
-            });
+            events.push(event(EventMsg::Warning(WarningEvent {
+                message: format!(
+                    "Failed to derive project directory from progress file path: {}",
+                    progress_file_path.display()
+                ),
+            })));
             return events;
         }
     };
@@ -224,36 +222,27 @@ pub async fn build_project_stop_hook_events(
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
-            events.push(Event {
-                id: "".to_string(),
-                msg: EventMsg::Warning(WarningEvent {
-                    message: format!("Failed to prepare Potter.ProjectStop hooks: {err:#}"),
-                }),
-            });
+            events.push(event(EventMsg::Warning(WarningEvent {
+                message: format!("Failed to prepare Potter.ProjectStop hooks: {err:#}"),
+            })));
             return events;
         }
     };
 
     for warning in prepared.warnings {
-        events.push(Event {
-            id: "".to_string(),
-            msg: EventMsg::Warning(WarningEvent { message: warning }),
-        });
+        events.push(event(EventMsg::Warning(WarningEvent { message: warning })));
     }
 
     for run in preview_runs {
-        events.push(Event {
-            id: "".to_string(),
-            msg: EventMsg::HookStarted(HookStartedEvent { turn_id: None, run }),
-        });
+        events.push(event(EventMsg::HookStarted(HookStartedEvent {
+            turn_id: None,
+            run,
+        })));
     }
 
     let hook_outcome = hooks.run_project_stop(prepared.request).await;
     for completed in hook_outcome.hook_events {
-        events.push(Event {
-            id: "".to_string(),
-            msg: EventMsg::HookCompleted(completed),
-        });
+        events.push(event(EventMsg::HookCompleted(completed)));
     }
 
     events

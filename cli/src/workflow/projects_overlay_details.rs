@@ -57,15 +57,27 @@ fn build_project_details_for_overlay_inner(
     let mut rounds = Vec::new();
 
     let read_round_message = |rollout_path: &Path| -> (Option<u64>, Option<String>) {
-        read_final_agent_message_for_replay(workdir, rollout_path).unwrap_or((None, None))
+        match read_final_agent_message_for_replay(workdir, rollout_path) {
+            Ok(message) => message,
+            Err(err) => {
+                let abs = crate::workflow::replay_session_config::resolve_rollout_path_for_replay(
+                    workdir,
+                    rollout_path,
+                );
+                tracing::warn!(
+                    "failed to read final assistant message from rollout {}: {err:#}",
+                    abs.display()
+                );
+                (None, None)
+            }
+        }
     };
 
     for round in index.completed_rounds {
-        let (final_message_unix_secs, final_message) = round
-            .configured
-            .as_ref()
-            .map(|cfg| read_round_message(&cfg.rollout_path))
-            .unwrap_or((None, None));
+        let (final_message_unix_secs, final_message) = match round.configured.as_ref() {
+            Some(cfg) => read_round_message(&cfg.rollout_path),
+            None => (None, None),
+        };
 
         rounds.push(PotterProjectRoundSummary {
             round_current: round.round_current,
