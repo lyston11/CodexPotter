@@ -1208,7 +1208,8 @@ async fn run_continue_round(
     .await
 }
 
-/// Reset `finite_incantatem` when xmodel requires a follow-up GPT-5.4 round before success.
+/// Reset `finite_incantatem` (and reopen skipped progress files) when xmodel requires a follow-up
+/// GPT-5.4 round before success.
 ///
 /// Returns `true` when the current completed round should continue into another round instead of
 /// finalizing the project as succeeded.
@@ -1231,6 +1232,12 @@ fn prepare_xmodel_follow_up_round(
         false,
     )
     .context("reset progress file finite_incantatem")?;
+
+    crate::workflow::project::reset_progress_file_status_from_skip_to_open(
+        workdir,
+        progress_file_rel,
+    )
+    .context("reset progress file status")?;
 
     Ok(true)
 }
@@ -2164,9 +2171,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::UnboundedReceiver;
 
-    fn write_progress_file_with_finite_incantatem(
+    fn write_progress_file_fixture(
         workdir: &Path,
         progress_file_rel: &Path,
+        status: &str,
         finite_incantatem: bool,
     ) {
         let progress_file = workdir.join(progress_file_rel);
@@ -2176,7 +2184,7 @@ mod tests {
             &progress_file,
             format!(
                 r#"---
-status: open
+status: {status}
 finite_incantatem: {finite_incantatem}
 short_title: test
 git_commit: "start"
@@ -2322,7 +2330,7 @@ git_branch: "main"
             let temp = tempfile::tempdir().expect("tempdir");
             let workdir = temp.path();
             let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
-            write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
+            write_progress_file_fixture(workdir, &progress_file_rel, "skip", true);
 
             let should_continue = prepare_xmodel_follow_up_round(
                 workdir,
@@ -2341,13 +2349,19 @@ git_branch: "main"
                 .expect("read finite_incantatem"),
                 "expected helper to clear finite_incantatem for the required GPT-5.4 follow-up round"
             );
+            let updated = std::fs::read_to_string(workdir.join(&progress_file_rel))
+                .expect("read progress file");
+            assert!(
+                updated.contains("status: open\n"),
+                "expected xmodel follow-up to reopen skipped progress files"
+            );
         }
 
         {
             let temp = tempfile::tempdir().expect("tempdir");
             let workdir = temp.path();
             let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
-            write_progress_file_with_finite_incantatem(workdir, &progress_file_rel, true);
+            write_progress_file_fixture(workdir, &progress_file_rel, "skip", true);
 
             let should_continue = prepare_xmodel_follow_up_round(
                 workdir,
@@ -2365,6 +2379,12 @@ git_branch: "main"
                 )
                 .expect("read finite_incantatem"),
                 "expected GPT-5.4 completion to keep the success marker intact"
+            );
+            let updated = std::fs::read_to_string(workdir.join(&progress_file_rel))
+                .expect("read progress file");
+            assert!(
+                updated.contains("status: skip\n"),
+                "expected GPT-5.4 completion to preserve skipped status"
             );
         }
     }
@@ -2941,7 +2961,7 @@ done
         write_dummy_codex_script(&codex_bin, script);
 
         let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/04/5/MAIN.md");
-        write_progress_file_with_finite_incantatem(&workdir, &progress_file_rel, false);
+        write_progress_file_fixture(&workdir, &progress_file_rel, "open", false);
 
         let progress_file = workdir.join(&progress_file_rel);
         let project_dir = progress_file.parent().expect("project dir").to_path_buf();

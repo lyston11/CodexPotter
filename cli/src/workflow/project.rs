@@ -214,6 +214,38 @@ pub fn set_progress_file_finite_incantatem(
     Ok(())
 }
 
+/// Reset `status` in the progress file YAML front matter when it is `skip`.
+///
+/// Potter xmodel follow-up rounds rely on clearing `finite_incantatem` to force an additional
+/// GPT-5.4 review round. The workflow prompt treats `status: skip` as "do nothing", so if a lower
+/// model round marked the project as skipped, we need to reopen it before the follow-up round can
+/// run any review work.
+///
+/// Returns `true` when the status was changed from `skip` to `open`.
+pub fn reset_progress_file_status_from_skip_to_open(
+    workdir: &Path,
+    progress_file_rel: &Path,
+) -> anyhow::Result<bool> {
+    let progress_file = workdir.join(progress_file_rel);
+    let contents = std::fs::read_to_string(&progress_file)
+        .with_context(|| format!("read {}", progress_file.display()))?;
+
+    let Some(status) = front_matter_string(&contents, "status") else {
+        return Ok(false);
+    };
+    if !status.trim().eq_ignore_ascii_case("skip") {
+        return Ok(false);
+    }
+
+    let updated = set_front_matter_string(&contents, "status", "open")?;
+    if updated != contents {
+        std::fs::write(&progress_file, updated)
+            .with_context(|| format!("write {}", progress_file.display()))?;
+    }
+
+    Ok(true)
+}
+
 /// Return the `git_commit` value recorded in the progress file front matter.
 pub fn progress_file_git_commit_start(
     workdir: &Path,
@@ -434,6 +466,83 @@ fn set_front_matter_bool(contents: &str, key: &str, value: bool) -> anyhow::Resu
                 out.push_str(key_part);
                 out.push(' ');
                 out.push_str(if value { "true" } else { "false" });
+                if let Some(comment) = comment {
+                    out.push(' ');
+                    out.push_str(comment);
+                }
+                out.push('\n');
+                replaced = true;
+            }
+
+            if !replaced {
+                out.push_str(trimmed);
+                out.push('\n');
+            }
+            continue;
+        }
+
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    if !saw_footer {
+        anyhow::bail!("progress file YAML front matter missing closing `---`");
+    }
+
+    Ok(out)
+}
+
+fn set_front_matter_string(contents: &str, key: &str, value: &str) -> anyhow::Result<String> {
+    if value.trim().is_empty() {
+        anyhow::bail!("progress file front matter key `{key}` cannot be set to an empty value");
+    }
+    if value.contains('\n') {
+        anyhow::bail!("progress file front matter key `{key}` cannot contain newlines");
+    }
+
+    let mut lines = contents.lines();
+    let first = lines
+        .next()
+        .map(str::trim_end)
+        .context("progress file is empty")?;
+    if first != "---" {
+        anyhow::bail!("progress file missing YAML front matter delimiter `---` at top");
+    }
+
+    let mut out = String::new();
+    out.push_str(first);
+    out.push('\n');
+
+    let mut in_front_matter = true;
+    let mut saw_key = false;
+    let mut saw_footer = false;
+    for line in lines {
+        if in_front_matter {
+            let trimmed = line.trim_end();
+            if trimmed == "---" {
+                if !saw_key {
+                    out.push_str(key);
+                    out.push_str(": ");
+                    out.push_str(value);
+                    out.push('\n');
+                }
+                in_front_matter = false;
+                saw_footer = true;
+                out.push_str(trimmed);
+                out.push('\n');
+                continue;
+            }
+
+            let mut replaced = false;
+            if let Some((k, _)) = trimmed.split_once(':')
+                && k.trim() == key
+            {
+                saw_key = true;
+                let comment = trimmed.find('#').map(|idx| &trimmed[idx..]);
+                let key_part = &trimmed[..trimmed.find(':').expect("split_once") + 1];
+                out.push_str(key_part);
+                out.push(' ');
+                out.push_str(value);
                 if let Some(comment) = comment {
                     out.push(' ');
                     out.push_str(comment);
