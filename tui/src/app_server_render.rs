@@ -522,8 +522,8 @@ struct AppServerEventProcessor {
     /// compact `Edited ...` summary when `Verbosity::Minimal`.
     pending_compact_patch_changes: Vec<HashMap<PathBuf, codex_protocol::protocol::FileChange>>,
     pending_compact_patch_preview: Option<history_cell::PlainHistoryCell>,
-    /// Divergence (codex-potter): keep the latest completed agent message pending in
-    /// `Verbosity::Minimal` until a later visible event confirms whether it is final.
+    /// Divergence (codex-potter): keep the latest completed non-commentary agent message pending
+    /// in `Verbosity::Minimal` until a transcript barrier (tool output / `TurnComplete`).
     pending_minimal_agent_message_lines: Option<Vec<Line<'static>>>,
     /// Tracks whether the current turn produced a non-commentary `AgentMessage`.
     ///

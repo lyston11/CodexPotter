@@ -41,10 +41,12 @@ Divergences must be documented in places below to avoid regression when syncing 
   - Reasoning messages are never rendered.
   - Successful `Ran` items suppress output preview and adjacent ones are collapsed into one.
   - `Explored` items are more aggressively collapsed.
-    Minimal mode:
+  Minimal mode:
   - With all the above Simple-mode suppressions, plus:
-  - Only the final agent message in a turn stays normal; earlier completed agent messages stay dim
-  - Streamed agent text is committed only after completion, then kept pending until a later visible event or `TurnComplete` confirms whether it is final
+  - `phase = commentary` agent messages are not rendered; they update the shimmer/status header instead (exec prints them as status hints).
+  - Non-commentary agent messages are rendered without dimming (no gray agent messages in the transcript).
+  - Streamed agent text is committed only after completion; the latest completed non-commentary agent message may stay pending until a transcript barrier or `TurnComplete`.
+  - `TurnComplete.last_agent_message` is rendered as the final answer when no non-commentary agent message was emitted (legacy/replay compatibility).
   - Plan tool output is hidden
   - All `Ran` and `Explored` items are hidden
   - `Worked for ...` separators are hidden
