@@ -726,6 +726,24 @@ impl ExecHumanRenderer {
         }
     }
 
+    fn render_pending_minimal_agent_message(
+        &mut self,
+        final_message: bool,
+    ) -> io::Result<Option<String>> {
+        let Some(lines) = self.pending_minimal_agent_message_lines.take() else {
+            return Ok(None);
+        };
+        let was_visible = self.pending_minimal_agent_message_visible;
+        self.pending_minimal_agent_message_visible = false;
+        if was_visible {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            self.render_agent_message_block(lines, !final_message)?,
+        ))
+    }
+
     fn flush_agent_output(&mut self, final_message: bool) -> io::Result<Vec<String>> {
         let mut out = Vec::new();
         if self.verbosity == Verbosity::Minimal {
@@ -734,12 +752,8 @@ impl ExecHumanRenderer {
                 if !lines.is_empty() {
                     out.push(self.render_agent_message_block(lines, !final_message)?);
                 }
-            } else if let Some(lines) = self.pending_minimal_agent_message_lines.take() {
-                let was_visible = self.pending_minimal_agent_message_visible;
-                self.pending_minimal_agent_message_visible = false;
-                if !was_visible {
-                    out.push(self.render_agent_message_block(lines, !final_message)?);
-                }
+            } else if let Some(block) = self.render_pending_minimal_agent_message(final_message)? {
+                out.push(block);
             }
             return Ok(out);
         }
@@ -758,12 +772,8 @@ impl ExecHumanRenderer {
     fn flush_barrier_agent_output(&mut self) -> io::Result<Vec<String>> {
         if self.verbosity == Verbosity::Minimal {
             let mut out = Vec::new();
-            if let Some(lines) = self.pending_minimal_agent_message_lines.take() {
-                let was_visible = self.pending_minimal_agent_message_visible;
-                self.pending_minimal_agent_message_visible = false;
-                if !was_visible {
-                    out.push(self.render_agent_message_block(lines, true)?);
-                }
+            if let Some(block) = self.render_pending_minimal_agent_message(true)? {
+                out.push(block);
             }
             return Ok(out);
         }
