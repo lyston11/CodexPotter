@@ -998,7 +998,7 @@ impl AppServerEventProcessor {
                 if self.verbosity == Verbosity::Minimal && !self.saw_agent_delta {
                     self.flush_pending_minimal_agent_message(false);
                 }
-                if !self.saw_agent_delta {
+                if !self.saw_agent_delta && self.verbosity != Verbosity::Minimal {
                     self.maybe_emit_final_message_separator();
                 }
                 self.saw_agent_delta = true;
@@ -1048,11 +1048,12 @@ impl AppServerEventProcessor {
                         );
                         return;
                     }
-                    let had_streamed_delta = self.saw_agent_delta;
                     let lines = self.take_agent_message_lines(&ev.message);
-                    if !had_streamed_delta {
-                        self.maybe_emit_final_message_separator();
-                    }
+                    // In Minimal mode the delta phase is unknown until the completed
+                    // `AgentMessage` arrives. Only completed non-commentary messages should act
+                    // like a separator boundary; commentary must not split the compact patch
+                    // preview into transcript history.
+                    self.maybe_emit_final_message_separator();
                     self.store_pending_minimal_agent_message(lines);
                     return;
                 }
@@ -1677,6 +1678,13 @@ impl RenderAppState {
             );
         }
 
+        if self.processor.verbosity == Verbosity::Minimal
+            && let Some(cell) = self.processor.pending_compact_patch_preview.as_ref()
+        {
+            transient_lines.push(Line::from(""));
+            transient_lines.extend(cell.display_lines(width));
+        }
+
         if self.processor.verbosity == Verbosity::Minimal {
             let commentary_lines = self
                 .processor
@@ -1706,13 +1714,6 @@ impl RenderAppState {
                     history_cell::AgentMessageCell::new(preview_lines, true).display_lines(width),
                 );
             }
-        }
-
-        if self.processor.verbosity == Verbosity::Minimal
-            && let Some(cell) = self.processor.pending_compact_patch_preview.as_ref()
-        {
-            transient_lines.push(Line::from(""));
-            transient_lines.extend(cell.display_lines(width));
         }
 
         if let Some(cell) = self.potter_stream_recovery_retry_cell.as_ref() {
@@ -6805,6 +6806,42 @@ mod tests {
     }
 
     #[test]
+    fn round_renderer_simple_keeps_commentary_in_transcript_history() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Simple);
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "**Inspecting**".to_string(),
+            }),
+        });
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Inspecting**\n\nWorking...".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        let cells = drain_history_cell_strings(&mut rx_app, width);
+        assert!(
+            cells
+                .iter()
+                .flatten()
+                .any(|line| line.contains("Inspecting")),
+            "expected Simple mode commentary in transcript history: {cells:?}"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            !transient_blob.contains("Inspecting"),
+            "expected Simple mode commentary to keep the original non-transient rendering: {transient_blob:?}"
+        );
+    }
+
+    #[test]
     fn round_renderer_minimal_commentary_preview_replaces_previous_commentary() {
         let width: u16 = 80;
 
@@ -7275,6 +7312,119 @@ mod tests {
         assert!(
             transient_blob.contains("Edited file.txt (+1 -1)"),
             "expected compact patch preview to stay visible: {transient_blob:?}"
+        );
+    }
+
+    #[test]
+    fn round_renderer_minimal_commentary_does_not_split_compact_patch_preview() {
+        let width: u16 = 80;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::Minimal);
+
+        let mut changes_a: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_a.insert(
+            PathBuf::from("a.txt"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: diffy::create_patch("old\n", "new\n").to_string(),
+                move_path: None,
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-a-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-a".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_a,
+            }),
+        });
+
+        let mut changes_b: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_b.insert(
+            PathBuf::from("b.txt"),
+            codex_protocol::protocol::FileChange::Add {
+                content: "new\n".to_string(),
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-b-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-b".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_b,
+            }),
+        });
+
+        app.processor.handle_codex_event(Event {
+            id: "commentary-delta".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "Reviewing progress file".to_string(),
+            }),
+        });
+        app.processor.handle_codex_event(Event {
+            id: "commentary".into(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "**Reviewing**\n\nReviewing progress file".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+        });
+
+        let mut changes_c: HashMap<PathBuf, codex_protocol::protocol::FileChange> = HashMap::new();
+        changes_c.insert(
+            PathBuf::from(".codexpotter/projects/2026/04/22/1/MAIN.md"),
+            codex_protocol::protocol::FileChange::Update {
+                unified_diff: diffy::create_patch("older\n", "newer\n").to_string(),
+                move_path: None,
+            },
+        );
+        app.processor.handle_codex_event(Event {
+            id: "patch-c-end".into(),
+            msg: EventMsg::PatchApplyEnd(PatchApplyEndEvent {
+                call_id: "patch-c".into(),
+                turn_id: "turn-1".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                success: true,
+                changes: changes_c,
+            }),
+        });
+
+        assert!(
+            drain_history_cell_strings(&mut rx_app, width).is_empty(),
+            "expected commentary not to flush compact patch preview into transcript history"
+        );
+
+        let transient_blob = lines_to_plain_strings(&app.build_transient_lines(width)).join("\n");
+        assert!(
+            transient_blob.contains("• Changed 3 files (+3 -2)"),
+            "expected all patch changes to remain coalesced: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("└ Edited a.txt (+1 -1)"),
+            "missing first file entry: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("Added b.txt (+1 -0)"),
+            "missing second file entry: {transient_blob:?}"
+        );
+        assert!(
+            transient_blob.contains("Edited .codexpotter/projects/2026/04/22/1/MAIN.md (+1 -1)"),
+            "missing later patch entry: {transient_blob:?}"
+        );
+        let last_patch_index = transient_blob
+            .find("Edited .codexpotter/projects/2026/04/22/1/MAIN.md (+1 -1)")
+            .expect("find later patch entry");
+        let commentary_index = transient_blob
+            .find("Reviewing progress file")
+            .expect("find commentary line");
+        assert!(
+            last_patch_index < commentary_index,
+            "expected commentary preview below compact patch preview: {transient_blob:?}"
         );
     }
 
