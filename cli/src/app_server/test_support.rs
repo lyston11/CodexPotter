@@ -1,5 +1,23 @@
 use std::path::Path;
 
+use serde::Deserialize;
+
+/// Typed stdin payload captured from a `Potter.ProjectStop` test hook.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectStopHookPayload {
+    pub project_dir: String,
+    pub project_file_path: String,
+    pub cwd: String,
+    pub hook_event_name: String,
+    pub user_prompt: String,
+    pub all_session_ids: Vec<String>,
+    pub new_session_ids: Vec<String>,
+    pub all_assistant_messages: Vec<String>,
+    pub new_assistant_messages: Vec<String>,
+    pub stop_reason_code: String,
+}
+
 #[cfg(any(unix, windows))]
 pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
     use std::io::Write as _;
@@ -64,7 +82,7 @@ pub fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_
 }
 
 /// Read the captured stdin payload from a `Potter.ProjectStop` test hook.
-pub fn read_project_stop_hook_payload(hook_output_path: &Path) -> serde_json::Value {
+pub fn read_project_stop_hook_payload(hook_output_path: &Path) -> ProjectStopHookPayload {
     serde_json::from_str(&std::fs::read_to_string(hook_output_path).expect("read hook input"))
         .expect("parse hook input json")
 }

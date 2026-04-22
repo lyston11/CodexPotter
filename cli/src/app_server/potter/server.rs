@@ -2141,6 +2141,7 @@ fn user_requested_project_outcome() -> PotterProjectOutcome {
 mod tests {
     use super::*;
 
+    use crate::app_server::test_support::ProjectStopHookPayload;
     #[cfg(unix)]
     use crate::app_server::test_support::lock_dummy_codex_test;
     #[cfg(unix)]
@@ -4153,72 +4154,20 @@ git_branch: "main"
             .parent()
             .expect("project dir")
             .to_path_buf();
-        let expected_project_dir = expected_project_dir.to_string_lossy().to_string();
-        let expected_project_file_path = expected_project_file_path.to_string_lossy().to_string();
-        let expected_workdir = workdir.to_string_lossy().to_string();
-
         assert_eq!(
-            payload
-                .get("project_dir")
-                .and_then(serde_json::Value::as_str),
-            Some(expected_project_dir.as_str())
-        );
-        assert_eq!(
-            payload
-                .get("project_file_path")
-                .and_then(serde_json::Value::as_str),
-            Some(expected_project_file_path.as_str())
-        );
-        assert_eq!(
-            payload.get("cwd").and_then(serde_json::Value::as_str),
-            Some(expected_workdir.as_str())
-        );
-        assert_eq!(
-            payload
-                .get("hook_event_name")
-                .and_then(serde_json::Value::as_str),
-            Some("Potter.ProjectStop")
-        );
-        assert_eq!(
-            payload
-                .get("user_prompt")
-                .and_then(serde_json::Value::as_str),
-            Some("hello from user")
-        );
-        assert_eq!(
-            payload
-                .get("stop_reason_code")
-                .and_then(serde_json::Value::as_str),
-            Some("interrupted")
-        );
-
-        assert_eq!(
-            payload
-                .get("all_session_ids")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(thread_id.to_string())])
-        );
-        assert_eq!(
-            payload
-                .get("new_session_ids")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(thread_id.to_string())])
-        );
-        assert_eq!(
-            payload
-                .get("all_assistant_messages")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(
-                "final assistant message".to_string()
-            )])
-        );
-        assert_eq!(
-            payload
-                .get("new_assistant_messages")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(
-                "final assistant message".to_string()
-            )])
+            payload,
+            ProjectStopHookPayload {
+                project_dir: expected_project_dir.to_string_lossy().to_string(),
+                project_file_path: expected_project_file_path.to_string_lossy().to_string(),
+                cwd: workdir.to_string_lossy().to_string(),
+                hook_event_name: "Potter.ProjectStop".to_string(),
+                user_prompt: "hello from user".to_string(),
+                all_session_ids: vec![thread_id.to_string()],
+                new_session_ids: vec![thread_id.to_string()],
+                all_assistant_messages: vec!["final assistant message".to_string()],
+                new_assistant_messages: vec!["final assistant message".to_string()],
+                stop_reason_code: "interrupted".to_string(),
+            }
         );
     }
 

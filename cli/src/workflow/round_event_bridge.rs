@@ -285,6 +285,7 @@ impl PotterRoundEventBridge {
 mod tests {
     use super::*;
 
+    use crate::app_server::test_support::ProjectStopHookPayload;
     use crate::app_server::test_support::read_project_stop_hook_payload;
     use crate::app_server::test_support::write_project_stop_hook_capture;
     use codex_protocol::ThreadId;
@@ -526,78 +527,28 @@ potter.xmodel: {potter_xmodel}
             .parent()
             .expect("project dir")
             .to_path_buf();
-        let expected_project_dir = expected_project_dir.to_string_lossy().to_string();
-        let expected_project_file_path = expected_project_file_path.to_string_lossy().to_string();
-        let expected_workdir = workdir.to_string_lossy().to_string();
         assert_eq!(
-            payload
-                .get("project_dir")
-                .and_then(serde_json::Value::as_str),
-            Some(expected_project_dir.as_str())
-        );
-        assert_eq!(
-            payload
-                .get("project_file_path")
-                .and_then(serde_json::Value::as_str),
-            Some(expected_project_file_path.as_str())
-        );
-        assert_eq!(
-            payload.get("cwd").and_then(serde_json::Value::as_str),
-            Some(expected_workdir.as_str())
-        );
-
-        assert_eq!(
-            payload
-                .get("hook_event_name")
-                .and_then(serde_json::Value::as_str),
-            Some("Potter.ProjectStop")
-        );
-        assert_eq!(
-            payload
-                .get("user_prompt")
-                .and_then(serde_json::Value::as_str),
-            Some("hello from user")
-        );
-        assert_eq!(
-            payload
-                .get("stop_reason_code")
-                .and_then(serde_json::Value::as_str),
-            Some("succeeded")
-        );
-
-        assert_eq!(
-            payload
-                .get("all_session_ids")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![
-                serde_json::Value::String(thread_id_1.to_string()),
-                serde_json::Value::String(thread_id_2.to_string()),
-                serde_json::Value::String(thread_id_3.to_string()),
-            ])
-        );
-        assert_eq!(
-            payload
-                .get("new_session_ids")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(thread_id_3.to_string())])
-        );
-        assert_eq!(
-            payload
-                .get("all_assistant_messages")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![
-                serde_json::Value::String("round 1 final".to_string()),
-                serde_json::Value::String("round 2 final".to_string()),
-                serde_json::Value::String("round 3 final".to_string()),
-            ])
-        );
-        assert_eq!(
-            payload
-                .get("new_assistant_messages")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(
-                "round 3 final".to_string()
-            )])
+            payload,
+            ProjectStopHookPayload {
+                project_dir: expected_project_dir.to_string_lossy().to_string(),
+                project_file_path: expected_project_file_path.to_string_lossy().to_string(),
+                cwd: workdir.to_string_lossy().to_string(),
+                hook_event_name: "Potter.ProjectStop".to_string(),
+                user_prompt: "hello from user".to_string(),
+                all_session_ids: vec![
+                    thread_id_1.to_string(),
+                    thread_id_2.to_string(),
+                    thread_id_3.to_string(),
+                ],
+                new_session_ids: vec![thread_id_3.to_string()],
+                all_assistant_messages: vec![
+                    "round 1 final".to_string(),
+                    "round 2 final".to_string(),
+                    "round 3 final".to_string(),
+                ],
+                new_assistant_messages: vec!["round 3 final".to_string()],
+                stop_reason_code: "succeeded".to_string(),
+            }
         );
     }
 
@@ -685,12 +636,7 @@ potter.xmodel: {potter_xmodel}
         ));
 
         let payload = read_project_stop_hook_payload(&hook_output_path);
-        assert_eq!(
-            payload
-                .get("stop_reason_code")
-                .and_then(serde_json::Value::as_str),
-            Some("budget_exhausted")
-        );
+        assert_eq!(payload.stop_reason_code, "budget_exhausted");
     }
 
     #[cfg(not(windows))]
@@ -781,12 +727,7 @@ potter.xmodel: {potter_xmodel}
         );
 
         let payload = read_project_stop_hook_payload(&hook_output_path);
-        assert_eq!(
-            payload
-                .get("stop_reason_code")
-                .and_then(serde_json::Value::as_str),
-            Some("task_failed")
-        );
+        assert_eq!(payload.stop_reason_code, "task_failed");
     }
 
     #[cfg(not(windows))]
@@ -875,12 +816,7 @@ potter.xmodel: {potter_xmodel}
         );
 
         let payload = read_project_stop_hook_payload(&hook_output_path);
-        assert_eq!(
-            payload
-                .get("stop_reason_code")
-                .and_then(serde_json::Value::as_str),
-            Some("fatal")
-        );
+        assert_eq!(payload.stop_reason_code, "fatal");
     }
 
     #[cfg(not(windows))]
@@ -1061,34 +997,15 @@ potter.xmodel: {potter_xmodel}
         ));
 
         let payload = read_project_stop_hook_payload(&hook_output_path);
-
+        assert_eq!(payload.all_session_ids, vec![thread_id.to_string()]);
+        assert_eq!(payload.new_session_ids, vec![thread_id.to_string()]);
         assert_eq!(
-            payload
-                .get("all_session_ids")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(thread_id.to_string())])
+            payload.all_assistant_messages,
+            vec!["resumed final".to_string()]
         );
         assert_eq!(
-            payload
-                .get("new_session_ids")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(thread_id.to_string())])
-        );
-        assert_eq!(
-            payload
-                .get("all_assistant_messages")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(
-                "resumed final".to_string()
-            )])
-        );
-        assert_eq!(
-            payload
-                .get("new_assistant_messages")
-                .and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String(
-                "resumed final".to_string()
-            )])
+            payload.new_assistant_messages,
+            vec!["resumed final".to_string()]
         );
     }
 
