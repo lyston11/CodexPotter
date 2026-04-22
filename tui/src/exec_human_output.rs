@@ -116,6 +116,7 @@ pub struct ExecHumanRenderer {
     model_context_window: Option<i64>,
     context_output_level: i64,
     reasoning_status: ReasoningStatusTracker,
+    last_status_hint_header: Option<String>,
     pending_exec_meta: Option<PendingExecMetaInfo>,
     session_meta: Option<SessionMetaInfo>,
     pending_round_marker: Option<(u32, u32)>,
@@ -146,6 +147,7 @@ impl ExecHumanRenderer {
             model_context_window: None,
             context_output_level: EXEC_REASONING_CONTEXT_MAX_LEVEL,
             reasoning_status: ReasoningStatusTracker::new(),
+            last_status_hint_header: None,
             pending_exec_meta: None,
             session_meta: None,
             pending_round_marker: None,
@@ -220,6 +222,7 @@ impl ExecHumanRenderer {
                 self.model_context_window = ev.model_context_window;
                 self.context_output_level = EXEC_REASONING_CONTEXT_MAX_LEVEL;
                 self.reasoning_status.reset();
+                self.last_status_hint_header = None;
                 self.turn_has_non_commentary_agent_message = false;
             }
             EventMsg::PotterProjectStarted {
@@ -372,8 +375,10 @@ impl ExecHumanRenderer {
                         }
                         if let Some(header) =
                             crate::commentary_status::status_header_from_commentary(&ev.message)
+                            && let Some(block) =
+                                self.maybe_render_reasoning_status_hint_block(header)?
                         {
-                            out.push(self.render_reasoning_status_hint_block(header)?);
+                            out.push(block);
                         }
                         return Ok(out);
                     }
@@ -864,41 +869,58 @@ impl ExecHumanRenderer {
         let Some(header) = self.reasoning_status.on_delta(delta) else {
             return Ok(None);
         };
-        self.render_reasoning_status_hint_block(header).map(Some)
+        self.maybe_render_reasoning_status_hint_block(header)
     }
 
-    fn render_reasoning_status_hint_block(&mut self, header: String) -> io::Result<String> {
-        let lines = self.build_reasoning_status_hint_lines(header);
-        self.render_lines(lines)
-    }
-
-    fn build_reasoning_status_hint_lines(&mut self, header: String) -> Vec<Line<'static>> {
+    fn maybe_render_reasoning_status_hint_block(
+        &mut self,
+        header: String,
+    ) -> io::Result<Option<String>> {
         let elapsed = self
             .status_started_at
             .map(|started_at| started_at.elapsed())
             .unwrap_or_default();
-        self.build_reasoning_status_hint_lines_from_state(
-            header,
-            elapsed,
-            self.current_context_window_percent(),
-        )
+        let context_window_percent = self.current_context_window_percent();
+        let context_hint = self.take_reasoning_context_hint(context_window_percent);
+
+        if self.last_status_hint_header.as_deref() == Some(header.as_str())
+            && context_hint.is_none()
+        {
+            return Ok(None);
+        }
+
+        self.last_status_hint_header = Some(header.clone());
+        let lines =
+            self.build_reasoning_status_hint_lines_with_context_hint(header, elapsed, context_hint);
+        self.render_lines(lines).map(Some)
     }
 
-    fn build_reasoning_status_hint_lines_from_state(
+    fn build_reasoning_status_hint_lines_with_context_hint(
         &mut self,
         header: String,
         elapsed: Duration,
-        context_window_percent: Option<i64>,
+        context_hint: Option<i64>,
     ) -> Vec<Line<'static>> {
         let pretty_elapsed = fmt_elapsed_compact(elapsed.as_secs());
         let mut text = format!("@{pretty_elapsed}: {header}");
-        if let Some(percent) = self.take_reasoning_context_hint(context_window_percent) {
+        if let Some(percent) = context_hint {
             text.push_str(&format!(" ({percent}% context left)"));
         }
 
         let mut lines = vec![Line::from(text)];
         crate::render::line_utils::dim_lines(&mut lines);
         lines
+    }
+
+    #[cfg(test)]
+    fn build_reasoning_status_hint_lines_from_state(
+        &mut self,
+        header: String,
+        elapsed: Duration,
+        context_window_percent: Option<i64>,
+    ) -> Vec<Line<'static>> {
+        let context_hint = self.take_reasoning_context_hint(context_window_percent);
+        self.build_reasoning_status_hint_lines_with_context_hint(header, elapsed, context_hint)
     }
 
     fn current_context_window_percent(&self) -> Option<i64> {
@@ -1764,6 +1786,105 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
                 "@18s: Patching".to_string(),
                 "final".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn minimal_commentary_dedups_repeated_status_headers_in_exec_mode() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(12));
+        let first = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nWorking...".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("first commentary agent message");
+        assert_eq!(first, vec!["@12s: Inspecting".to_string()]);
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(18));
+        let second = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nStill working...".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("second commentary agent message");
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn reasoning_status_hint_dedups_repeated_headers_across_reasoning_items() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(12));
+        let first = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "**Inspecting**".to_string(),
+            }))
+            .expect("first reasoning delta");
+        assert_eq!(first, vec!["@12s: Inspecting".to_string()]);
+
+        let final_blocks = renderer
+            .handle_event(&EventMsg::AgentReasoning(AgentReasoningEvent {
+                text: "**Inspecting**\nDone.".to_string(),
+            }))
+            .expect("reasoning final");
+        assert!(final_blocks.is_empty());
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(18));
+        let second = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "**Inspecting**".to_string(),
+            }))
+            .expect("second reasoning delta");
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn status_hint_emits_context_hint_even_when_header_repeats() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: Some(12_001),
+        }));
+
+        renderer.context_usage.total_tokens = 0;
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(12));
+        let first = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nWorking...".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("first commentary agent message");
+        assert_eq!(first, vec!["@12s: Inspecting".to_string()]);
+
+        renderer.context_usage.total_tokens = 12_001;
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(18));
+        let second = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nWorking...".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("second commentary agent message");
+        assert_eq!(
+            second,
+            vec!["@18s: Inspecting (0% context left)".to_string()]
         );
     }
 
