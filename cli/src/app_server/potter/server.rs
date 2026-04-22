@@ -2185,6 +2185,24 @@ git_branch: "main"
         dir
     }
 
+    fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_path: &Path) {
+        let hooks_json = serde_json::json!({
+            "hooks": {
+                "Potter.ProjectStop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("cat > '{}'", hook_output_path.display()),
+                    }],
+                }],
+            },
+        });
+        std::fs::write(
+            hooks_codex_home_dir.join("hooks.json"),
+            hooks_json.to_string(),
+        )
+        .expect("write hooks.json");
+    }
+
     #[test]
     fn decode_jsonrpc_message_line_rejects_invalid_json_and_ignores_empty_lines() {
         let err = decode_jsonrpc_message_line("{not json").expect_err("should fail");
@@ -4006,21 +4024,7 @@ git_branch: "main"
 
         let hooks_codex_home_dir = isolated_hooks_codex_home_dir(&workdir);
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
 
         let config = PotterAppServerConfig {
             default_workdir: workdir.clone(),
