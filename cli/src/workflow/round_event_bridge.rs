@@ -285,6 +285,7 @@ impl PotterRoundEventBridge {
 mod tests {
     use super::*;
 
+    use crate::app_server::test_support::write_project_stop_hook_capture;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
     use std::path::Path;
@@ -368,24 +369,6 @@ potter.xmodel: {potter_xmodel}
             }
         });
         std::fs::write(path, format!("{value}\n")).expect("write upstream rollout");
-    }
-
-    fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_path: &Path) {
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
     }
 
     fn append_completed_round(

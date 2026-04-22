@@ -44,6 +44,25 @@ pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
         .expect("persist dummy codex");
 }
 
+/// Write a `Potter.ProjectStop` command hook that captures its stdin into `hook_output_path`.
+pub fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_path: &Path) {
+    let hooks_json = serde_json::json!({
+        "hooks": {
+            "Potter.ProjectStop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("cat > '{}'", hook_output_path.display()),
+                }],
+            }],
+        },
+    });
+    std::fs::write(
+        hooks_codex_home_dir.join("hooks.json"),
+        hooks_json.to_string(),
+    )
+    .expect("write hooks.json");
+}
+
 #[cfg(any(unix, windows))]
 pub async fn lock_dummy_codex_test() -> tokio::sync::MutexGuard<'static, ()> {
     static DUMMY_CODEX_TEST_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> =

@@ -2145,6 +2145,8 @@ mod tests {
     use crate::app_server::test_support::lock_dummy_codex_test;
     #[cfg(unix)]
     use crate::app_server::test_support::write_dummy_codex_script;
+    #[cfg(unix)]
+    use crate::app_server::test_support::write_project_stop_hook_capture;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -2181,24 +2183,6 @@ git_branch: "main"
         let dir = workdir.join("codex-home");
         std::fs::create_dir_all(&dir).expect("create hooks codex home dir");
         dir
-    }
-
-    fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_path: &Path) {
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
     }
 
     #[test]
