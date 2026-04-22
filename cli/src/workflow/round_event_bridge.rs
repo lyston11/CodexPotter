@@ -322,8 +322,9 @@ potter.xmodel: {potter_xmodel}
         .expect("write progress file");
     }
 
-    fn session_configured_event(
+    fn session_configured_event_with_session_id(
         workdir: &Path,
+        session_id: ThreadId,
         rollout_path: PathBuf,
         service_tier: Option<codex_protocol::protocol::ServiceTier>,
         model: &str,
@@ -331,10 +332,7 @@ potter.xmodel: {potter_xmodel}
         Event {
             id: "event_1".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: codex_protocol::ThreadId::from_string(
-                    "019ca423-63d9-7641-ae83-db060ad3c000",
-                )
-                .expect("thread id"),
+                session_id,
                 forked_from_id: None,
                 model: model.to_string(),
                 model_provider_id: "test".to_string(),
@@ -349,6 +347,22 @@ potter.xmodel: {potter_xmodel}
         }
     }
 
+    fn session_configured_event(
+        workdir: &Path,
+        rollout_path: PathBuf,
+        service_tier: Option<codex_protocol::protocol::ServiceTier>,
+        model: &str,
+    ) -> Event {
+        session_configured_event_with_session_id(
+            workdir,
+            codex_protocol::ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c000")
+                .expect("thread id"),
+            rollout_path,
+            service_tier,
+            model,
+        )
+    }
+
     fn write_upstream_rollout_final_answer(path: &Path, message: &str) {
         let value = serde_json::json!({
             "timestamp": "2026-03-01T00:00:00.000Z",
@@ -360,6 +374,24 @@ potter.xmodel: {potter_xmodel}
             }
         });
         std::fs::write(path, format!("{value}\n")).expect("write upstream rollout");
+    }
+
+    fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_path: &Path) {
+        let hooks_json = serde_json::json!({
+            "hooks": {
+                "Potter.ProjectStop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("cat > '{}'", hook_output_path.display()),
+                    }],
+                }],
+            },
+        });
+        std::fs::write(
+            hooks_codex_home_dir.join("hooks.json"),
+            hooks_json.to_string(),
+        )
+        .expect("write hooks.json");
     }
 
     fn append_completed_round(
@@ -450,21 +482,7 @@ potter.xmodel: {potter_xmodel}
         .expect("append round 3 started");
 
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: true,
@@ -482,22 +500,13 @@ potter.xmodel: {potter_xmodel}
             project_rounds_run: 1,
         });
 
-        let ev = Event {
-            id: "event_1".to_string(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: thread_id_3,
-                forked_from_id: None,
-                model: "test".to_string(),
-                model_provider_id: "test".to_string(),
-                service_tier: None,
-                cwd: workdir.to_path_buf(),
-                reasoning_effort: None,
-                history_log_id: 0,
-                history_entry_count: 0,
-                initial_messages: None,
-                rollout_path: upstream_3.clone(),
-            }),
-        };
+        let ev = session_configured_event_with_session_id(
+            workdir,
+            thread_id_3,
+            upstream_3.clone(),
+            None,
+            "test",
+        );
         bridge
             .observe_backend_event(&ev)
             .await
@@ -653,21 +662,7 @@ potter.xmodel: {potter_xmodel}
         let upstream = upstream.canonicalize().expect("canonical upstream");
 
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: true,
@@ -685,22 +680,13 @@ potter.xmodel: {potter_xmodel}
             project_rounds_run: 1,
         });
 
-        let ev = Event {
-            id: "event_1".to_string(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: thread_id,
-                forked_from_id: None,
-                model: "test".to_string(),
-                model_provider_id: "test".to_string(),
-                service_tier: None,
-                cwd: workdir.to_path_buf(),
-                reasoning_effort: None,
-                history_log_id: 0,
-                history_entry_count: 0,
-                initial_messages: None,
-                rollout_path: upstream.clone(),
-            }),
-        };
+        let ev = session_configured_event_with_session_id(
+            workdir,
+            thread_id,
+            upstream.clone(),
+            None,
+            "test",
+        );
         bridge
             .observe_backend_event(&ev)
             .await
@@ -771,21 +757,7 @@ potter.xmodel: {potter_xmodel}
         let upstream = upstream.canonicalize().expect("canonical upstream");
 
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: true,
@@ -803,22 +775,13 @@ potter.xmodel: {potter_xmodel}
             project_rounds_run: 1,
         });
 
-        let ev = Event {
-            id: "event_1".to_string(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: thread_id,
-                forked_from_id: None,
-                model: "test".to_string(),
-                model_provider_id: "test".to_string(),
-                service_tier: None,
-                cwd: workdir.to_path_buf(),
-                reasoning_effort: None,
-                history_log_id: 0,
-                history_entry_count: 0,
-                initial_messages: None,
-                rollout_path: upstream.clone(),
-            }),
-        };
+        let ev = session_configured_event_with_session_id(
+            workdir,
+            thread_id,
+            upstream.clone(),
+            None,
+            "test",
+        );
         bridge
             .observe_backend_event(&ev)
             .await
@@ -893,21 +856,7 @@ potter.xmodel: {potter_xmodel}
         let upstream = upstream.canonicalize().expect("canonical upstream");
 
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: true,
@@ -925,22 +874,13 @@ potter.xmodel: {potter_xmodel}
             project_rounds_run: 1,
         });
 
-        let ev = Event {
-            id: "event_1".to_string(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: thread_id,
-                forked_from_id: None,
-                model: "test".to_string(),
-                model_provider_id: "test".to_string(),
-                service_tier: None,
-                cwd: workdir.to_path_buf(),
-                reasoning_effort: None,
-                history_log_id: 0,
-                history_entry_count: 0,
-                initial_messages: None,
-                rollout_path: upstream.clone(),
-            }),
-        };
+        let ev = session_configured_event_with_session_id(
+            workdir,
+            thread_id,
+            upstream.clone(),
+            None,
+            "test",
+        );
         bridge
             .observe_backend_event(&ev)
             .await
@@ -1013,21 +953,7 @@ potter.xmodel: {potter_xmodel}
         let upstream = upstream.canonicalize().expect("canonical upstream");
 
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
         let user_prompt_file = progress_file_rel.clone();
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
@@ -1046,22 +972,8 @@ potter.xmodel: {potter_xmodel}
             project_rounds_run: 1,
         });
 
-        let ev = Event {
-            id: "event_1".to_string(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: thread_id,
-                forked_from_id: None,
-                model: "test".to_string(),
-                model_provider_id: "test".to_string(),
-                service_tier: None,
-                cwd: workdir.to_path_buf(),
-                reasoning_effort: None,
-                history_log_id: 0,
-                history_entry_count: 0,
-                initial_messages: None,
-                rollout_path: upstream,
-            }),
-        };
+        let ev =
+            session_configured_event_with_session_id(workdir, thread_id, upstream, None, "test");
         bridge
             .observe_backend_event(&ev)
             .await
@@ -1147,21 +1059,7 @@ potter.xmodel: {potter_xmodel}
         .expect("append round_configured");
 
         let hook_output_path = workdir.join("hook-input.json");
-        let hooks_json = serde_json::json!({
-            "hooks": {
-                "Potter.ProjectStop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("cat > '{}'", hook_output_path.display()),
-                    }],
-                }],
-            },
-        });
-        std::fs::write(
-            hooks_codex_home_dir.join("hooks.json"),
-            hooks_json.to_string(),
-        )
-        .expect("write hooks.json");
+        write_project_stop_hook_capture(&hooks_codex_home_dir, &hook_output_path);
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
