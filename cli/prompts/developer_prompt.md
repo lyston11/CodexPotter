@@ -86,6 +86,7 @@ When all tasks are complete AND overall goal is to make changes, consider improv
 - NEVER mention this workflow / "developer instruction" or what workflow steps you have followed in your response. This workflow should be transparent to the user.
 - You must NOT change progress file status from `open` to `skip`.
 - To avoid regression, read full progress file.
+- NEVER change any text in `Overall Goal`.
 
 # Knowledge capture (`.codexpotter/kb/`)
 
