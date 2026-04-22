@@ -16,7 +16,6 @@ pub(super) struct CommandRunResult {
     pub completed_at: i64,
     pub duration_ms: i64,
     pub exit_code: Option<i32>,
-    #[cfg_attr(not(test), allow(dead_code))]
     pub stdout: String,
     pub stderr: String,
     pub error: Option<String>,

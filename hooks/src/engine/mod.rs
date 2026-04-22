@@ -178,13 +178,25 @@ fn parse_project_stop_completed(
     turn_id: Option<String>,
 ) -> HookCompletedEvent {
     let (status, entries) = match run_result.error.as_deref() {
-        Some(error) => (
-            HookRunStatus::Failed,
-            vec![HookOutputEntry {
+        Some(error) => {
+            let mut entries = vec![HookOutputEntry {
                 kind: HookOutputEntryKind::Error,
                 text: error.to_string(),
-            }],
-        ),
+            }];
+            if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
+                entries.push(HookOutputEntry {
+                    kind: HookOutputEntryKind::Error,
+                    text: stderr,
+                });
+            }
+            if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
+                entries.push(HookOutputEntry {
+                    kind: HookOutputEntryKind::Error,
+                    text: format!("stdout: {stdout}"),
+                });
+            }
+            (HookRunStatus::Failed, entries)
+        }
         None => match run_result.exit_code {
             Some(0) => (HookRunStatus::Completed, Vec::new()),
             Some(code) => {
@@ -198,15 +210,33 @@ fn parse_project_stop_completed(
                         text: stderr,
                     });
                 }
+                if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
+                    entries.push(HookOutputEntry {
+                        kind: HookOutputEntryKind::Error,
+                        text: format!("stdout: {stdout}"),
+                    });
+                }
                 (HookRunStatus::Failed, entries)
             }
-            None => (
-                HookRunStatus::Failed,
-                vec![HookOutputEntry {
+            None => {
+                let mut entries = vec![HookOutputEntry {
                     kind: HookOutputEntryKind::Error,
                     text: "hook exited without an exit code".to_string(),
-                }],
-            ),
+                }];
+                if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
+                    entries.push(HookOutputEntry {
+                        kind: HookOutputEntryKind::Error,
+                        text: stderr,
+                    });
+                }
+                if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
+                    entries.push(HookOutputEntry {
+                        kind: HookOutputEntryKind::Error,
+                        text: format!("stdout: {stdout}"),
+                    });
+                }
+                (HookRunStatus::Failed, entries)
+            }
         },
     };
 
