@@ -1,4 +1,9 @@
+use std::borrow::Cow;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -22,7 +27,7 @@ pub struct ProjectStopHookPayload {
 pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
     use std::io::Write as _;
 
-    let script = script.as_ref();
+    let script = normalize_dummy_codex_script(script.as_ref());
     let parent = path.parent().expect("dummy codex path should have parent");
     let mut tmp = tempfile::NamedTempFile::new_in(parent).expect("create dummy codex temp");
 
@@ -62,6 +67,34 @@ pub fn write_dummy_codex_script(path: &Path, script: impl AsRef<str>) {
         .expect("persist dummy codex");
 }
 
+#[cfg(unix)]
+fn normalize_dummy_codex_script(script: &str) -> Cow<'_, str> {
+    const ENV_BASH_SHEBANG: &str = "#!/usr/bin/env bash";
+
+    let Some(rest) = script.strip_prefix(ENV_BASH_SHEBANG) else {
+        return Cow::Borrowed(script);
+    };
+
+    // The app-server tests intentionally use bash features like `pipefail` and `[[ ... ]]`.
+    // Resolving the interpreter once avoids depending on the ambient PATH when `/usr/bin/env`
+    // later launches the script in a different test environment.
+    let bash = dummy_codex_bash_path();
+    Cow::Owned(format!("#!{}{rest}", bash.display()))
+}
+
+#[cfg(windows)]
+fn normalize_dummy_codex_script(script: &str) -> Cow<'_, str> {
+    Cow::Borrowed(script)
+}
+
+#[cfg(unix)]
+fn dummy_codex_bash_path() -> &'static Path {
+    static BASH_PATH: OnceLock<PathBuf> = OnceLock::new();
+    BASH_PATH
+        .get_or_init(|| which::which("bash").expect("find bash for dummy codex tests"))
+        .as_path()
+}
+
 /// Write a `Potter.ProjectStop` command hook that captures its stdin into `hook_output_path`.
 pub fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_path: &Path) {
     let hooks_json = serde_json::json!({
@@ -99,4 +132,37 @@ pub async fn lock_dummy_codex_test() -> tokio::sync::MutexGuard<'static, ()> {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_dummy_codex_script;
+    use pretty_assertions::assert_eq;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_dummy_codex_script_runs_even_when_path_does_not_resolve_bash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = temp.path().join("dummy-codex");
+
+        write_dummy_codex_script(
+            &script_path,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf 'ok\n'
+"#,
+        );
+
+        let output = std::process::Command::new(&script_path)
+            .env("PATH", "/definitely-missing")
+            .output()
+            .expect("run dummy codex");
+
+        assert!(
+            output.status.success(),
+            "dummy codex stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+    }
 }
