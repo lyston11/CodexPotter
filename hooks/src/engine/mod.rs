@@ -172,71 +172,49 @@ impl HooksEngine {
     }
 }
 
+fn hook_failure_entries(
+    primary_message: String,
+    run_result: &command_runner::CommandRunResult,
+) -> Vec<HookOutputEntry> {
+    let mut entries = vec![HookOutputEntry {
+        kind: HookOutputEntryKind::Error,
+        text: primary_message,
+    }];
+    if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
+        entries.push(HookOutputEntry {
+            kind: HookOutputEntryKind::Error,
+            text: stderr,
+        });
+    }
+    if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
+        entries.push(HookOutputEntry {
+            kind: HookOutputEntryKind::Error,
+            text: format!("stdout: {stdout}"),
+        });
+    }
+    entries
+}
+
 fn parse_project_stop_completed(
     handler: &ConfiguredHandler,
     run_result: command_runner::CommandRunResult,
     turn_id: Option<String>,
 ) -> HookCompletedEvent {
     let (status, entries) = match run_result.error.as_deref() {
-        Some(error) => {
-            let mut entries = vec![HookOutputEntry {
-                kind: HookOutputEntryKind::Error,
-                text: error.to_string(),
-            }];
-            if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: stderr,
-                });
-            }
-            if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: format!("stdout: {stdout}"),
-                });
-            }
-            (HookRunStatus::Failed, entries)
-        }
+        Some(error) => (
+            HookRunStatus::Failed,
+            hook_failure_entries(error.to_string(), &run_result),
+        ),
         None => match run_result.exit_code {
             Some(0) => (HookRunStatus::Completed, Vec::new()),
-            Some(code) => {
-                let mut entries = vec![HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: format!("hook exited with code {code}"),
-                }];
-                if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Error,
-                        text: stderr,
-                    });
-                }
-                if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Error,
-                        text: format!("stdout: {stdout}"),
-                    });
-                }
-                (HookRunStatus::Failed, entries)
-            }
-            None => {
-                let mut entries = vec![HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: "hook exited without an exit code".to_string(),
-                }];
-                if let Some(stderr) = common::trimmed_non_empty(&run_result.stderr) {
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Error,
-                        text: stderr,
-                    });
-                }
-                if let Some(stdout) = common::trimmed_non_empty(&run_result.stdout) {
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Error,
-                        text: format!("stdout: {stdout}"),
-                    });
-                }
-                (HookRunStatus::Failed, entries)
-            }
+            Some(code) => (
+                HookRunStatus::Failed,
+                hook_failure_entries(format!("hook exited with code {code}"), &run_result),
+            ),
+            None => (
+                HookRunStatus::Failed,
+                hook_failure_entries("hook exited without an exit code".to_string(), &run_result),
+            ),
         },
     };
 
