@@ -44,8 +44,8 @@ fn prepare_project_stop_hook_request(
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_lines)
         .with_context(|| format!("parse {}", potter_rollout_path.display()))?;
 
-    let mut all_session_ids = Vec::new();
-    let mut all_assistant_messages = Vec::new();
+    let mut completed_session_ids = Vec::new();
+    let mut completed_assistant_messages = Vec::new();
     let mut warnings = Vec::new();
 
     let read_round_message = |round_label: &str,
@@ -81,7 +81,7 @@ fn prepare_project_stop_hook_request(
             }
         };
 
-        all_session_ids.push(thread_id.map(|id| id.to_string()).unwrap_or_default());
+        completed_session_ids.push(thread_id.map(|id| id.to_string()).unwrap_or_default());
 
         let message = match rollout_path {
             Some(rollout_path) => {
@@ -89,9 +89,30 @@ fn prepare_project_stop_hook_request(
             }
             None => String::new(),
         };
-        all_assistant_messages.push(message);
+        completed_assistant_messages.push(message);
     }
 
+    let baseline_round_count = if baseline_round_count > completed_session_ids.len() {
+        let recorded_rounds = completed_session_ids.len();
+        warnings.push(format!(
+            "Potter.ProjectStop hooks: baseline round count {baseline_round_count} exceeds recorded completed rounds {recorded_rounds}; treating as empty new_* window",
+        ));
+        completed_session_ids.len()
+    } else {
+        baseline_round_count
+    };
+
+    let new_session_ids = completed_session_ids
+        .get(baseline_round_count..)
+        .unwrap_or_default()
+        .to_vec();
+    let new_assistant_messages = completed_assistant_messages
+        .get(baseline_round_count..)
+        .unwrap_or_default()
+        .to_vec();
+
+    let mut all_session_ids = completed_session_ids;
+    let mut all_assistant_messages = completed_assistant_messages;
     if let Some(unfinished) = &index.unfinished_round {
         all_session_ids.push(unfinished.thread_id.to_string());
         let message = read_round_message(
@@ -102,25 +123,6 @@ fn prepare_project_stop_hook_request(
         );
         all_assistant_messages.push(message);
     }
-
-    let baseline_round_count = if baseline_round_count > all_session_ids.len() {
-        let recorded_rounds = all_session_ids.len();
-        warnings.push(format!(
-            "Potter.ProjectStop hooks: baseline round count {baseline_round_count} exceeds recorded rounds {recorded_rounds}; treating as empty new_* window",
-        ));
-        all_session_ids.len()
-    } else {
-        baseline_round_count
-    };
-
-    let new_session_ids = all_session_ids
-        .get(baseline_round_count..)
-        .unwrap_or_default()
-        .to_vec();
-    let new_assistant_messages = all_assistant_messages
-        .get(baseline_round_count..)
-        .unwrap_or_default()
-        .to_vec();
 
     Ok(PreparedProjectStopHookRequest {
         request: ProjectStopRequest {
@@ -246,6 +248,8 @@ pub async fn build_project_stop_hook_events(
 mod tests {
     use std::path::PathBuf;
 
+    use codex_protocol::ThreadId;
+    use codex_protocol::protocol::PotterRoundOutcome;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -304,6 +308,121 @@ mod tests {
         assert!(
             format!("{err:#}").contains("potter-rollout is empty"),
             "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn prepare_project_stop_hook_request_excludes_unfinished_round_from_new_slices() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+        let progress_file_rel = PathBuf::from(".codexpotter/projects/2026/04/21/1/MAIN.md");
+        let progress_file = workdir.join(&progress_file_rel);
+        std::fs::create_dir_all(progress_file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&progress_file, "---\nstatus: open\n---\n").expect("write progress file");
+
+        let upstream_1 = workdir.join("upstream-1.jsonl");
+        let upstream_2 = workdir.join("upstream-2.jsonl");
+        std::fs::write(
+            &upstream_1,
+            r#"{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"round 1 final","phase":"final_answer"}}
+"#,
+        )
+        .expect("write upstream 1");
+        std::fs::write(
+            &upstream_2,
+            r#"{"timestamp":"2026-03-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"round 2 partial","phase":"final_answer"}}
+"#,
+        )
+        .expect("write upstream 2");
+
+        let upstream_1 = upstream_1.canonicalize().expect("canonical upstream 1");
+        let upstream_2 = upstream_2.canonicalize().expect("canonical upstream 2");
+
+        let potter_rollout_path = workdir.join("potter-rollout.jsonl");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::ProjectStarted {
+                user_message: Some("hello".to_string()),
+                user_prompt_file: progress_file_rel.clone(),
+            },
+        )
+        .expect("append project_started");
+
+        let thread_id_1 =
+            ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c111").expect("thread id 1");
+        let thread_id_2 =
+            ThreadId::from_string("019ca423-63d9-7641-ae83-db060ad3c222").expect("thread id 2");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 1,
+                total: 2,
+            },
+        )
+        .expect("append round 1 started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id: thread_id_1,
+                rollout_path: upstream_1,
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round 1 configured");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundFinished {
+                outcome: PotterRoundOutcome::Completed,
+                duration_secs: 0,
+            },
+        )
+        .expect("append round 1 finished");
+
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundStarted {
+                current: 2,
+                total: 2,
+            },
+        )
+        .expect("append round 2 started");
+        crate::workflow::rollout::append_line(
+            &potter_rollout_path,
+            &crate::workflow::rollout::PotterRolloutLine::RoundConfigured {
+                thread_id: thread_id_2,
+                rollout_path: upstream_2,
+                service_tier: None,
+                rollout_path_raw: None,
+                rollout_base_dir: None,
+            },
+        )
+        .expect("append round 2 configured");
+
+        let prepared = prepare_project_stop_hook_request(
+            workdir,
+            progress_file.clone(),
+            progress_file.parent().expect("parent").to_path_buf(),
+            &potter_rollout_path,
+            /*baseline_round_count*/ 1,
+            "succeeded",
+        )
+        .expect("prepare hook request");
+
+        assert_eq!(
+            prepared.request.all_session_ids,
+            vec![thread_id_1.to_string(), thread_id_2.to_string()]
+        );
+        assert_eq!(prepared.request.new_session_ids, Vec::<String>::new());
+        assert_eq!(
+            prepared.request.all_assistant_messages,
+            vec!["round 1 final".to_string(), "round 2 partial".to_string()]
+        );
+        assert_eq!(
+            prepared.request.new_assistant_messages,
+            Vec::<String>::new()
         );
     }
 }
