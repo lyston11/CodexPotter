@@ -1889,6 +1889,64 @@ codexpotter project file: .codexpotter/projects/2026/03/27/1/MAIN.md\n\
     }
 
     #[test]
+    fn status_hint_dedups_repeated_headers_across_commentary_and_reasoning() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(12));
+        let commentary = renderer
+            .handle_event(&EventMsg::AgentMessage(
+                codex_protocol::protocol::AgentMessageEvent {
+                    message: "**Inspecting**\n\nWorking...".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                },
+            ))
+            .expect("commentary agent message");
+        assert_eq!(commentary, vec!["@12s: Inspecting".to_string()]);
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(18));
+        let reasoning = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "**Inspecting**".to_string(),
+            }))
+            .expect("reasoning delta");
+        assert!(reasoning.is_empty());
+    }
+
+    #[test]
+    fn status_hint_header_resets_when_a_new_turn_starts() {
+        let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+        }));
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(12));
+        let first = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "**Inspecting**".to_string(),
+            }))
+            .expect("first reasoning delta");
+        assert_eq!(first, vec!["@12s: Inspecting".to_string()]);
+
+        let _ = renderer.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-2".to_string(),
+            model_context_window: None,
+        }));
+
+        renderer.status_started_at = Some(Instant::now() - Duration::from_secs(18));
+        let second = renderer
+            .handle_event(&EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                delta: "**Inspecting**".to_string(),
+            }))
+            .expect("second reasoning delta");
+        assert_eq!(second, vec!["@18s: Inspecting".to_string()]);
+    }
+
+    #[test]
     fn minimal_patch_barrier_does_not_flush_inflight_commentary_delta() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
         let repo = synthetic_absolute_path(&["repo"]);
