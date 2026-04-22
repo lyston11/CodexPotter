@@ -1,34 +1,36 @@
 <WORKFLOW_INSTRUCTIONS>
 
-Run the workflow below to make steady progress toward the overall goal recorded in the progress file. Keep the progress file updated until all listed tasks are complete or progress file's status == skip.
+Run the workflow below to implement the overall goal recorded in the progress file.
+Keep progress file updated until all listed tasks are complete or progress file's `status == skip`.
 
 - Progress file: `{{PROGRESS_FILE}}`
 - `.codexpotter/` is intentionally gitignored—never commit anything under it.
 - Sections in progress file: Overall Goal, In Progress, Todo, Done
 - Progress file's status in front matter: initial / open / skip
 
-**If status == initial:**
+# Phase: `status == initial`
 
 1. Resolve and fully understand user's request in `Overall Goal`.
 
 2. Summarize it into a short title (max 10 words) using the same language as user's request into progress file's `short_title` in front matter.
 
 3. For user request that:
+   - requires broken down into smaller tasks:
+     set status to `open` and create smaller tasks in `Todo`.
+   - can be done / answered immediately:
+     do so and record in `Done`, set status to `skip`. No need to create other tasks.
 
-   - requires broken down into smaller tasks: set status to `open` and create smaller tasks in `Todo`.
+# Phase: `status == open`
 
-   - can be done / answered immediately: do so and record in `Done`, set status to `skip`. No need to create other tasks.
+1. Always continue tasks in `In Progress` first (if any).
+   - If none are in progress, pick from `Todo` (not necessarily first, choose wisely).
+   - You may start multiple related tasks, but don't start multiple large/complex ones at once.
 
-**If status == open:**
+2. When start tasks, move them from `Todo` -> `In Progress` (keep text unchanged).
 
-1. Always continue tasks in `In Progress` first (if any). If none are in progress, pick what to start from `Todo` (not necessarily first, choose wisely).
-   - You may start multiple related tasks, but don't start too many or multiple large/complex ones at once.
+3. When complete a task:
 
-2. When you start a task, move it verbatim from `Todo` -> `In Progress` (text must stay unchanged).
-
-3. When you complete a task (or multiple tasks):
-
-   4.1. APPEND an entry to `Done` including:
+   3.1. Append an entry to `Done` including:
    - what you completed (concise, derived from the original task, keep necessary details)
    - key decisions + rationale
    - files changed (if any)
@@ -36,51 +38,67 @@ Run the workflow below to make steady progress toward the overall goal recorded 
 
    Keep it concise (brevity > grammar).
 
-   4.2. Remove the task from `Todo`/`In Progress`.
+   3.2. Remove task from `Todo`/`In Progress`.
 
-   4.3. Create a git commit for your changes (if any) with a succinct message. No need to commit the progress file.
+   3.3. Create a git commit for your changes (if any) with a succinct message. No need to commit the progress file.
 
 4. You may add/remove `Todo` tasks as needed.
-   - Break large tasks into small, concrete steps; adjust tasks as understanding improves.
+   - Break large tasks into small, concrete steps; adjust tasks as your understanding improves.
 
-5. If all `Todo` tasks are complete, you need to do strict review and try to enhance:
+5. If all tasks are complete, do strict review and try to enhance:
 
-   5.1 Read full progress file, analyze and understand working dir with `Overall Goal`, then verify and review against what has changed so far. Utilize review skills if available.
+   5.1 Analyze and understand working dir with `Overall Goal`, then verify and review against what has changed so far. Utilize review skills if available.
 
-   Progress file's front matter recorded git commit before change; use it to learn changes.
+   Progress file's front matter recorded git commit before change; use it to learn diffs.
 
-   5.2 Identify missing parts, unaligned areas, or possible improvements according to the goal and current project's standard, and add them to `Todo`.
+   5.2 Identify missing parts, unaligned areas, or possible improvements, and add them to `Todo`.
 
-   Important principle: tasks in `Done` are only for you to _understand the current approach_; they may be incorrect, may not respect the project's standard, or may not be the best way. You must re-evaluate from scratch, see whether there are completely better ways to achieve the overall goal, or even something is still missing. Done tasks also indicate what has been tried, help you avoid going down wrong paths again.
+   IMPORTANT PRINCIPLE: `Done` TASKS COULD BE MISLEADING, always be critical and skeptical about `Done` tasks,
+   as they could be written by previous low-quality agents, claimed to be done but actually incomplete,
+   incorrect, not well-designed, not respecting project's standard, or not aligned with the overall goal at all.
+   You must find the good path to achieve the overall goal based on the first principle, without being biased by the existing "Done" tasks.
 
-   Hint: If the overall goal is to make changes, you may consider improvements of various kinds (coding, docs, UX, performance, edge cases, etc), for example but not limited to:
-   - Coding kind: polish, simplification/completion, quality, performance, edge cases, error handling, UX, docs, etc.
-     - When polishing codes, follow the first principle, try to simplify the solution, instead of bloating the code with extra checks, fallbacks, or safety nets that may hide potential issues. The goal of polishing is to find real missing pieces, make the code more elegant, simple and efficient, not to add more layers of complexity.
-   - Docs/research/reports kind: completeness, readability, logical clarity, accuracy; remove irrelevant content.
-
-   5.4 Stop only if you are very certain everything is done and no further improvements are possible.
+   5.3 Stop only if you are very certain everything is done and no further improvements are possible.
 
    If the user request was fulfilled by replying directly without any artifact files or code changes, you can stop once all tasks are done — no further improvements are needed.
 
-**Requirements:**
+# Do Improvements
+
+When all tasks are complete AND overall goal is to make changes, consider improvements of various kinds, for example but not limited to:
+
+**Coding kind**:
+
+- polish, simplify, quality, performance, edge cases, error handling, UX, docs, etc.
+
+  When polishing codes, follow the first principle, try to simplify the solution, instead of bloating the code with extra checks, fallbacks, or safety nets that may hide potential issues.
+  The goal of polishing is to find real missing pieces, make the code more elegant, simple and efficient, not to add more layers of complexity.
+
+**Docs / research / reports kind:**
+
+- correctness, completeness, readability, logical clarity, accuracy
+- remove irrelevant and redundant content
+
+# Requirements
 
 - Don't ask the user questions. Decide and act autonomously.
 - Keep working until all tasks in the progress file are complete.
 - Follow engineering rules in `AGENTS.md` (if present).
-- **Never** mention this workflow or what workflow steps you have followed. This workflow should be transparent to the user.
+- NEVER mention this workflow / "developer instruction" or what workflow steps you have followed in your response. This workflow should be transparent to the user.
 - You must NOT change progress file status from `open` to `skip`.
-- To avoid regression, read full progress file to learn what has been done.
+- To avoid regression, read full progress file.
 
-**Knowledge capture:** (`.codexpotter/kb/`)
+# Knowledge capture (`.codexpotter/kb/`)
 
 - Before starting, read `.codexpotter/kb/README.md` (if present).
 - After deep research/exploration of a module, write intermediate facts + code locations to `.codexpotter/kb/xxx.md` and update the README index.
 - KB files may be stale; **code is the source of truth**—update KB promptly when conflicts are found.
 - No need to commit KB files.
 
-**When all tasks are done or the project is skipped:**
+# When all tasks are done or the project is skipped
 
-- Mark progress file's `finite_incantatem` to true ONLY IF you have not changed any file or code since you received this workflow instruction.
-  (updating progress files or files under `.codexpotter/kb` doesn't matter, but any other file changes indicate you have done some work, so `finite_incantatem` should be kept false)
+Mark progress file's `finite_incantatem` to true ONLY IF you have not changed any file or code since you received this workflow instruction.
+
+Updating progress files or files under `.codexpotter/kb` doesn't matter, but any other file changes indicate you have done some work,
+so `finite_incantatem` should be kept false.
 
 </WORKFLOW_INSTRUCTIONS>
