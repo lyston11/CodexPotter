@@ -10,6 +10,7 @@
 //! - it emits dim timestamped status hints when reasoning changes the live shimmer header, because
 //!   exec has no mutable status bar; these hints omit the interactive round-prefix shimmer chrome
 //!   and only surface `context left` when usage first crosses each 10% threshold
+//! - it does not emit the interactive `─ Round finished in … ─` separator line
 //! - it renders CodexPotter round / summary markers as plain text blocks instead of interactive
 //!   transcript chrome
 
@@ -281,16 +282,9 @@ impl ExecHumanRenderer {
                     git_commit_end: git_commit_end.clone(),
                 });
             }
-            EventMsg::PotterRoundFinished { duration_secs, .. } => {
+            EventMsg::PotterRoundFinished { .. } => {
                 out.extend(self.flush_agent_output(false)?);
                 out.extend(self.flush_plan_stream()?);
-                if *duration_secs > 0 {
-                    out.push(self.render_cell_block(Box::new(
-                        crate::history_cell_potter::PotterRoundFinishedSeparator::new(
-                            *duration_secs,
-                        ),
-                    ))?);
-                }
                 if let Some(summary) = self.pending_project_summary.take() {
                     out.push(self.render_project_summary(summary)?);
                 }
@@ -1473,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn round_finished_separator_precedes_summary_when_duration_is_available() {
+    fn summary_is_emitted_without_round_finished_separator_when_duration_is_available() {
         let mut renderer = ExecHumanRenderer::new(Verbosity::Minimal, Some(120), false);
         let blocks = renderer
             .handle_event(&EventMsg::PotterProjectBudgetExhausted {
@@ -1491,14 +1485,14 @@ mod tests {
                 outcome: codex_protocol::protocol::PotterRoundOutcome::Completed,
                 duration_secs: 733,
             })
-            .expect("emit separator and summary");
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks[0].contains("Round finished in 12m 13s"));
+            .expect("emit summary");
+        assert_eq!(blocks.len(), 1);
         assert!(
-            blocks[1].starts_with("CodexPotter summary: 5 rounds in 2h 02m 08s"),
+            blocks[0].starts_with("CodexPotter summary: 5 rounds in 2h 02m 08s"),
             "unexpected summary block: {:?}",
-            blocks[1]
+            blocks[0]
         );
+        assert!(!blocks[0].contains("Round finished in"));
     }
 
     #[test]

@@ -56,10 +56,11 @@ Divergences must be documented in places below to avoid regression when syncing 
 - Consecutive `Viewed Image` items are coalesced into one block in Simple mode, preserve event order, and render live as new paths arrive; Minimal mode hides them.
 - Consecutive `Searched` items are coalesced into one block in Simple mode and render live as new queries arrive; Minimal mode hides them.
 - Additional codex-potter items (e.g. project creation hints, stream recovery retries, project-finished summary on success / budget exhaustion).
-- After each CodexPotter round finishes, emits a dim `─ Round finished in … ─` separator line in the transcript (before any CodexPotter summary blocks).
+- In interactive mode, after each CodexPotter round finishes, emits a dim `─ Round finished in … ─` separator line in the transcript (before any CodexPotter summary blocks).
 - `codex-potter exec` without `--json`:
   - renders content similar to interactive mode, respect verbosity, but in append-only way — never folds/coalesces prior output.
   - additionally emits the text of the shimmer when it changes.
+  - does not emit the dim `─ Round finished in … ─` separator line.
 
 ### Shimmer
 
