@@ -285,6 +285,7 @@ impl PotterRoundEventBridge {
 mod tests {
     use super::*;
 
+    use crate::app_server::test_support::read_project_stop_hook_payload;
     use crate::app_server::test_support::write_project_stop_hook_capture;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
@@ -518,10 +519,7 @@ potter.xmodel: {potter_xmodel}
             "expected HookCompleted event, got {injected:?}"
         );
 
-        let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
-        )
-        .expect("parse hook input json");
+        let payload = read_project_stop_hook_payload(&hook_output_path);
 
         let expected_project_file_path = workdir.join(&progress_file_rel);
         let expected_project_dir = expected_project_file_path
@@ -686,10 +684,7 @@ potter.xmodel: {potter_xmodel}
             Some(EventMsg::PotterProjectBudgetExhausted { rounds: 1, .. })
         ));
 
-        let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
-        )
-        .expect("parse hook input json");
+        let payload = read_project_stop_hook_payload(&hook_output_path);
         assert_eq!(
             payload
                 .get("stop_reason_code")
@@ -785,10 +780,7 @@ potter.xmodel: {potter_xmodel}
             "expected HookStarted event, got {injected:?}"
         );
 
-        let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
-        )
-        .expect("parse hook input json");
+        let payload = read_project_stop_hook_payload(&hook_output_path);
         assert_eq!(
             payload
                 .get("stop_reason_code")
@@ -882,10 +874,7 @@ potter.xmodel: {potter_xmodel}
             "expected HookStarted event, got {injected:?}"
         );
 
-        let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
-        )
-        .expect("parse hook input json");
+        let payload = read_project_stop_hook_payload(&hook_output_path);
         assert_eq!(
             payload
                 .get("stop_reason_code")
@@ -1071,10 +1060,7 @@ potter.xmodel: {potter_xmodel}
             Some(EventMsg::PotterProjectBudgetExhausted { rounds: 1, .. })
         ));
 
-        let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
-        )
-        .expect("parse hook input json");
+        let payload = read_project_stop_hook_payload(&hook_output_path);
 
         assert_eq!(
             payload

@@ -63,6 +63,12 @@ pub fn write_project_stop_hook_capture(hooks_codex_home_dir: &Path, hook_output_
     .expect("write hooks.json");
 }
 
+/// Read the captured stdin payload from a `Potter.ProjectStop` test hook.
+pub fn read_project_stop_hook_payload(hook_output_path: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(hook_output_path).expect("read hook input"))
+        .expect("parse hook input json")
+}
+
 #[cfg(any(unix, windows))]
 pub async fn lock_dummy_codex_test() -> tokio::sync::MutexGuard<'static, ()> {
     static DUMMY_CODEX_TEST_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> =

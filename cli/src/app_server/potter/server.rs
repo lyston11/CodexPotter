@@ -2144,6 +2144,8 @@ mod tests {
     #[cfg(unix)]
     use crate::app_server::test_support::lock_dummy_codex_test;
     #[cfg(unix)]
+    use crate::app_server::test_support::read_project_stop_hook_payload;
+    #[cfg(unix)]
     use crate::app_server::test_support::write_dummy_codex_script;
     #[cfg(unix)]
     use crate::app_server::test_support::write_project_stop_hook_capture;
@@ -4144,10 +4146,7 @@ git_branch: "main"
             "expected HookCompleted event, got {events:?}"
         );
 
-        let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&hook_output_path).expect("read hook input"),
-        )
-        .expect("parse hook input json");
+        let payload = read_project_stop_hook_payload(&hook_output_path);
 
         let expected_project_file_path = workdir.join(&progress_file_rel);
         let expected_project_dir = expected_project_file_path
