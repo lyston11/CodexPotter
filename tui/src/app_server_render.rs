@@ -691,7 +691,7 @@ impl AppServerEventProcessor {
     /// pending `Verbosity::Minimal` agent message / compact patch preview so
     /// transcript-suppressed protocol events cannot break coalescing.
     fn emit_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
-        self.flush_pending_minimal_agent_message(false);
+        self.flush_pending_minimal_agent_message();
         self.flush_pending_compact_patch_changes();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
@@ -702,14 +702,11 @@ impl AppServerEventProcessor {
         lines
     }
 
-    fn insert_agent_message_lines_direct(&mut self, mut lines: Vec<Line<'static>>, dim: bool) {
+    fn insert_agent_message_lines_direct(&mut self, lines: Vec<Line<'static>>) {
         if lines.is_empty() {
             return;
         }
         self.clear_pending_minimal_commentary();
-        if dim {
-            dim_lines(&mut lines);
-        }
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             history_cell::AgentMessageCell::new(lines, true),
         )));
@@ -741,11 +738,11 @@ impl AppServerEventProcessor {
         self.pending_minimal_commentary_message_lines = (!lines.is_empty()).then_some(lines);
     }
 
-    fn flush_pending_minimal_agent_message(&mut self, dim: bool) {
+    fn flush_pending_minimal_agent_message(&mut self) {
         let Some(lines) = self.pending_minimal_agent_message_lines.take() else {
             return;
         };
-        self.insert_agent_message_lines_direct(lines, dim);
+        self.insert_agent_message_lines_direct(lines);
     }
 
     fn store_pending_minimal_agent_message(&mut self, lines: Vec<Line<'static>>) {
@@ -753,7 +750,7 @@ impl AppServerEventProcessor {
             return;
         }
         self.clear_pending_minimal_commentary();
-        self.flush_pending_minimal_agent_message(false);
+        self.flush_pending_minimal_agent_message();
         self.pending_minimal_agent_message_lines = Some(lines);
     }
 
@@ -764,9 +761,9 @@ impl AppServerEventProcessor {
     /// history, otherwise commentary deltas leak as normal agent messages.
     fn flush_barrier_agent_output(&mut self) {
         if self.verbosity == Verbosity::Minimal {
-            self.flush_pending_minimal_agent_message(false);
+            self.flush_pending_minimal_agent_message();
         } else {
-            self.flush_agent_output(false);
+            self.flush_agent_output();
         }
     }
 
@@ -779,24 +776,24 @@ impl AppServerEventProcessor {
         if self.verbosity == Verbosity::Minimal && self.saw_agent_delta {
             self.discard_streamed_agent_message_lines();
         } else {
-            self.flush_agent_output(false);
+            self.flush_agent_output();
         }
     }
 
-    fn flush_agent_output(&mut self, _final_message: bool) {
+    fn flush_agent_output(&mut self) {
         if self.verbosity == Verbosity::Minimal {
             if self.saw_agent_delta {
                 let lines = self.take_streamed_agent_message_lines();
-                self.insert_agent_message_lines_direct(lines, false);
+                self.insert_agent_message_lines_direct(lines);
             } else {
-                self.flush_pending_minimal_agent_message(false);
+                self.flush_pending_minimal_agent_message();
             }
             return;
         }
 
         if self.saw_agent_delta {
             let lines = self.take_streamed_agent_message_lines();
-            self.insert_agent_message_lines_direct(lines, false);
+            self.insert_agent_message_lines_direct(lines);
         }
     }
 
@@ -809,7 +806,7 @@ impl AppServerEventProcessor {
     fn flush_live_transcript_buffers(&mut self) {
         self.flush_pending_live_activity_cells();
         self.clear_pending_minimal_commentary();
-        self.flush_agent_output(false);
+        self.flush_agent_output();
         self.flush_plan_stream();
         self.flush_pending_compact_patch_changes();
     }
@@ -996,7 +993,7 @@ impl AppServerEventProcessor {
             EventMsg::AgentMessageDelta(ev) => {
                 self.flush_pending_live_activity_cells();
                 if self.verbosity == Verbosity::Minimal && !self.saw_agent_delta {
-                    self.flush_pending_minimal_agent_message(false);
+                    self.flush_pending_minimal_agent_message();
                 }
                 if !self.saw_agent_delta && self.verbosity != Verbosity::Minimal {
                     self.maybe_emit_final_message_separator();
@@ -1060,7 +1057,7 @@ impl AppServerEventProcessor {
 
                 if self.saw_agent_delta {
                     let lines = self.take_agent_message_lines(&ev.message);
-                    self.insert_agent_message_lines_direct(lines, false);
+                    self.insert_agent_message_lines_direct(lines);
                     return;
                 }
 
@@ -1078,13 +1075,10 @@ impl AppServerEventProcessor {
                     if self.saw_agent_delta {
                         self.discard_streamed_agent_message_lines();
                     }
-                    self.insert_agent_message_lines_direct(
-                        self.build_agent_message_lines(message),
-                        false,
-                    );
+                    self.insert_agent_message_lines_direct(self.build_agent_message_lines(message));
                     self.turn_has_non_commentary_agent_message = true;
                 } else {
-                    self.flush_agent_output(true);
+                    self.flush_agent_output();
                 }
                 self.flush_plan_stream();
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
@@ -1173,7 +1167,7 @@ impl AppServerEventProcessor {
                     self.discard_plan_output();
                     return;
                 }
-                self.flush_agent_output(false);
+                self.flush_agent_output();
                 self.needs_final_message_separator = true;
                 self.emit_history_cell(Box::new(history_cell::new_plan_update(ev)));
             }
@@ -1184,7 +1178,7 @@ impl AppServerEventProcessor {
 
                 // Align with upstream behavior: flush any newline-gated agent output before
                 // rendering the tool result so ordering matches "agent explains -> tool runs -> agent continues".
-                self.flush_agent_output(false);
+                self.flush_agent_output();
                 self.flush_plan_stream();
 
                 self.flush_pending_exploring_cell();
@@ -1198,7 +1192,7 @@ impl AppServerEventProcessor {
             }
             EventMsg::ViewImageToolCall(ev) => {
                 if self.verbosity == Verbosity::Simple {
-                    self.flush_agent_output(false);
+                    self.flush_agent_output();
                     self.flush_plan_stream();
                     self.flush_pending_exploring_cell();
                     self.flush_pending_success_ran_cell();
@@ -1213,7 +1207,7 @@ impl AppServerEventProcessor {
                 // before rendering the tool result, so transcript ordering matches the semantic
                 // "agent explains -> tool runs -> agent continues" flow.
                 if self.verbosity != Verbosity::Minimal {
-                    self.flush_agent_output(false);
+                    self.flush_agent_output();
                     self.flush_plan_stream();
                 }
 
