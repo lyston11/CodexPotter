@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
-const CODEX_POTTER_TITLE_PREFIX: &str = "CodexPotter|";
+const CODEX_POTTER_TITLE_PREFIX: &str = "CodexPotter | ";
 
 /// Returns the CodexPotter terminal title for an interactive session in `workdir`.
 pub fn codexpotter_terminal_title(workdir: &Path) -> String {
@@ -50,7 +50,7 @@ mod tests {
     fn codexpotter_terminal_title_includes_prefix_and_workdir() {
         assert_eq!(
             codexpotter_terminal_title(&PathBuf::from("workdir")),
-            "CodexPotter|workdir".to_string()
+            "CodexPotter | workdir".to_string()
         );
     }
 
@@ -58,7 +58,7 @@ mod tests {
     fn codexpotter_terminal_title_sanitizes_control_chars() {
         assert_eq!(
             codexpotter_terminal_title(&PathBuf::from("work\ndir")),
-            "CodexPotter|work dir".to_string()
+            "CodexPotter | work dir".to_string()
         );
     }
 }
