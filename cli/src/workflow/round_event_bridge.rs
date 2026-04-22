@@ -18,9 +18,10 @@ use std::time::Instant;
 use anyhow::Context;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::PotterProjectOutcome;
 use codex_protocol::protocol::PotterRoundOutcome;
 use codex_protocol::protocol::SessionConfiguredEvent;
+
+use crate::workflow::project_stop_hooks::PotterProjectStopReason;
 
 /// Configuration for [`PotterRoundEventBridge`].
 #[derive(Debug, Clone)]
@@ -139,7 +140,7 @@ impl PotterRoundEventBridge {
         duration_secs: u64,
     ) -> anyhow::Result<Vec<Event>> {
         let mut injected = Vec::new();
-        let mut hook_project_outcome = None;
+        let mut hook_stop_reason = None;
         let is_last_round = self.round_current == self.round_total;
 
         match outcome {
@@ -198,7 +199,7 @@ impl PotterRoundEventBridge {
                                 git_commit_end,
                             },
                         });
-                        hook_project_outcome = Some(PotterProjectOutcome::Succeeded);
+                        hook_stop_reason = Some(PotterProjectStopReason::Succeeded);
                     }
                 } else if is_last_round {
                     let git_commit_end =
@@ -214,25 +215,22 @@ impl PotterRoundEventBridge {
                             git_commit_end,
                         },
                     });
-                    hook_project_outcome = Some(PotterProjectOutcome::BudgetExhausted);
+                    hook_stop_reason = Some(PotterProjectStopReason::BudgetExhausted);
                 }
             }
             PotterRoundOutcome::UserRequested => {
-                hook_project_outcome = Some(PotterProjectOutcome::Fatal {
-                    message: "user requested".to_string(),
-                });
+                // `PotterProjectOutcome` has no `UserRequested` variant. Hooks only need the
+                // stable stop-reason code, so normalize this directly to the fatal bucket instead
+                // of fabricating a project outcome to recover `"fatal"` later.
+                hook_stop_reason = Some(PotterProjectStopReason::Fatal);
             }
-            PotterRoundOutcome::TaskFailed { message } => {
-                hook_project_outcome = Some(PotterProjectOutcome::TaskFailed {
-                    message: message.clone(),
-                });
+            PotterRoundOutcome::TaskFailed { .. } => {
+                hook_stop_reason = Some(PotterProjectStopReason::TaskFailed);
             }
-            PotterRoundOutcome::Fatal { message } if is_last_round => {
+            PotterRoundOutcome::Fatal { .. } if is_last_round => {
                 // Fatal rounds only terminate the project when no later budgeted round exists to
                 // recover from transient failures.
-                hook_project_outcome = Some(PotterProjectOutcome::Fatal {
-                    message: message.clone(),
-                });
+                hook_stop_reason = Some(PotterProjectStopReason::Fatal);
             }
             _ => {}
         }
@@ -246,18 +244,14 @@ impl PotterRoundEventBridge {
         )
         .context("append potter-rollout round_finished")?;
 
-        if let Some(project_outcome) = hook_project_outcome.as_ref() {
-            let stop_reason_code =
-                crate::workflow::project_stop_hooks::potter_project_stop_reason_code(
-                    project_outcome,
-                );
+        if let Some(stop_reason) = hook_stop_reason {
             let mut hook_events =
                 crate::workflow::project_stop_hooks::build_project_stop_hook_events(
                     &self.workdir,
                     &self.progress_file_rel,
                     &self.potter_rollout_path,
                     self.baseline_round_count,
-                    stop_reason_code,
+                    stop_reason,
                     self.hooks_codex_home_dir.as_deref(),
                 )
                 .await;

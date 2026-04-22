@@ -684,9 +684,7 @@ async fn resolve_interrupt_project(
                 &user_prompt_file,
                 &potter_rollout_path,
                 baseline_round_count,
-                crate::workflow::project_stop_hooks::potter_project_stop_reason_code(
-                    &PotterProjectOutcome::Interrupted,
-                ),
+                crate::workflow::project_stop_hooks::PotterProjectStopReason::Interrupted,
                 state.config.hooks_codex_home_dir.as_deref(),
             )
             .await
@@ -1379,9 +1377,7 @@ async fn run_fresh_project(
                 next_round_index = initial_continue_round.round_current;
             }
             codex_tui::ExitReason::UserRequested => {
-                outcome = PotterProjectOutcome::Fatal {
-                    message: String::from("user requested"),
-                };
+                outcome = user_requested_project_outcome();
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
                 return Ok(ProjectRunExit::Completed);
             }
@@ -1501,9 +1497,7 @@ async fn run_fresh_project(
                 }
             }
             codex_tui::ExitReason::UserRequested => {
-                outcome = PotterProjectOutcome::Fatal {
-                    message: String::from("user requested"),
-                };
+                outcome = user_requested_project_outcome();
                 break;
             }
         }
@@ -1772,9 +1766,7 @@ async fn run_resumed_project(
                 next_round_current = initial_continue_round.round_current.saturating_add(1);
             }
             codex_tui::ExitReason::UserRequested => {
-                outcome = PotterProjectOutcome::Fatal {
-                    message: String::from("user requested"),
-                };
+                outcome = user_requested_project_outcome();
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
                 return Ok(ProjectRunExit::Completed);
             }
@@ -1889,9 +1881,7 @@ async fn run_resumed_project(
                 }
             }
             codex_tui::ExitReason::UserRequested => {
-                outcome = PotterProjectOutcome::Fatal {
-                    message: String::from("user requested"),
-                };
+                outcome = user_requested_project_outcome();
                 break;
             }
         }
@@ -2136,6 +2126,14 @@ fn exit_reason_from_outcome(outcome: &PotterRoundOutcome) -> codex_tui::ExitReas
             codex_tui::ExitReason::TaskFailed(message.clone())
         }
         PotterRoundOutcome::Fatal { message } => codex_tui::ExitReason::Fatal(message.clone()),
+    }
+}
+
+fn user_requested_project_outcome() -> PotterProjectOutcome {
+    // `PotterProjectOutcome` has no dedicated `UserRequested` variant. Project-level flows keep a
+    // single terminal bucket by normalizing user-requested exits to fatal with a stable message.
+    PotterProjectOutcome::Fatal {
+        message: String::from("user requested"),
     }
 }
 

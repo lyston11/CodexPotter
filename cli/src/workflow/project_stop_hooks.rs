@@ -13,7 +13,6 @@ use codex_hooks::ProjectStopRequest;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookStartedEvent;
-use codex_protocol::protocol::PotterProjectOutcome;
 use codex_protocol::protocol::WarningEvent;
 
 struct PreparedProjectStopHookRequest {
@@ -21,14 +20,29 @@ struct PreparedProjectStopHookRequest {
     warnings: Vec<String>,
 }
 
-/// Map a project outcome to the stable stop-reason code surfaced to `Potter.ProjectStop` hooks.
-pub fn potter_project_stop_reason_code(outcome: &PotterProjectOutcome) -> &'static str {
-    match outcome {
-        PotterProjectOutcome::Succeeded => "succeeded",
-        PotterProjectOutcome::Interrupted => "interrupted",
-        PotterProjectOutcome::BudgetExhausted => "budget_exhausted",
-        PotterProjectOutcome::TaskFailed { .. } => "task_failed",
-        PotterProjectOutcome::Fatal { .. } => "fatal",
+/// Stable stop-reason categories surfaced to `Potter.ProjectStop` hooks.
+///
+/// This is intentionally narrower than `PotterProjectOutcome`: hook payloads need only the stable
+/// reason code, while project outcomes may carry extra data such as failure messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PotterProjectStopReason {
+    Succeeded,
+    Interrupted,
+    BudgetExhausted,
+    TaskFailed,
+    Fatal,
+}
+
+impl PotterProjectStopReason {
+    /// Return the stable wire code written into `Potter.ProjectStop` hook payloads.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Interrupted => "interrupted",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::TaskFailed => "task_failed",
+            Self::Fatal => "fatal",
+        }
     }
 }
 
@@ -38,7 +52,7 @@ fn prepare_project_stop_hook_request(
     project_dir: PathBuf,
     potter_rollout_path: &Path,
     baseline_round_count: usize,
-    stop_reason_code: &'static str,
+    stop_reason: PotterProjectStopReason,
 ) -> anyhow::Result<PreparedProjectStopHookRequest> {
     let potter_lines = crate::workflow::rollout::read_project_rollout_lines(potter_rollout_path)?;
     let index = crate::workflow::rollout_resume_index::build_resume_index(&potter_lines)
@@ -134,7 +148,7 @@ fn prepare_project_stop_hook_request(
             new_session_ids,
             all_assistant_messages,
             new_assistant_messages,
-            stop_reason_code: stop_reason_code.to_string(),
+            stop_reason_code: stop_reason.code().to_string(),
         },
         warnings,
     })
@@ -154,7 +168,7 @@ pub async fn build_project_stop_hook_events(
     progress_file_rel: &Path,
     potter_rollout_path: &Path,
     baseline_round_count: usize,
-    stop_reason_code: &'static str,
+    stop_reason: PotterProjectStopReason,
     codex_home_dir: Option<&Path>,
 ) -> Vec<Event> {
     let hooks = Hooks::new(HooksConfig {
@@ -200,7 +214,7 @@ pub async fn build_project_stop_hook_events(
         new_session_ids: Vec::new(),
         all_assistant_messages: Vec::new(),
         new_assistant_messages: Vec::new(),
-        stop_reason_code: stop_reason_code.to_string(),
+        stop_reason_code: stop_reason.code().to_string(),
     };
 
     let preview_runs = hooks.preview_project_stop(&stub_request);
@@ -214,7 +228,7 @@ pub async fn build_project_stop_hook_events(
         project_dir,
         potter_rollout_path,
         baseline_round_count,
-        stop_reason_code,
+        stop_reason,
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -255,31 +269,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn potter_project_stop_reason_code_matches_contract() {
+    fn potter_project_stop_reason_matches_contract() {
+        assert_eq!(PotterProjectStopReason::Succeeded.code(), "succeeded");
+        assert_eq!(PotterProjectStopReason::Interrupted.code(), "interrupted");
         assert_eq!(
-            potter_project_stop_reason_code(&PotterProjectOutcome::Succeeded),
-            "succeeded"
-        );
-        assert_eq!(
-            potter_project_stop_reason_code(&PotterProjectOutcome::Interrupted),
-            "interrupted"
-        );
-        assert_eq!(
-            potter_project_stop_reason_code(&PotterProjectOutcome::BudgetExhausted),
+            PotterProjectStopReason::BudgetExhausted.code(),
             "budget_exhausted"
         );
-        assert_eq!(
-            potter_project_stop_reason_code(&PotterProjectOutcome::TaskFailed {
-                message: "failed".to_string(),
-            }),
-            "task_failed"
-        );
-        assert_eq!(
-            potter_project_stop_reason_code(&PotterProjectOutcome::Fatal {
-                message: "fatal".to_string(),
-            }),
-            "fatal"
-        );
+        assert_eq!(PotterProjectStopReason::TaskFailed.code(), "task_failed");
+        assert_eq!(PotterProjectStopReason::Fatal.code(), "fatal");
     }
 
     #[test]
@@ -300,7 +298,7 @@ mod tests {
             progress_file.parent().expect("parent").to_path_buf(),
             &potter_rollout_path,
             0,
-            "succeeded",
+            PotterProjectStopReason::Succeeded,
         )
         .err()
         .expect("expected empty rollout error");
@@ -407,7 +405,7 @@ mod tests {
             progress_file.parent().expect("parent").to_path_buf(),
             &potter_rollout_path,
             /*baseline_round_count*/ 1,
-            "succeeded",
+            PotterProjectStopReason::Succeeded,
         )
         .expect("prepare hook request");
 
