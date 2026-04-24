@@ -21,7 +21,9 @@ pub fn status_header_from_commentary(message: &str) -> Option<String> {
 
     trimmed
         .lines()
-        .find_map(|line| (!line.trim().is_empty()).then(|| line.trim().to_string()))
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]

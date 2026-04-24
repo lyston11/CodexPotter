@@ -45,21 +45,21 @@ struct OverlayMetrics {
     right_total_lines: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 /// Controls which footer hints are rendered in the projects overlay.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectsOverlayFooterMode {
     #[default]
     ListOverlay,
     ResumePicker,
 }
 
-#[derive(Debug, Default)]
 /// UI-only state machine for the inline projects list overlay (`Ctrl+L` / `/list`).
 ///
 /// Press `Tab` to toggle a maximized details view (hides the left projects list).
 ///
 /// This struct intentionally contains no filesystem/business logic; the CLI workflow layer owns
 /// discovery/detail loading and feeds results back through the provider channels.
+#[derive(Debug, Default)]
 pub struct ProjectsOverlay {
     open: bool,
     maximized: bool,
@@ -1016,22 +1016,15 @@ fn description_lines(project: &PotterProjectListEntry, wrap_width: usize) -> Vec
         return vec![String::new()];
     }
 
-    let wrap = textwrap::wrap(description, WrapOptions::new(wrap_width));
-    if wrap.len() <= 1 {
-        return vec![
-            wrap.first()
-                .map(std::string::ToString::to_string)
-                .unwrap_or_default(),
-        ];
-    }
-
-    let truncated = wrap.len() > 2;
-    let mut out = Vec::new();
-    for (idx, line) in wrap.into_iter().enumerate() {
-        if idx >= 2 {
-            break;
-        }
-        out.push(line.to_string());
+    let wrapped = textwrap::wrap(description, WrapOptions::new(wrap_width));
+    let truncated = wrapped.len() > 2;
+    let mut out: Vec<String> = wrapped
+        .into_iter()
+        .take(2)
+        .map(|line| line.to_string())
+        .collect();
+    if out.is_empty() {
+        return vec![String::new()];
     }
 
     if truncated && out.len() == 2 {
@@ -1093,13 +1086,10 @@ fn highlight_bar_style(status: &PotterProjectListStatus) -> Style {
 }
 
 fn project_description_style(status: &PotterProjectListStatus) -> Style {
-    match status {
-        PotterProjectListStatus::Cancelled => Style::default().dim(),
-        PotterProjectListStatus::Succeeded
-        | PotterProjectListStatus::BudgetExhausted
-        | PotterProjectListStatus::Interrupted
-        | PotterProjectListStatus::Failed
-        | PotterProjectListStatus::Incomplete => Style::default(),
+    if matches!(status, PotterProjectListStatus::Cancelled) {
+        Style::default().dim()
+    } else {
+        Style::default()
     }
 }
 
