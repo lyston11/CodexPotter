@@ -150,15 +150,16 @@ pub fn read_final_agent_message_from_rollout(
             continue;
         }
 
-        let payload = value.get("payload");
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
         let payload_type = payload
-            .and_then(|payload| payload.get("type"))
+            .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         if payload_type != "agent_message" && payload_type != "turn_complete" {
             continue;
         }
-        let payload = payload.context("rollout event missing payload")?;
 
         let Some(ts) = value.get("timestamp").and_then(serde_json::Value::as_str) else {
             continue;
@@ -208,17 +209,16 @@ pub fn read_final_agent_message_from_rollout(
     // compatibility, even if other messages include phase metadata.
     let selected = last_final.or(last_without_phase).or(last_turn_complete);
 
-    if let Some((secs, message)) = selected {
-        let secs = if secs == 0 { None } else { Some(secs) };
-        let message = if message.is_empty() {
-            None
-        } else {
-            Some(message)
-        };
-        Ok((secs, message))
+    let Some((secs, message)) = selected else {
+        return Ok((None, None));
+    };
+    let secs = if secs == 0 { None } else { Some(secs) };
+    let message = if message.is_empty() {
+        None
     } else {
-        Ok((None, None))
-    }
+        Some(message)
+    };
+    Ok((secs, message))
 }
 
 #[cfg(test)]

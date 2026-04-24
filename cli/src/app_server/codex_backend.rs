@@ -12,6 +12,7 @@
 //! and applies additional event filtering depending on [`AppServerEventMode`].
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -631,26 +632,17 @@ async fn spawn_app_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = {
-        #[cfg(target_os = "linux")]
-        let mut attempts = 0usize;
-        loop {
-            match cmd.spawn() {
-                Ok(child) => break child,
-                Err(err) => {
-                    #[cfg(target_os = "linux")]
-                    {
-                        const ETXTBSY: i32 = 26;
-                        if err.raw_os_error() == Some(ETXTBSY) && attempts < 5 {
-                            attempts += 1;
-                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                            continue;
-                        }
-                    }
-
-                    return Err(err)
-                        .with_context(|| format!("failed to start `{codex_bin}` app-server"));
-                }
+    let mut attempts = 0usize;
+    let mut child = loop {
+        match cmd.spawn() {
+            Ok(child) => break child,
+            Err(err) if err.kind() == ErrorKind::ExecutableFileBusy && attempts < 5 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to start `{codex_bin}` app-server"));
             }
         }
     };
@@ -745,7 +737,7 @@ async fn read_codex_cli_version(codex_bin: &str) -> anyhow::Result<String> {
     let output = loop {
         match Command::new(codex_bin).arg("--version").output().await {
             Ok(output) => break output,
-            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+            Err(err) if err.kind() == ErrorKind::ExecutableFileBusy => {
                 if attempt == MAX_ATTEMPTS {
                     return Err(err).with_context(|| format!("run `{codex_bin} --version`"));
                 }

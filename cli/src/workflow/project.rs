@@ -33,8 +33,8 @@ const POTTER_XMODEL_MARKER: &str = "/potter:xmodel";
 const POTTER_XMODEL_MARKER_WITH_TRAILING_SPACE: &str = "/potter:xmodel ";
 const POTTER_XMODEL_FRONT_MATTER_PLACEHOLDER: &str = "{{POTTER_XMODEL_FRONT_MATTER}}";
 
-#[derive(Debug, Clone)]
 /// Metadata produced when initializing a new CodexPotter project on disk.
+#[derive(Debug, Clone)]
 pub struct ProjectInit {
     /// Workdir-relative path to the created progress file (`.codexpotter/projects/.../MAIN.md`).
     pub progress_file_rel: PathBuf,
@@ -279,7 +279,7 @@ fn read_progress_file_front_matter_string(
     let contents = std::fs::read_to_string(progress_file)
         .with_context(|| format!("read {}", progress_file.display()))?;
     let value = front_matter_string(&contents, key).map(|value| value.trim().to_string());
-    Ok(value.and_then(|value| if value.is_empty() { None } else { Some(value) }))
+    Ok(value.filter(|value| !value.is_empty()))
 }
 
 fn create_next_project_dir(

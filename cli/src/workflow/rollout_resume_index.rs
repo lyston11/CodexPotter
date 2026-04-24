@@ -71,7 +71,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
     struct RoundBuilder {
         round_current: u32,
         round_total: u32,
-        configured: Option<(ThreadId, PathBuf, Option<ServiceTier>)>,
+        configured: Option<RoundConfigurationIndex>,
         project_succeeded: Option<ProjectSucceededIndex>,
     }
 
@@ -120,7 +120,11 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                 if builder.configured.is_some() {
                     anyhow::bail!("potter-rollout: duplicate round_configured in a single round");
                 }
-                builder.configured = Some((*thread_id, rollout_path.clone(), *service_tier));
+                builder.configured = Some(RoundConfigurationIndex {
+                    thread_id: *thread_id,
+                    rollout_path: rollout_path.clone(),
+                    service_tier: *service_tier,
+                });
             }
             PotterRolloutLine::ProjectSucceeded {
                 rounds,
@@ -158,13 +162,7 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
                     );
                 }
                 let configured = match builder.configured {
-                    Some((thread_id, rollout_path, service_tier)) => {
-                        Some(RoundConfigurationIndex {
-                            thread_id,
-                            rollout_path,
-                            service_tier,
-                        })
-                    }
+                    Some(configured) => Some(configured),
                     None if matches!(outcome, PotterRoundOutcome::Completed) => {
                         anyhow::bail!(
                             "potter-rollout: completed round_finished without round_configured"
@@ -189,15 +187,15 @@ pub fn build_resume_index(lines: &[PotterRolloutLine]) -> anyhow::Result<PotterR
             if builder.project_succeeded.is_some() {
                 anyhow::bail!("potter-rollout: project_succeeded without round_finished at EOF");
             }
-            let Some((thread_id, rollout_path, service_tier)) = builder.configured else {
+            let Some(configured) = builder.configured else {
                 anyhow::bail!("potter-rollout: missing round_configured at EOF");
             };
             Some(UnfinishedRoundIndex {
                 round_current: builder.round_current,
                 round_total: builder.round_total,
-                thread_id,
-                rollout_path,
-                service_tier,
+                thread_id: configured.thread_id,
+                rollout_path: configured.rollout_path,
+                service_tier: configured.service_tier,
             })
         }
         None => None,

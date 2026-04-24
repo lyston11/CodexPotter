@@ -116,14 +116,8 @@ fn prepare_project_stop_hook_request(
         baseline_round_count
     };
 
-    let new_session_ids = completed_session_ids
-        .get(baseline_round_count..)
-        .unwrap_or_default()
-        .to_vec();
-    let new_assistant_messages = completed_assistant_messages
-        .get(baseline_round_count..)
-        .unwrap_or_default()
-        .to_vec();
+    let new_session_ids = completed_session_ids[baseline_round_count..].to_vec();
+    let new_assistant_messages = completed_assistant_messages[baseline_round_count..].to_vec();
 
     let mut all_session_ids = completed_session_ids;
     let mut all_assistant_messages = completed_assistant_messages;
