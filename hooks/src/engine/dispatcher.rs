@@ -96,6 +96,7 @@ fn scope_for_event(event_name: HookEventName) -> HookScope {
         HookEventName::PotterProjectStop => HookScope::Thread,
         HookEventName::SessionStart => HookScope::Thread,
         HookEventName::PreToolUse
+        | HookEventName::PermissionRequest
         | HookEventName::PostToolUse
         | HookEventName::UserPromptSubmit
         | HookEventName::Stop => HookScope::Turn,

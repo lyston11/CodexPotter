@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use codex_protocol::AbsolutePathBuf;
@@ -128,10 +129,11 @@ pub enum SandboxMode {
 
 /// Configures who approval requests are routed to for review.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum ApprovalsReviewer {
+    #[serde(rename = "user")]
     User,
-    GuardianSubagent,
+    #[serde(rename = "guardian_subagent", alias = "auto_review")]
+    AutoReview,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -326,6 +328,10 @@ pub struct AdditionalNetworkPermissions {
 pub struct AdditionalFileSystemPermissions {
     pub read: Option<Vec<AbsolutePathBuf>>,
     pub write: Option<Vec<AbsolutePathBuf>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob_scan_max_depth: Option<NonZeroUsize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<FileSystemSandboxEntry>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
@@ -333,6 +339,61 @@ pub struct AdditionalFileSystemPermissions {
 pub struct RequestPermissionProfile {
     pub network: Option<AdditionalNetworkPermissions>,
     pub file_system: Option<AdditionalFileSystemPermissions>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FileSystemAccessMode {
+    Read,
+    Write,
+    None,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FileSystemSpecialPath {
+    Root,
+    Minimal,
+    CurrentWorkingDirectory,
+    ProjectRoots {
+        subpath: Option<PathBuf>,
+    },
+    Tmpdir,
+    SlashTmp,
+    Unknown {
+        path: String,
+        subpath: Option<PathBuf>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FileSystemPath {
+    Path { path: AbsolutePathBuf },
+    GlobPattern { pattern: String },
+    Special { value: FileSystemSpecialPath },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSystemSandboxEntry {
+    pub path: FileSystemPath,
+    pub access: FileSystemAccessMode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionProfileFileSystemPermissions {
+    pub entries: Vec<FileSystemSandboxEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob_scan_max_depth: Option<NonZeroUsize>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionProfile {
+    pub network: Option<AdditionalNetworkPermissions>,
+    pub file_system: Option<PermissionProfileFileSystemPermissions>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
@@ -367,6 +428,8 @@ pub struct PermissionsRequestApprovalParams {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<AbsolutePathBuf>,
     pub reason: Option<String>,
     pub permissions: RequestPermissionProfile,
 }
@@ -377,6 +440,8 @@ pub struct PermissionsRequestApprovalResponse {
     pub permissions: GrantedPermissionProfile,
     #[serde(default)]
     pub scope: PermissionGrantScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_auto_review: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -644,6 +709,14 @@ pub enum SandboxPolicy {
     },
 }
 
+/// Sticky or turn-scoped environment selected through the upstream app-server.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnEnvironmentParams {
+    pub environment_id: String,
+    pub cwd: AbsolutePathBuf,
+}
+
 /// Parameters for the `thread/start` JSON-RPC method.
 ///
 /// Note: optional fields are intentionally serialized as `null` when unset to match upstream.
@@ -657,12 +730,14 @@ pub struct ThreadStartParams {
     pub approval_policy: Option<AskForApproval>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox: Option<SandboxMode>,
+    pub permission_profile: Option<PermissionProfile>,
     pub config: Option<HashMap<String, JsonValue>>,
     pub service_name: Option<String>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
     pub personality: Option<Personality>,
     pub ephemeral: Option<bool>,
+    pub environments: Option<Vec<TurnEnvironmentParams>>,
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     pub mock_experimental_field: Option<String>,
     #[serde(default)]
@@ -680,9 +755,13 @@ pub struct ThreadStartResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    #[serde(default)]
+    pub instruction_sources: Vec<AbsolutePathBuf>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox: SandboxPolicy,
+    #[serde(default)]
+    pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -702,6 +781,7 @@ pub struct ThreadResumeParams {
     pub approval_policy: Option<AskForApproval>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox: Option<SandboxMode>,
+    pub permission_profile: Option<PermissionProfile>,
     pub config: Option<HashMap<String, JsonValue>>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
@@ -719,9 +799,13 @@ pub struct ThreadResumeResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    #[serde(default)]
+    pub instruction_sources: Vec<AbsolutePathBuf>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox: SandboxPolicy,
+    #[serde(default)]
+    pub permission_profile: Option<PermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -811,10 +895,12 @@ pub struct CollaborationMode {
 pub struct TurnStartParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    pub environments: Option<Vec<TurnEnvironmentParams>>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_policy: Option<SandboxPolicy>,
+    pub permission_profile: Option<PermissionProfile>,
     pub model: Option<String>,
     pub service_tier: Option<Option<ServiceTier>>,
     pub effort: Option<ReasoningEffort>,
@@ -949,6 +1035,7 @@ impl From<CoreUserInput> for UserInput {
 #[serde(rename_all = "camelCase")]
 pub enum HookEventName {
     PreToolUse,
+    PermissionRequest,
     PostToolUse,
     SessionStart,
     UserPromptSubmit,
@@ -1399,15 +1486,24 @@ pub enum CommandAction {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::path::PathBuf;
 
     use codex_protocol::protocol::CodexErrorInfo;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
+    use super::ApprovalsReviewer;
     use super::DynamicToolSpec;
+    use super::GrantedPermissionProfile;
+    use super::PermissionGrantScope;
+    use super::PermissionsRequestApprovalParams;
+    use super::PermissionsRequestApprovalResponse;
     use super::Thread;
+    use super::ThreadResumeResponse;
+    use super::ThreadStartResponse;
     use super::TurnError;
+    use super::TurnStartParams;
     use super::TurnStatus;
 
     #[test]
@@ -1478,6 +1574,214 @@ mod tests {
                 }),
                 defer_loading: true,
             }
+        );
+    }
+
+    #[test]
+    fn approvals_reviewer_accepts_current_and_legacy_auto_review_values() {
+        let current: ApprovalsReviewer =
+            serde_json::from_value(json!("auto_review")).expect("deserialize auto_review");
+        let legacy: ApprovalsReviewer = serde_json::from_value(json!("guardian_subagent"))
+            .expect("deserialize guardian_subagent");
+
+        assert_eq!(current, ApprovalsReviewer::AutoReview);
+        assert_eq!(legacy, ApprovalsReviewer::AutoReview);
+        assert_eq!(
+            serde_json::to_value(ApprovalsReviewer::AutoReview).expect("serialize reviewer"),
+            json!("guardian_subagent")
+        );
+    }
+
+    #[test]
+    fn thread_start_response_deserializes_current_permission_profile_shape() {
+        let response: ThreadStartResponse = serde_json::from_value(json!({
+            "thread": {
+                "id": "thread-1",
+                "path": "/tmp/thread.jsonl"
+            },
+            "model": "gpt-5.4",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "cwd": "/tmp/worktree",
+            "instructionSources": ["/tmp/worktree/AGENTS.md"],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "auto_review",
+            "sandbox": {
+                "type": "workspaceWrite",
+                "writableRoots": ["/tmp/worktree"]
+            },
+            "permissionProfile": {
+                "network": {
+                    "enabled": true
+                },
+                "fileSystem": {
+                    "entries": [
+                        {
+                            "path": {
+                                "type": "path",
+                                "path": "/tmp/worktree"
+                            },
+                            "access": "write"
+                        },
+                        {
+                            "path": {
+                                "type": "glob_pattern",
+                                "pattern": "**/*.rs"
+                            },
+                            "access": "read"
+                        },
+                        {
+                            "path": {
+                                "type": "special",
+                                "value": {
+                                    "kind": "current_working_directory"
+                                }
+                            },
+                            "access": "read"
+                        }
+                    ],
+                    "globScanMaxDepth": 4
+                }
+            },
+            "reasoningEffort": null
+        }))
+        .expect("deserialize thread/start response");
+
+        assert_eq!(response.approvals_reviewer, ApprovalsReviewer::AutoReview);
+        assert_eq!(response.instruction_sources.len(), 1);
+        let permission_profile = response
+            .permission_profile
+            .expect("permission profile should deserialize");
+        assert_eq!(
+            permission_profile.network.expect("network").enabled,
+            Some(true)
+        );
+        let file_system = permission_profile.file_system.expect("file system");
+        assert_eq!(file_system.entries.len(), 3);
+        assert_eq!(file_system.glob_scan_max_depth, NonZeroUsize::new(4));
+    }
+
+    #[test]
+    fn thread_resume_response_deserializes_legacy_auto_review_spelling() {
+        let response: ThreadResumeResponse = serde_json::from_value(json!({
+            "thread": {
+                "id": "thread-1"
+            },
+            "model": "gpt-5.4",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "cwd": "/tmp/worktree",
+            "instructionSources": [],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "guardian_subagent",
+            "sandbox": {
+                "type": "readOnly"
+            },
+            "permissionProfile": null,
+            "reasoningEffort": null
+        }))
+        .expect("deserialize thread/resume response");
+
+        assert_eq!(response.approvals_reviewer, ApprovalsReviewer::AutoReview);
+        assert_eq!(response.permission_profile, None);
+    }
+
+    #[test]
+    fn turn_start_params_round_trip_permission_profile_and_environments() {
+        let params: TurnStartParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "input": [],
+            "environments": [
+                {
+                    "environmentId": "local",
+                    "cwd": "/tmp/worktree"
+                }
+            ],
+            "permissionProfile": {
+                "fileSystem": {
+                    "entries": [
+                        {
+                            "path": {
+                                "type": "path",
+                                "path": "/tmp/worktree"
+                            },
+                            "access": "write"
+                        }
+                    ]
+                }
+            }
+        }))
+        .expect("deserialize turn/start params");
+
+        assert_eq!(
+            params.environments.expect("environments")[0].environment_id,
+            "local"
+        );
+        assert_eq!(
+            params
+                .permission_profile
+                .expect("permission profile")
+                .file_system
+                .expect("file system")
+                .entries
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn permissions_request_preserves_file_system_entries_in_grant_response() {
+        let params: PermissionsRequestApprovalParams = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "itemId": "permissions-1",
+            "cwd": "/tmp/worktree",
+            "reason": "Need to write generated files",
+            "permissions": {
+                "fileSystem": {
+                    "entries": [
+                        {
+                            "path": {
+                                "type": "path",
+                                "path": "/tmp/worktree/generated"
+                            },
+                            "access": "write"
+                        }
+                    ],
+                    "globScanMaxDepth": 3
+                }
+            }
+        }))
+        .expect("deserialize permissions request");
+
+        let response = PermissionsRequestApprovalResponse {
+            permissions: GrantedPermissionProfile::from(params.permissions),
+            scope: PermissionGrantScope::Session,
+            strict_auto_review: Some(false),
+        };
+
+        assert_eq!(
+            serde_json::to_value(response).expect("serialize response"),
+            json!({
+                "permissions": {
+                    "fileSystem": {
+                        "read": null,
+                        "write": null,
+                        "globScanMaxDepth": 3,
+                        "entries": [
+                            {
+                                "path": {
+                                    "type": "path",
+                                    "path": "/tmp/worktree/generated"
+                                },
+                                "access": "write"
+                            }
+                        ]
+                    }
+                },
+                "scope": "session",
+                "strictAutoReview": false
+            })
         );
     }
 

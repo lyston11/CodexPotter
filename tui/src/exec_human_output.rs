@@ -1149,6 +1149,7 @@ fn replace_prefix(mut line: Line<'static>, from: &str, to: &str) -> Line<'static
 fn hook_event_label(event_name: codex_protocol::protocol::HookEventName) -> &'static str {
     match event_name {
         codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
+        codex_protocol::protocol::HookEventName::PermissionRequest => "permission-request",
         codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
         codex_protocol::protocol::HookEventName::SessionStart => "session-start",
         codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",

@@ -49,6 +49,7 @@ pub(super) fn matcher_pattern_for_event(
             matcher
         }
         HookEventName::UserPromptSubmit
+        | HookEventName::PermissionRequest
         | HookEventName::Stop
         | HookEventName::PotterProjectStop => None,
     }

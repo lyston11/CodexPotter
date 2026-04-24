@@ -25,6 +25,7 @@ use std::time::Instant;
 use crate::app_server::stream_recovery::ContinueRetryDecision;
 use crate::app_server::stream_recovery::ContinueRetryPlan;
 use crate::app_server::stream_recovery::PotterStreamRecovery;
+use crate::app_server::upstream_protocol::AdditionalFileSystemPermissions as UpstreamAdditionalFileSystemPermissions;
 use crate::app_server::upstream_protocol::AgentMessageDeltaNotification as UpstreamAgentMessageDeltaNotification;
 use crate::app_server::upstream_protocol::AgentMessageThreadItem as UpstreamAgentMessageThreadItem;
 use crate::app_server::upstream_protocol::ApplyPatchApprovalResponse;
@@ -48,6 +49,8 @@ use crate::app_server::upstream_protocol::ExecCommandApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeApprovalDecision;
 use crate::app_server::upstream_protocol::FileChangeRequestApprovalResponse;
 use crate::app_server::upstream_protocol::FileChangeThreadItem as UpstreamFileChangeThreadItem;
+use crate::app_server::upstream_protocol::FileSystemAccessMode as UpstreamFileSystemAccessMode;
+use crate::app_server::upstream_protocol::FileSystemPath as UpstreamFileSystemPath;
 use crate::app_server::upstream_protocol::FileUpdateChange as UpstreamFileUpdateChange;
 use crate::app_server::upstream_protocol::GrantedPermissionProfile;
 use crate::app_server::upstream_protocol::GuardianApprovalReviewStatus as UpstreamGuardianApprovalReviewStatus;
@@ -865,12 +868,14 @@ impl ThreadStartSettings {
             approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
             approvals_reviewer: None,
             sandbox: self.sandbox_mode,
+            permission_profile: None,
             config: None,
             service_name: None,
             base_instructions: None,
             developer_instructions: self.developer_instructions,
             personality: None,
             ephemeral: None,
+            environments: None,
             dynamic_tools: None,
             mock_experimental_field: None,
             experimental_raw_events: false,
@@ -892,6 +897,7 @@ impl ThreadResumeSettings {
             approval_policy: Some(crate::app_server::upstream_protocol::AskForApproval::Never),
             approvals_reviewer: None,
             sandbox: self.sandbox_mode,
+            permission_profile: None,
             config: None,
             base_instructions: None,
             developer_instructions: self.developer_instructions,
@@ -1005,10 +1011,12 @@ async fn handle_op(
                 params: TurnStartParams {
                     thread_id: ctx.thread_id.to_string(),
                     input,
+                    environments: None,
                     cwd: None,
                     approval_policy: None,
                     approvals_reviewer: None,
                     sandbox_policy: None,
+                    permission_profile: None,
                     model: None,
                     service_tier: None,
                     effort: None,
@@ -1742,6 +1750,7 @@ fn hook_run_summary_from_upstream(run: UpstreamHookRunSummary) -> HookRunSummary
         id: run.id,
         event_name: match run.event_name {
             UpstreamHookEventName::PreToolUse => HookEventName::PreToolUse,
+            UpstreamHookEventName::PermissionRequest => HookEventName::PermissionRequest,
             UpstreamHookEventName::PostToolUse => HookEventName::PostToolUse,
             UpstreamHookEventName::SessionStart => HookEventName::SessionStart,
             UpstreamHookEventName::UserPromptSubmit => HookEventName::UserPromptSubmit,
@@ -1868,12 +1877,40 @@ fn request_permission_profile_from_upstream(
             .map(|network| codex_protocol::models::NetworkPermissions {
                 enabled: network.enabled,
             }),
-        file_system: profile.file_system.map(|profile| {
-            codex_protocol::models::FileSystemPermissions {
-                read: profile.read,
-                write: profile.write,
-            }
-        }),
+        file_system: profile
+            .file_system
+            .map(file_system_permissions_from_upstream),
+    }
+}
+
+fn file_system_permissions_from_upstream(
+    profile: UpstreamAdditionalFileSystemPermissions,
+) -> codex_protocol::models::FileSystemPermissions {
+    let mut read = profile.read;
+    let mut write = profile.write;
+
+    for entry in profile.entries.into_iter().flatten() {
+        let UpstreamFileSystemPath::Path { path } = entry.path else {
+            continue;
+        };
+
+        match entry.access {
+            UpstreamFileSystemAccessMode::Read => push_unique_path(&mut read, path),
+            UpstreamFileSystemAccessMode::Write => push_unique_path(&mut write, path),
+            UpstreamFileSystemAccessMode::None => {}
+        }
+    }
+
+    codex_protocol::models::FileSystemPermissions { read, write }
+}
+
+fn push_unique_path(
+    paths: &mut Option<Vec<codex_protocol::AbsolutePathBuf>>,
+    path: codex_protocol::AbsolutePathBuf,
+) {
+    let paths = paths.get_or_insert_with(Vec::new);
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
     }
 }
 
@@ -2436,6 +2473,7 @@ async fn handle_server_request(
             let response = PermissionsRequestApprovalResponse {
                 permissions: granted,
                 scope,
+                strict_auto_review: None,
             };
             send_response(stdin, request_id, response).await?;
         }
@@ -3328,6 +3366,64 @@ mod tests {
         parse_codex_cli_version("codex-cli not-a-version").expect_err("bad version should fail");
     }
 
+    #[test]
+    fn request_permission_profile_maps_path_entries_to_legacy_read_write_roots() {
+        let profile = serde_json::from_value(serde_json::json!({
+            "network": {
+                "enabled": true
+            },
+            "fileSystem": {
+                "read": ["/tmp/readable"],
+                "write": ["/tmp/writable"],
+                "entries": [
+                    {
+                        "path": {
+                            "type": "path",
+                            "path": "/tmp/readable"
+                        },
+                        "access": "read"
+                    },
+                    {
+                        "path": {
+                            "type": "path",
+                            "path": "/tmp/writable"
+                        },
+                        "access": "write"
+                    },
+                    {
+                        "path": {
+                            "type": "glob_pattern",
+                            "pattern": "**/*.rs"
+                        },
+                        "access": "read"
+                    }
+                ]
+            }
+        }))
+        .expect("deserialize upstream request permission profile");
+
+        let mapped = request_permission_profile_from_upstream(profile);
+
+        assert_eq!(
+            mapped,
+            ProtocolRequestPermissionProfile {
+                network: Some(codex_protocol::models::NetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(codex_protocol::models::FileSystemPermissions {
+                    read: Some(vec![
+                        codex_protocol::AbsolutePathBuf::from_absolute_path("/tmp/readable")
+                            .expect("absolute read path"),
+                    ]),
+                    write: Some(vec![
+                        codex_protocol::AbsolutePathBuf::from_absolute_path("/tmp/writable")
+                            .expect("absolute write path"),
+                    ]),
+                }),
+            }
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn resolve_upstream_client_info_uses_codex_tui_name_and_cli_version() {
@@ -3769,6 +3865,98 @@ done
         assert!(
             event_rx.try_recv().is_err(),
             "expected no extra events for reasoning summary boundary"
+        );
+    }
+
+    #[test]
+    fn typed_permission_request_hook_notifications_emit_hook_events() {
+        let (event_tx, mut event_rx) = unbounded_channel::<Event>();
+        let mut recovery = recovery_context(AppServerEventMode::Interactive);
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "hook/started".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "run": {
+                        "id": "hook-1",
+                        "eventName": "permissionRequest",
+                        "handlerType": "command",
+                        "executionMode": "sync",
+                        "scope": "turn",
+                        "sourcePath": "/tmp/hooks.json",
+                        "displayOrder": 0,
+                        "status": "running",
+                        "statusMessage": "checking permissions",
+                        "startedAt": 10,
+                        "completedAt": null,
+                        "durationMs": null,
+                        "entries": []
+                    }
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge permission request hook start");
+
+        handle_typed_notification(
+            JSONRPCNotification {
+                method: "hook/completed".to_string(),
+                params: Some(serde_json::json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "run": {
+                        "id": "hook-1",
+                        "eventName": "permissionRequest",
+                        "handlerType": "command",
+                        "executionMode": "sync",
+                        "scope": "turn",
+                        "sourcePath": "/tmp/hooks.json",
+                        "displayOrder": 0,
+                        "status": "completed",
+                        "statusMessage": null,
+                        "startedAt": 10,
+                        "completedAt": 15,
+                        "durationMs": 5,
+                        "entries": [{
+                            "kind": "context",
+                            "text": "permissions checked"
+                        }]
+                    }
+                })),
+            },
+            &mut recovery,
+            &event_tx,
+        )
+        .expect("bridge permission request hook completion");
+
+        let started = event_rx.try_recv().expect("expected hook start event");
+        assert_eq!(started.id, "hook-1");
+        let EventMsg::HookStarted(started) = started.msg else {
+            panic!("expected HookStarted event");
+        };
+        assert_eq!(started.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(started.run.event_name, HookEventName::PermissionRequest);
+
+        let completed = event_rx.try_recv().expect("expected hook completed event");
+        assert_eq!(completed.id, "hook-1");
+        let EventMsg::HookCompleted(completed) = completed.msg else {
+            panic!("expected HookCompleted event");
+        };
+        assert_eq!(completed.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(completed.run.event_name, HookEventName::PermissionRequest);
+        assert_eq!(
+            completed.run.entries,
+            vec![HookOutputEntry {
+                kind: HookOutputEntryKind::Context,
+                text: "permissions checked".to_string(),
+            }]
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "expected no extra hook events"
         );
     }
 
