@@ -21,7 +21,7 @@ mod schema_loader;
 
 #[derive(Debug, Clone)]
 struct CommandShell {
-    program: String,
+    program: Option<String>,
     args: Vec<String>,
 }
 
@@ -70,11 +70,11 @@ impl HooksEngine {
     pub(super) fn new(
         cwd: Option<&Path>,
         codex_home_dir: Option<&Path>,
-        shell_program: String,
+        shell_program: Option<String>,
         shell_args: Vec<String>,
     ) -> Self {
         let shell = CommandShell {
-            program: shell_program,
+            program: shell_program.filter(|program| !program.is_empty()),
             args: shell_args,
         };
         let Some(cwd) = cwd else {

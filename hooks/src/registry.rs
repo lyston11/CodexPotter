@@ -46,7 +46,7 @@ impl Hooks {
         let engine = HooksEngine::new(
             config.cwd.as_deref(),
             config.codex_home_dir.as_deref(),
-            config.shell_program.unwrap_or_default(),
+            config.shell_program,
             config.shell_args,
         );
         Self { engine }

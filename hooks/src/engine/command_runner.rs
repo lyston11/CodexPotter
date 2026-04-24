@@ -103,12 +103,12 @@ pub(super) async fn run_command(
 }
 
 fn build_command(shell: &CommandShell, handler: &ConfiguredHandler) -> Command {
-    let mut command = if shell.program.is_empty() {
-        default_shell_command()
-    } else {
-        let mut command = Command::new(&shell.program);
+    let mut command = if let Some(program) = shell.program.as_deref() {
+        let mut command = Command::new(program);
         command.args(&shell.args);
         command
+    } else {
+        default_shell_command()
     };
     command.arg(&handler.command);
     command
@@ -151,7 +151,7 @@ mod tests {
         let cwd = temp_dir.path().canonicalize().expect("canonicalize cwd");
 
         let shell = CommandShell {
-            program: String::new(),
+            program: None,
             args: Vec::new(),
         };
 

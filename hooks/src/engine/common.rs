@@ -9,11 +9,7 @@ use super::dispatcher;
 
 pub(super) fn trimmed_non_empty(text: &str) -> Option<String> {
     let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 pub(super) fn serialization_failure_hook_events(
