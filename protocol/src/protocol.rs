@@ -347,10 +347,17 @@ pub enum PotterProjectOutcome {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PotterProjectListStatus {
+    /// The project recorded a success marker.
     Succeeded,
+    /// The project stopped before any round completed successfully.
+    Cancelled,
+    /// The project used all configured rounds without recording success.
     BudgetExhausted,
+    /// The project was interrupted after at least one round completed.
     Interrupted,
+    /// The project ended because a round failed or hit a fatal error.
     Failed,
+    /// The project is malformed, still running, or otherwise not terminal.
     Incomplete,
 }
 

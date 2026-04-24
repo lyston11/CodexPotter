@@ -1002,7 +1002,7 @@ fn render_project_list_item(
             vec!["  ".into()]
         };
         spans.push("  ".into());
-        spans.push(Span::from(desc));
+        spans.push(Span::from(desc).set_style(project_description_style(&project.status)));
         lines.push(Line::from(spans));
     }
 
@@ -1071,8 +1071,9 @@ fn with_truncation_ellipsis(text: &str, max_width: usize) -> String {
 fn status_icon_and_style(status: &PotterProjectListStatus) -> (char, Style) {
     match status {
         PotterProjectListStatus::Succeeded => ('✓', Style::default().light_green()),
-        PotterProjectListStatus::BudgetExhausted => ('■', Style::default().fg(orange_color())),
-        PotterProjectListStatus::Interrupted => ('■', Style::default().red()),
+        PotterProjectListStatus::Cancelled => ('■', Style::default().dim()),
+        PotterProjectListStatus::BudgetExhausted => ('■', Style::default().red()),
+        PotterProjectListStatus::Interrupted => ('■', Style::default().fg(orange_color())),
         PotterProjectListStatus::Failed => ('■', Style::default().red()),
         PotterProjectListStatus::Incomplete => ('■', Style::default()),
     }
@@ -1081,12 +1082,24 @@ fn status_icon_and_style(status: &PotterProjectListStatus) -> (char, Style) {
 fn highlight_bar_style(status: &PotterProjectListStatus) -> Style {
     match status {
         PotterProjectListStatus::Succeeded => Style::default().light_green().bold(),
-        PotterProjectListStatus::BudgetExhausted | PotterProjectListStatus::Incomplete => {
-            Style::default().fg(orange_color()).bold()
-        }
-        PotterProjectListStatus::Interrupted | PotterProjectListStatus::Failed => {
+        PotterProjectListStatus::Cancelled => Style::default().dim(),
+        PotterProjectListStatus::BudgetExhausted | PotterProjectListStatus::Failed => {
             Style::default().red().bold()
         }
+        PotterProjectListStatus::Interrupted | PotterProjectListStatus::Incomplete => {
+            Style::default().fg(orange_color()).bold()
+        }
+    }
+}
+
+fn project_description_style(status: &PotterProjectListStatus) -> Style {
+    match status {
+        PotterProjectListStatus::Cancelled => Style::default().dim(),
+        PotterProjectListStatus::Succeeded
+        | PotterProjectListStatus::BudgetExhausted
+        | PotterProjectListStatus::Interrupted
+        | PotterProjectListStatus::Failed
+        | PotterProjectListStatus::Incomplete => Style::default(),
     }
 }
 
@@ -1830,6 +1843,59 @@ mod tests {
         let (icon, style) = status_icon_and_style(&PotterProjectListStatus::Incomplete);
         assert_eq!(icon, '■');
         assert_eq!(style, Style::default());
+    }
+
+    #[test]
+    fn terminal_project_statuses_use_requested_colors() {
+        assert_eq!(
+            status_icon_and_style(&PotterProjectListStatus::Cancelled),
+            ('■', Style::default().dim())
+        );
+        assert_eq!(
+            highlight_bar_style(&PotterProjectListStatus::Cancelled),
+            Style::default().dim()
+        );
+        assert_eq!(
+            status_icon_and_style(&PotterProjectListStatus::BudgetExhausted),
+            ('■', Style::default().red())
+        );
+        assert_eq!(
+            highlight_bar_style(&PotterProjectListStatus::BudgetExhausted),
+            Style::default().red().bold()
+        );
+        assert_eq!(
+            status_icon_and_style(&PotterProjectListStatus::Interrupted),
+            ('■', Style::default().fg(orange_color()))
+        );
+        assert_eq!(
+            highlight_bar_style(&PotterProjectListStatus::Interrupted),
+            Style::default().fg(orange_color()).bold()
+        );
+    }
+
+    #[test]
+    fn cancelled_projects_dim_the_summary_text() {
+        let project = PotterProjectListEntry {
+            project_dir: PathBuf::from(".codexpotter/projects/2026/04/16/1"),
+            progress_file: PathBuf::from(".codexpotter/projects/2026/04/16/1/MAIN.md"),
+            description: "Cancelled project".to_string(),
+            started_at_unix_secs: Some(1),
+            rounds: 1,
+            status: PotterProjectListStatus::Cancelled,
+        };
+
+        let lines =
+            render_project_list_item(&project, 32, UNIX_EPOCH + Duration::from_secs(120), true);
+        let summary = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "Cancelled project")
+            .unwrap_or_else(|| panic!("missing summary span: {lines:?}"));
+
+        assert!(
+            summary.style.add_modifier.contains(Modifier::DIM),
+            "cancelled project summary should be dim: {summary:?}"
+        );
     }
 
     #[test]

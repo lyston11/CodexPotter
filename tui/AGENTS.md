@@ -94,6 +94,7 @@ Behavior related
 - Projects overlay details text wraps to at most 100 columns while not maximized, even when the right pane is wider; maximized details view still uses the full pane width.
 - Projects overlay details pane shows a plain-text preview of the original user task message (first 5 lines + `... (N more lines)`) above the per-round final message summaries.
 - Projects overlay round headings show per-round duration when available: `ROUND N (took …) @ … ago` (otherwise `ROUND N`).
+- Projects overlay status colors distinguish cancelled-before-completion projects (dim), round-budget exhaustion (red), and post-completed-round interruptions (orange).
 - Project summary `Loop more rounds:` resume command includes the current process's non-default `codex-potter` global flags (aligns with the CLI exit resume note).
 
 Engineering related:

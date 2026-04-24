@@ -151,6 +151,11 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
         return PotterProjectListStatus::Incomplete;
     };
 
+    let has_completed_round = index
+        .completed_rounds
+        .iter()
+        .any(|round| matches!(round.outcome, PotterRoundOutcome::Completed));
+
     match &last_round.outcome {
         PotterRoundOutcome::Completed => {
             if last_round.round_current == last_round.round_total {
@@ -160,7 +165,11 @@ fn project_list_status(index: &PotterRolloutResumeIndex) -> PotterProjectListSta
             }
         }
         PotterRoundOutcome::Interrupted | PotterRoundOutcome::UserRequested => {
-            PotterProjectListStatus::Interrupted
+            if has_completed_round {
+                PotterProjectListStatus::Interrupted
+            } else {
+                PotterProjectListStatus::Cancelled
+            }
         }
         PotterRoundOutcome::TaskFailed { .. } | PotterRoundOutcome::Fatal { .. } => {
             PotterProjectListStatus::Failed
@@ -495,9 +504,34 @@ original goal line
             rows[1].progress_file,
             PathBuf::from(".codexpotter/projects/2026/02/28/1/MAIN.md")
         );
-        assert_eq!(rows[1].status, PotterProjectListStatus::Interrupted);
+        assert_eq!(rows[1].status, PotterProjectListStatus::Cancelled);
         assert_eq!(rows[1].rounds, 1);
         assert_eq!(rows[1].description, "Short A");
+    }
+
+    #[test]
+    fn discover_projects_marks_interrupted_after_completed_round() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path();
+
+        let main = write_main(workdir, ".codexpotter/projects/2026/03/05/1", None);
+        let rollout = workdir.join("interrupted.jsonl");
+        write_rollout_with_timestamp(&rollout, "2026-03-05T00:00:00.000Z");
+
+        write_potter_rollout(
+            main.parent().expect("project dir"),
+            main.strip_prefix(workdir).expect("rel"),
+            2,
+            10,
+            Path::new("interrupted.jsonl"),
+            PotterRoundOutcome::Interrupted,
+            None,
+        );
+
+        let rows = discover_projects_for_overlay(workdir).expect("discover");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, PotterProjectListStatus::Interrupted);
+        assert_eq!(rows[0].rounds, 2);
     }
 
     #[test]
