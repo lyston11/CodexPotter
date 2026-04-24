@@ -2112,6 +2112,23 @@ impl RenderAppState {
             if !is_press {
                 return;
             }
+            if self.codex_op_tx.is_some() && self.bottom_pane.is_task_running() {
+                if self.bottom_pane.composer().popup_active() {
+                    let (_result, needs_redraw) = self.bottom_pane.composer_mut().handle_key_event(
+                        crossterm::event::KeyEvent::new(
+                            crossterm::event::KeyCode::Esc,
+                            crossterm::event::KeyModifiers::NONE,
+                        ),
+                    );
+                    if needs_redraw {
+                        frame_requester.schedule_frame();
+                    }
+                } else {
+                    self.app_event_tx.send(AppEvent::CodexOp(Op::Interrupt));
+                    frame_requester.schedule_frame();
+                }
+                return;
+            }
             if self.bottom_pane.composer().selection_popup_visible() {
                 let (_result, needs_redraw) =
                     self.bottom_pane.composer_mut().handle_key_event(key_event);
@@ -5179,7 +5196,7 @@ mod tests {
     }
 
     #[test]
-    fn round_renderer_ctrl_c_flushes_pending_minimal_patch_summary_before_exit() {
+    fn round_renderer_ctrl_d_flushes_pending_minimal_patch_summary_before_exit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5236,19 +5253,19 @@ mod tests {
 
         app.bottom_pane.set_task_running(true);
         app.handle_key_event(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
             crate::tui::FrameRequester::test_dummy(),
             width,
         );
 
-        assert!(app.exit_after_next_draw, "expected Ctrl+C to request exit");
+        assert!(app.exit_after_next_draw, "expected Ctrl+D to request exit");
 
         let events = drain_history_cell_strings(&mut rx_app, width);
         pretty_assertions::assert_eq!(events, vec![vec!["• Edited file.txt (+1 -1)".to_string()]]);
     }
 
     #[test]
-    fn round_renderer_ctrl_c_flushes_buffered_minimal_agent_stream_before_exit() {
+    fn round_renderer_ctrl_d_flushes_buffered_minimal_agent_stream_before_exit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5288,12 +5305,12 @@ mod tests {
 
         app.bottom_pane.set_task_running(true);
         app.handle_key_event(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
             crate::tui::FrameRequester::test_dummy(),
             width,
         );
 
-        assert!(app.exit_after_next_draw, "expected Ctrl+C to request exit");
+        assert!(app.exit_after_next_draw, "expected Ctrl+D to request exit");
 
         let events = drain_history_cell_strings(&mut rx_app, width);
         pretty_assertions::assert_eq!(events, vec![vec!["• hello".to_string()]]);
@@ -5344,6 +5361,106 @@ mod tests {
             }
         }
         assert!(saw_interrupt, "expected Esc to request Op::Interrupt");
+    }
+
+    #[test]
+    fn round_renderer_ctrl_c_interrupts_instead_of_exiting_when_task_is_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::default());
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.exit_after_next_draw,
+            "did not expect Ctrl+C to request exit while a task is running"
+        );
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            saw_interrupt,
+            "expected Ctrl+C to request Op::Interrupt while a task is running"
+        );
+    }
+
+    #[test]
+    fn round_renderer_ctrl_c_preserves_draft_when_interrupting_task() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::default());
+
+        app.bottom_pane
+            .composer_mut()
+            .set_text_content("queued draft".to_string());
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert_eq!(
+            app.bottom_pane.composer().current_text(),
+            "queued draft",
+            "Ctrl+C should match Esc and leave the draft untouched while interrupting"
+        );
+
+        let mut saw_interrupt = false;
+        while let Ok(ev) = rx_app.try_recv() {
+            if let AppEvent::CodexOp(Op::Interrupt) = ev {
+                saw_interrupt = true;
+                break;
+            }
+        }
+        assert!(
+            saw_interrupt,
+            "expected Ctrl+C to request Op::Interrupt while preserving the draft"
+        );
+    }
+
+    #[test]
+    fn round_renderer_ctrl_c_with_popup_does_not_exit_or_interrupt_when_task_is_running() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (mut app, mut rx_app) = make_round_renderer_app(Verbosity::default());
+
+        app.bottom_pane
+            .composer_mut()
+            .set_text_content("/".to_string());
+        assert!(
+            app.bottom_pane.composer().popup_active(),
+            "expected slash popup to be active"
+        );
+
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            crate::tui::FrameRequester::test_dummy(),
+            80,
+        );
+
+        assert!(
+            !app.exit_after_next_draw,
+            "did not expect Ctrl+C to request exit while a popup is visible"
+        );
+        assert!(
+            rx_app.try_recv().is_err(),
+            "Ctrl+C should follow Esc popup routing instead of interrupting"
+        );
     }
 
     #[test]
