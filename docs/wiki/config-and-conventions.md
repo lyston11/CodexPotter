@@ -29,7 +29,7 @@ Created by `cli/src/workflow/project.rs`:
 - `~/.codexpotter/config.toml`
   - `[notice].hide_gitignore_prompt` (bool): hides the gitignore startup prompt (`cli/src/config.rs`)
   - `check_for_update_on_startup` (bool): enables update checks on startup (default: `true`)
-  - `rounds` (integer): default round budget for runs that do not specify `--rounds` (default: `10`)
+  - `rounds` (integer): default round budget for runs that do not specify `--rounds` (default: `6`)
   - `[tui].verbosity` (string): default transcript verbosity (`tui/src/potter_config.rs`)
   - `yolo` (bool): enables YOLO by default (unsafe; disables approvals and sandboxing)
     - configurable via `/yolo` in the TUI

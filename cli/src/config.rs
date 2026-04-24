@@ -13,7 +13,7 @@
 //! - `[notice] hide_gitignore_prompt` (bool): hides the gitignore startup prompt.
 //! - `check_for_update_on_startup` (bool): enables update checks on startup (default: `true`).
 //! - `rounds` (integer): default round budget for runs that do not specify `--rounds`
-//!   (default: `10`).
+//!   (default: `6`).
 
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;

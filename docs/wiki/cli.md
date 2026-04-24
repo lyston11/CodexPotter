@@ -24,7 +24,7 @@ This is developer-facing documentation. Start at `docs/wiki/README.md` for the w
 3. Prompts once for your project goal, then creates:
    - `.codexpotter/projects/YYYY/MM/DD/N/MAIN.md` (progress file)
    - a gitignored knowledge base directory (scratchpad for intermediate findings)
-4. Runs up to N rounds (default: config `rounds` if set, otherwise 10). Each round:
+4. Runs up to N rounds (default: config `rounds` if set, otherwise 6). Each round:
    - starts a fresh `codex app-server` (one app-server thread + at least one `turn/start`; stream recovery may issue additional `turn/start` calls)
    - injects a fixed developer prompt pointing at the progress file
    - submits a fixed prompt: `Continue working according to the WORKFLOW_INSTRUCTIONS`
@@ -41,7 +41,7 @@ Options:
 
 - `--codex-bin <path>`: Path to the `codex` binary to launch in app-server mode.
   - Also configurable via `CODEX_BIN` (defaults to `codex`).
-- `--rounds <n>`: Number of turns to run (default: config `rounds` if set, otherwise 10; must be >= 1).
+- `--rounds <n>`: Number of turns to run (default: config `rounds` if set, otherwise 6; must be >= 1).
   - For `resume`, this controls how many rounds are run when the last recorded round is complete.
     If the last recorded round is unfinished, the remaining budget is derived from the recorded
     `round_total` in `potter-rollout.jsonl`.
@@ -108,7 +108,7 @@ projects under `<cwd>/.codexpotter/projects`:
 At the moment the action picker has a single action:
 
 - When the last recorded round is complete: `Iterate N more rounds`.
-  - `N` is controlled by `--rounds` (or config `rounds` when unset; defaults to 10).
+  - `N` is controlled by `--rounds` (or config `rounds` when unset; defaults to 6).
 - When the last recorded round is unfinished: `Continue & iterate M more rounds`.
   - `M` is derived from the recorded round budget in `potter-rollout.jsonl`.
 

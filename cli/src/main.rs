@@ -79,7 +79,7 @@ impl From<CliVerbosity> for codex_tui::Verbosity {
     }
 }
 
-const DEFAULT_ROUNDS: usize = 10;
+const DEFAULT_ROUNDS: usize = 6;
 
 #[derive(Parser, Debug)]
 #[command(author = "Codex", version, about = "Run CodexPotter interactively")]
@@ -92,7 +92,7 @@ struct Cli {
     ///
     /// Default behavior:
     /// - If `~/.codexpotter/config.toml` sets `rounds`, it is used.
-    /// - Otherwise it defaults to 10.
+    /// - Otherwise it defaults to 6.
     ///
     /// `--rounds` always overrides the config value.
     ///

@@ -6,7 +6,7 @@ CodexPotter reads a per-user TOML config file:
 
 ## Keys
 
-- `rounds` (integer, >= 1): default round budget when `--rounds` is not provided (default: `10`)
+- `rounds` (integer, >= 1): default round budget when `--rounds` is not provided (default: `6`)
 - `check_for_update_on_startup` (bool): enable update checks on startup (default: `true`)
 - `yolo` (bool): enable YOLO by default (default: `false`)
   - Warning: YOLO disables approvals and sandboxing.
@@ -30,8 +30,8 @@ These settings can also be changed interactively in the TUI (for example via `/y
 
 ```toml
 # Default number of rounds to run when `--rounds` is not provided.
-# (default: 10)
-# rounds = 10
+# (default: 6)
+# rounds = 6
 
 # Check for updates on startup. (default: true)
 # check_for_update_on_startup = true
