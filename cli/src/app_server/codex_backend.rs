@@ -20,6 +20,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
 use crate::app_server::stream_recovery::ContinueRetryDecision;
@@ -738,11 +739,25 @@ async fn resolve_upstream_client_info(codex_bin: &str) -> ClientInfo {
 }
 
 async fn read_codex_cli_version(codex_bin: &str) -> anyhow::Result<String> {
-    let output = Command::new(codex_bin)
-        .arg("--version")
-        .output()
-        .await
-        .with_context(|| format!("run `{codex_bin} --version`"))?;
+    const MAX_ATTEMPTS: usize = 3;
+
+    let mut attempt = 1;
+    let output = loop {
+        match Command::new(codex_bin).arg("--version").output().await {
+            Ok(output) => break output,
+            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                if attempt == MAX_ATTEMPTS {
+                    return Err(err).with_context(|| format!("run `{codex_bin} --version`"));
+                }
+                // Freshly replaced executables can briefly return ETXTBSY on Linux.
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("run `{codex_bin} --version`"));
+            }
+        }
+    };
 
     anyhow::ensure!(
         output.status.success(),
