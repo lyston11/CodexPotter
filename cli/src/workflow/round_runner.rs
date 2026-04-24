@@ -101,11 +101,11 @@ pub struct PotterRoundOptions {
     pub project_started: Option<PotterProjectStartedInfo>,
     pub round_current: u32,
     pub round_total: u32,
-    /// When Potter xmodel is enabled, force gpt-5.4 for this round and all subsequent rounds.
+    /// When Potter xmodel is enabled, force gpt-5.5 for this round and all subsequent rounds.
     ///
     /// This flag is intentionally transient-only: it is not persisted in the progress file and
     /// should reset on resume (unless re-triggered).
-    pub potter_xmodel_force_gpt_5_4: bool,
+    pub potter_xmodel_force_review_model: bool,
     /// Number of rounds executed in the current iteration window, including this round.
     ///
     /// This intentionally differs from `round_current` when resuming unfinished rounds: resume may
@@ -156,7 +156,7 @@ pub async fn run_potter_round(
         project_started,
         round_current,
         round_total,
-        potter_xmodel_force_gpt_5_4,
+        potter_xmodel_force_review_model,
         project_rounds_run,
     } = options;
 
@@ -168,7 +168,7 @@ pub async fn run_potter_round(
             project_started,
             round_current,
             round_total,
-            potter_xmodel_force_gpt_5_4,
+            potter_xmodel_force_review_model,
             project_rounds_run,
             carried_duration_secs: 0,
             prompt: context.turn_prompt.clone(),
@@ -209,7 +209,7 @@ pub async fn continue_potter_round(
             project_started: None,
             round_current,
             round_total,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             project_rounds_run,
             carried_duration_secs,
             prompt: context.turn_prompt.clone(),
@@ -228,7 +228,7 @@ struct PotterRoundInnerOptions {
     project_started: Option<PotterProjectStartedInfo>,
     round_current: u32,
     round_total: u32,
-    potter_xmodel_force_gpt_5_4: bool,
+    potter_xmodel_force_review_model: bool,
     project_rounds_run: u32,
     carried_duration_secs: u64,
     prompt: String,
@@ -249,7 +249,7 @@ async fn run_potter_round_inner(
         project_started,
         round_current,
         round_total,
-        potter_xmodel_force_gpt_5_4,
+        potter_xmodel_force_review_model,
         project_rounds_run,
         carried_duration_secs,
         prompt,
@@ -391,7 +391,7 @@ async fn run_potter_round_inner(
         round_current,
         resume_thread_id.is_some(),
         potter_xmodel_enabled,
-        potter_xmodel_force_gpt_5_4,
+        potter_xmodel_force_review_model,
     );
 
     let backend = tokio::spawn(crate::app_server::run_app_server_backend(
@@ -494,7 +494,7 @@ fn prepare_upstream_cli_args_for_round(
     round_current: u32,
     is_resume_unfinished_round: bool,
     potter_xmodel_enabled: bool,
-    potter_xmodel_force_gpt_5_4: bool,
+    potter_xmodel_force_review_model: bool,
 ) -> crate::app_server::UpstreamCodexCliArgs {
     if is_resume_unfinished_round {
         // Unfinished round continuation must resume the original session configuration, so
@@ -507,7 +507,7 @@ fn prepare_upstream_cli_args_for_round(
         crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(
             &mut upstream_cli_args,
             round_current,
-            potter_xmodel_force_gpt_5_4,
+            potter_xmodel_force_review_model,
         );
     }
 
@@ -535,7 +535,7 @@ mod tests {
     fn potter_xmodel_overrides_model_and_effort_by_round_policy() {
         struct Case {
             round_current: u32,
-            force_gpt_5_4: bool,
+            force_review_model: bool,
             initial_config_overrides: Vec<&'static str>,
             expected_model: &'static str,
             expected_config_overrides: Vec<&'static str>,
@@ -544,7 +544,7 @@ mod tests {
         for case in [
             Case {
                 round_current: 3,
-                force_gpt_5_4: false,
+                force_review_model: false,
                 initial_config_overrides: vec!["model_reasoning_effort=\"low\""],
                 expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_2_MODEL,
                 expected_config_overrides: vec![
@@ -554,16 +554,16 @@ mod tests {
             },
             Case {
                 round_current: 4,
-                force_gpt_5_4: false,
+                force_review_model: false,
                 initial_config_overrides: Vec::new(),
-                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL,
+                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_REVIEW_MODEL,
                 expected_config_overrides: vec!["model_reasoning_effort=\"xhigh\""],
             },
             Case {
                 round_current: 2,
-                force_gpt_5_4: true,
+                force_review_model: true,
                 initial_config_overrides: Vec::new(),
-                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL,
+                expected_model: crate::workflow::potter_xmodel::POTTER_XMODEL_REVIEW_MODEL,
                 expected_config_overrides: vec!["model_reasoning_effort=\"xhigh\""],
             },
         ] {
@@ -580,7 +580,7 @@ mod tests {
             crate::workflow::potter_xmodel::apply_potter_xmodel_overrides(
                 &mut args,
                 case.round_current,
-                case.force_gpt_5_4,
+                case.force_review_model,
             );
             assert_eq!(args.model.as_deref(), Some(case.expected_model));
             assert_eq!(

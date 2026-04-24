@@ -31,7 +31,7 @@ impl SlashCommand {
             SlashCommand::CompactKb => "compact CodexPotter's knowledge base",
             SlashCommand::Yolo => "configure whether to enable YOLO by default",
             SlashCommand::PotterXModel => {
-                "(Experimental) Enable cross model review (round 1~3: GPT 5.2 xhigh, round 4+: GPT 5.4 xhigh)"
+                "(Experimental) Enable cross model review (round 1~3: GPT 5.2 xhigh, round 4+: GPT 5.5 xhigh)"
             }
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Verbosity => "choose how much detail to show",

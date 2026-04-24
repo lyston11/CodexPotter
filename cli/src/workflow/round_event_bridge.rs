@@ -1222,7 +1222,7 @@ potter.xmodel: {potter_xmodel}
     }
 
     #[tokio::test]
-    async fn observe_backend_event_xmodel_gates_project_succeeded_until_gpt_5_4() {
+    async fn observe_backend_event_xmodel_gates_project_succeeded_until_gpt_5_5() {
         let finished = Event {
             id: "event_2".to_string(),
             msg: EventMsg::PotterRoundFinished {

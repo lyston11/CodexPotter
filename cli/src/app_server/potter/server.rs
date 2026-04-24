@@ -440,7 +440,7 @@ async fn start_project(
             git_commit_start: init.git_commit_start.clone(),
             potter_rollout_path,
             rounds_total: rounds_total_u32,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             event_mode: mode,
             project_started_at: Instant::now(),
             round_start_index: 0,
@@ -565,7 +565,7 @@ async fn start_rounds(
             git_commit_start,
             potter_rollout_path,
             rounds_total: rounds_total_u32,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             resume_policy,
             event_mode: mode,
             project_started_at: Instant::now(),
@@ -997,7 +997,7 @@ struct FreshProjectPlan {
     git_commit_start: String,
     potter_rollout_path: PathBuf,
     rounds_total: u32,
-    potter_xmodel_force_gpt_5_4: bool,
+    potter_xmodel_force_review_model: bool,
     event_mode: PotterEventMode,
     project_started_at: Instant,
     round_start_index: u32,
@@ -1029,7 +1029,7 @@ struct ResumedProjectPlan {
     git_commit_start: String,
     potter_rollout_path: PathBuf,
     rounds_total: u32,
-    potter_xmodel_force_gpt_5_4: bool,
+    potter_xmodel_force_review_model: bool,
     resume_policy: ResumePolicy,
     event_mode: PotterEventMode,
     project_started_at: Instant,
@@ -1180,7 +1180,7 @@ async fn run_continue_round(
 }
 
 /// Reset `finite_incantatem` (and reopen skipped progress files) when xmodel requires a follow-up
-/// GPT-5.4 round before success.
+/// GPT-5.5 round before success.
 ///
 /// Returns `true` when the current completed round should continue into another round instead of
 /// finalizing the project as succeeded.
@@ -1321,7 +1321,7 @@ async fn run_fresh_project(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     )? {
-                        plan.potter_xmodel_force_gpt_5_4 = true;
+                        plan.potter_xmodel_force_review_model = true;
                         extend_round_total_if_needed(
                             initial_continue_round.round_current,
                             &mut plan.rounds_total,
@@ -1418,7 +1418,7 @@ async fn run_fresh_project(
                 project_started,
                 round_current: current_round,
                 round_total: plan.rounds_total,
-                potter_xmodel_force_gpt_5_4: plan.potter_xmodel_force_gpt_5_4,
+                potter_xmodel_force_review_model: plan.potter_xmodel_force_review_model,
                 project_rounds_run: current_round,
             },
         )
@@ -1443,7 +1443,7 @@ async fn run_fresh_project(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     )? {
-                        plan.potter_xmodel_force_gpt_5_4 = true;
+                        plan.potter_xmodel_force_review_model = true;
                         extend_round_total_if_needed(
                             current_round,
                             &mut plan.rounds_total,
@@ -1530,7 +1530,7 @@ async fn run_resumed_project(
         git_commit_start,
         potter_rollout_path,
         mut rounds_total,
-        mut potter_xmodel_force_gpt_5_4,
+        mut potter_xmodel_force_review_model,
         resume_policy,
         event_mode,
         project_started_at,
@@ -1592,7 +1592,7 @@ async fn run_resumed_project(
         git_commit_start: git_commit_start.clone(),
         potter_rollout_path: round_context.potter_rollout_path.clone(),
         rounds_total,
-        potter_xmodel_force_gpt_5_4,
+        potter_xmodel_force_review_model,
         resume_policy,
         event_mode,
         project_started_at,
@@ -1697,8 +1697,8 @@ async fn run_resumed_project(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     )? {
-                        potter_xmodel_force_gpt_5_4 = true;
-                        continuation_plan.potter_xmodel_force_gpt_5_4 = true;
+                        potter_xmodel_force_review_model = true;
+                        continuation_plan.potter_xmodel_force_review_model = true;
                         extend_round_total_if_needed(
                             initial_continue_round.round_current,
                             &mut display_round_total,
@@ -1796,7 +1796,7 @@ async fn run_resumed_project(
                 project_started: None,
                 round_current: current_round,
                 round_total: display_round_total,
-                potter_xmodel_force_gpt_5_4,
+                potter_xmodel_force_review_model,
                 project_rounds_run,
             },
         )
@@ -1824,8 +1824,8 @@ async fn run_resumed_project(
                         potter_xmodel_enabled,
                         round_result.session_model.as_deref(),
                     )? {
-                        potter_xmodel_force_gpt_5_4 = true;
-                        continuation_plan.potter_xmodel_force_gpt_5_4 = true;
+                        potter_xmodel_force_review_model = true;
+                        continuation_plan.potter_xmodel_force_review_model = true;
                         extend_round_total_if_needed(
                             current_round,
                             &mut display_round_total,
@@ -2307,7 +2307,7 @@ git_branch: "main"
     }
 
     #[test]
-    fn prepare_xmodel_follow_up_round_clears_finite_incantatem_until_gpt_5_4() {
+    fn prepare_xmodel_follow_up_round_clears_finite_incantatem_until_gpt_5_5() {
         {
             let temp = tempfile::tempdir().expect("tempdir");
             let workdir = temp.path();
@@ -2329,7 +2329,7 @@ git_branch: "main"
                     &progress_file_rel,
                 )
                 .expect("read finite_incantatem"),
-                "expected helper to clear finite_incantatem for the required GPT-5.4 follow-up round"
+                "expected helper to clear finite_incantatem for the required GPT-5.5 follow-up round"
             );
             let updated = std::fs::read_to_string(workdir.join(&progress_file_rel))
                 .expect("read progress file");
@@ -2349,7 +2349,7 @@ git_branch: "main"
                 workdir,
                 &progress_file_rel,
                 true,
-                Some(crate::workflow::potter_xmodel::POTTER_XMODEL_GPT_5_4_MODEL),
+                Some(crate::workflow::potter_xmodel::POTTER_XMODEL_REVIEW_MODEL),
             )
             .expect("prepare xmodel follow-up");
 
@@ -2360,13 +2360,13 @@ git_branch: "main"
                     &progress_file_rel,
                 )
                 .expect("read finite_incantatem"),
-                "expected GPT-5.4 completion to keep the success marker intact"
+                "expected GPT-5.5 completion to keep the success marker intact"
             );
             let updated = std::fs::read_to_string(workdir.join(&progress_file_rel))
                 .expect("read progress file");
             assert!(
                 updated.contains("status: skip\n"),
-                "expected GPT-5.4 completion to preserve skipped status"
+                "expected GPT-5.5 completion to preserve skipped status"
             );
         }
     }
@@ -2850,7 +2850,7 @@ git_branch: "main"
             git_commit_start: String::new(),
             potter_rollout_path: temp.path().join("potter-rollout.jsonl"),
             rounds_total: 1,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             resume_policy: ResumePolicy::ContinueUnfinishedRound,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
@@ -3001,7 +3001,7 @@ done
             git_commit_start: String::from("start"),
             potter_rollout_path: crate::workflow::rollout::potter_rollout_path(&project_dir),
             rounds_total: 1,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             resume_policy: ResumePolicy::StartNewRound,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
@@ -3147,7 +3147,7 @@ git_branch: "main"
             git_commit_start: String::from("start"),
             potter_rollout_path: crate::workflow::rollout::potter_rollout_path(&project_dir),
             rounds_total: 2,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
             round_start_index: 0,
@@ -3741,7 +3741,7 @@ git_branch: "main"
             git_commit_start: String::new(),
             potter_rollout_path: workdir.join("potter-rollout.jsonl"),
             rounds_total: 1,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
             round_start_index: 0,
@@ -3815,7 +3815,7 @@ git_branch: "main"
                 git_commit_start: String::from("start"),
                 potter_rollout_path: workdir.join("potter-rollout.jsonl"),
                 rounds_total: 3,
-                potter_xmodel_force_gpt_5_4: false,
+                potter_xmodel_force_review_model: false,
                 event_mode: PotterEventMode::Interactive,
                 project_started_at: Instant::now(),
                 round_start_index: 0,
@@ -3853,7 +3853,7 @@ git_branch: "main"
                 git_commit_start: String::from("start"),
                 potter_rollout_path: workdir.join("potter-rollout.jsonl"),
                 rounds_total: 1,
-                potter_xmodel_force_gpt_5_4: false,
+                potter_xmodel_force_review_model: false,
                 event_mode: PotterEventMode::Interactive,
                 project_started_at: Instant::now(),
                 round_start_index: 0,
@@ -3918,7 +3918,7 @@ git_branch: "main"
             git_commit_start: String::from("start"),
             potter_rollout_path: workdir.join("potter-rollout.jsonl"),
             rounds_total: 3,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
             round_start_index: 1,
@@ -4083,7 +4083,7 @@ git_branch: "main"
             git_commit_start: String::from("start"),
             potter_rollout_path: potter_rollout_path.clone(),
             rounds_total: 3,
-            potter_xmodel_force_gpt_5_4: false,
+            potter_xmodel_force_review_model: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
             round_start_index: 1,

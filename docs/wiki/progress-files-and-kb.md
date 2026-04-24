@@ -39,7 +39,7 @@ The workflow template defines:
 - `status`: `initial` | `open` | `skip`
   - **Used by the workflow prompt** to decide whether to plan vs execute.
   - **Mostly opaque to the runner**, but Potter xmodel follow-up rounds may reset `status: skip`
-    back to `open` so a required GPT-5.4 review round does not no-op
+    back to `open` so a required GPT-5.5 review round does not no-op
     (`cli/src/app_server/potter/server.rs::prepare_xmodel_follow_up_round`).
 - `short_title`: short human-readable title for the project
   - Set during the first round (when `status: initial`).

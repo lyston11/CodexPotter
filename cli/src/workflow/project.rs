@@ -222,7 +222,7 @@ pub fn set_progress_file_finite_incantatem(
 /// Reset `status` in the progress file YAML front matter when it is `skip`.
 ///
 /// Potter xmodel follow-up rounds rely on clearing `finite_incantatem` to force an additional
-/// GPT-5.4 review round. The workflow prompt treats `status: skip` as "do nothing", so if a lower
+/// GPT-5.5 review round. The workflow prompt treats `status: skip` as "do nothing", so if a lower
 /// model round marked the project as skipped, we need to reopen it before the follow-up round can
 /// run any review work.
 ///
