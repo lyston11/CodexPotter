@@ -2435,6 +2435,7 @@ async fn handle_server_request(
                             call_id: params.item_id,
                             turn_id: params.turn_id,
                             reason: params.reason,
+                            cwd: params.cwd,
                             permissions: request_permission_profile_from_upstream(
                                 params.permissions,
                             ),
@@ -4836,7 +4837,7 @@ echo "$response" | grep -q '"id":10' || { echo "missing response id 10: $respons
 echo "$response" | grep -q '"answers":{}' || { echo "missing empty answers: $response" >&2; exit 1; }
 
 # item/permissions/requestApproval server request
-echo '{"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","itemId":"tool-req-perms","reason":"need permissions","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp"],"write":[]}}}}'
+echo '{"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"00000000-0000-0000-0000-000000000000","turnId":"turn-1","itemId":"tool-req-perms","cwd":"/tmp/project","reason":"need permissions","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp"],"write":[]}}}}'
 IFS= read -r response
 echo "$response" | grep -q '"id":11' || { echo "missing response id 11: $response" >&2; exit 1; }
 echo "$response" | grep -q '"scope":"turn"' || { echo "missing scope=turn: $response" >&2; exit 1; }
@@ -4911,6 +4912,13 @@ done
                     }
                     EventMsg::RequestPermissions(ev) => {
                         assert_eq!(ev.call_id, "tool-req-perms");
+                        assert_eq!(
+                            ev.cwd,
+                            Some(
+                                codex_protocol::AbsolutePathBuf::from_absolute_path("/tmp/project")
+                                    .expect("absolute permission cwd")
+                            )
+                        );
                         saw_request_permissions = true;
                     }
                     EventMsg::ElicitationRequest(ev) => {

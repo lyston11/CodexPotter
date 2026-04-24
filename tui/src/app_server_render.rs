@@ -6646,6 +6646,7 @@ mod tests {
                     call_id: "call-1".to_string(),
                     turn_id: "turn-1".to_string(),
                     reason: Some("Select a workspace root".to_string()),
+                    cwd: None,
                     permissions: RequestPermissionProfile {
                         network: Some(NetworkPermissions {
                             enabled: Some(true),
